@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Creature Creator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand"><span class="logo">🦎</span> Creature Creator</div>
+        <div class="modes" role="tablist">
+          <button data-mode="build" class="active" title="Build (1)">✏️ Build</button>
+          <button data-mode="pose" title="Pose (2)">🤸 Pose</button>
+        </div>
+        <div class="spacer"></div>
+        <div class="tools">
+          <button id="undo" title="Undo (Ctrl+Z)">↶</button>
+          <button id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
+          <button id="backdrop-btn" title="Backdrop &amp; lighting">🎨 Backdrop</button>
+          <button id="spin" title="Turntable">⟳ Spin</button>
+          <button id="shot" title="Save a picture">📷 Photo</button>
+          <button id="export" title="Download a 3D model (.glb)">⬇ GLB</button>
+          <button id="new" title="Start over">✨ New</button>
+        </div>
+      </header>
+
+      <aside class="panel">
+        <section id="build-panel">
+          <h3>Body plan</h3>
+          <div id="rigs" class="rigs"></div>
+
+          <h3>Parts</h3>
+          <div id="parts" class="parts"></div>
+
+          <div class="card" id="part-card">
+            <div class="card-title" id="part-title">Body</div>
+            <button id="draw" class="primary">✏️ Draw shape <kbd>D</kbd></button>
+            <p class="muted small">Or double-click a part. Draw a closed outline; it inflates like a balloon.</p>
+            <label class="slider">
+              <span>Thickness</span>
+              <input id="thickness" type="range" min="0.1" max="1.6" step="0.01" />
+              <span class="ends"><em>flat</em><em>chubby</em></span>
+            </label>
+            <button id="reset-shape" class="ghost">Reset shape</button>
+          </div>
+
+          <h3>Colour</h3>
+          <div id="swatches" class="swatches"></div>
+          <div class="row">
+            <label class="color-pick"><input id="color" type="color" /> Custom</label>
+            <button id="paint-all" class="ghost">Paint whole creature</button>
+          </div>
+
+          <h3>Material</h3>
+          <div id="styles" class="styles"></div>
+          <label class="check"><input id="style-part" type="checkbox" /> Only the selected part</label>
+          <label class="check"><input id="merge" type="checkbox" checked /> Merge touching parts of the same colour</label>
+          <label class="slider" id="merge-slider"><span>Blend</span><input id="merge-radius" type="range" min="0.02" max="0.25" step="0.005" /></label>
+
+          <h3>Eyes</h3>
+          <div id="eye-styles" class="eye-styles"></div>
+          <div id="eye-sliders">
+            <label class="slider"><span>Size</span><input id="eye-size" type="range" min="0" max="1" step="0.01" /></label>
+            <label class="slider"><span>Spacing</span><input id="eye-spacing" type="range" min="0" max="1" step="0.01" /></label>
+            <label class="slider"><span>Height</span><input id="eye-height" type="range" min="0.05" max="0.95" step="0.01" /></label>
+          </div>
+        </section>
+
+        <section id="pose-panel" hidden>
+          <h3>Posing</h3>
+          <p class="muted">Drag the <b class="dot orange"></b> joints to bend limbs. Drag the <b class="dot blue square"></b> handle to move the whole creature. Drag empty space to spin the camera, scroll to zoom.</p>
+          <label class="check"><input id="ik" type="checkbox" checked /> Pull whole limbs (IK)</label>
+          <label class="check"><input id="skeleton-build" type="checkbox" /> Show skeleton in Build mode</label>
+          <button id="reset-pose" class="ghost">Reset pose</button>
+        </section>
+      </aside>
+
+      <main class="viewport" id="viewport">
+        <canvas id="gl"></canvas>
+        <canvas id="overlay"></canvas>
+        <div id="hint" class="hint"></div>
+        <div id="backdrop" class="popover" hidden>
+          <div class="pop-title">Backdrop</div>
+          <div id="backdrops" class="swatches"></div>
+          <label class="color-pick"><input id="backdrop-color" type="color" /> Custom colour</label>
+          <label class="check"><input id="ao" type="checkbox" checked /> Ambient occlusion</label>
+          <label class="check"><input id="dof" type="checkbox" /> Depth of field (photo look)</label>
+        </div>
+        <div id="draw-bar" class="draw-bar" hidden>
+          <label id="sym-label" class="pill-toggle" title="Mirror across the part's centre line (S)">
+            <input id="sym" type="checkbox" /> ⟷ Symmetry <kbd>S</kbd>
+          </label>
+          <label class="bar-slider" title="Steadies the pen while drawing and smooths the finished outline">
+            Smoothing <input id="smooth" type="range" min="0" max="1" step="0.05" />
+          </label>
+          <button id="cancel-draw">Cancel <kbd>Esc</kbd></button>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
