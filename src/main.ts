@@ -1555,6 +1555,7 @@ function renderUI() {
 function setColor(c: string, doCommit: boolean) {
   selPart().color = c;
   creature.sync();
+  creature.markMergeDirty();
   if (doCommit) {
     commit();
     renderColors();
@@ -1933,11 +1934,26 @@ $<HTMLInputElement>('#merge-radius').oninput = (e) => {
   creature.markMergeDirty();
 };
 $<HTMLInputElement>('#merge-radius').onchange = () => commit();
+$<HTMLInputElement>('#merge-colors').onchange = (e) => {
+  state.mergeColors = (e.target as HTMLInputElement).checked;
+  creature.markMergeDirty();
+  commit();
+  renderMerge();
+};
+$<HTMLInputElement>('#color-blend').oninput = (e) => {
+  state.colorBlend = parseFloat((e.target as HTMLInputElement).value);
+  creature.markMergeDirty();
+};
+$<HTMLInputElement>('#color-blend').onchange = () => commit();
 
 function renderMerge() {
   $<HTMLInputElement>('#merge').checked = state.merge ?? true;
   $<HTMLInputElement>('#merge-radius').value = String(state.mergeRadius ?? 0.1);
   $('#merge-slider').style.opacity = (state.merge ?? true) ? '1' : '.4';
+  $<HTMLInputElement>('#merge-colors').checked = !!state.mergeColors;
+  $<HTMLInputElement>('#color-blend').value = String(state.colorBlend ?? 0.12);
+  $('#merge-colors-row').style.opacity = (state.merge ?? true) ? '1' : '.4';
+  $('#color-blend-slider').hidden = !state.mergeColors;
 }
 
 for (const k of ['size', 'spacing', 'height'] as const) {

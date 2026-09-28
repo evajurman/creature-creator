@@ -69,6 +69,10 @@ export interface CreatureState {
   merge?: boolean;
   /** Fillet size for merging, in world units. */
   mergeRadius?: number;
+  /** merge parts of the same material even when their colours differ, blending the colours */
+  mergeColors?: boolean;
+  /** width of the colour fade at blended joins, in world units */
+  colorBlend?: number;
   /** per-material slider values (missing keys use the defaults) */
   materialSettings?: Partial<Record<StyleId, StyleSettings>>;
   attachments?: Attachment[];
@@ -485,13 +489,16 @@ export class Creature {
     const s = this.state;
     const on = s.merge ?? true;
     const k = s.mergeRadius ?? 0.1;
+    // with colour blending, parts of one material merge whatever their colour
+    const blend = on && !!s.mergeColors;
+    const kc = blend ? (s.colorBlend ?? 0.12) : 0;
     this.group.updateMatrixWorld(true);
 
     const groups = new Map<string, BoneRT[]>();
     for (const b of this.list) {
       if (!b.mesh) continue;
       const p = s.parts[b.src];
-      const key = (p.style ?? s.style) + p.color.toLowerCase();
+      const key = (p.style ?? s.style) + (blend ? '' : p.color.toLowerCase());
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(b);
     }
@@ -499,9 +506,9 @@ export class Creature {
     for (const [, members] of groups) {
       for (const b of members) {
         const base = b.mesh!.userData.baseGeo as THREE.BufferGeometry;
-        const nbrs = on && members.length > 1 ? members.filter((o) => o !== b && this.near(b, o, k)) : [];
+        const nbrs = on && members.length > 1 ? members.filter((o) => o !== b && this.near(b, o, Math.max(k, kc))) : [];
         if (nbrs.length === 0) {
-          this.setMeshGeometry(b, base);
+          this.setMeshGeometry(b, base, false);
           continue;
         }
         let g = b.mesh!.userData.mergeGeo as THREE.BufferGeometry | undefined;
@@ -511,8 +518,11 @@ export class Creature {
           g.userData = { base };
           b.mesh!.userData.mergeGeo = g;
         }
-        this.fuse(b, base, g, nbrs, k);
-        this.setMeshGeometry(b, g);
+        // only paint colours when a neighbour actually has a different colour
+        const myColor = s.parts[b.src].color.toLowerCase();
+        const paint = blend && nbrs.some((o) => s.parts[o.src].color.toLowerCase() !== myColor);
+        this.fuse(b, base, g, nbrs, k, paint ? kc : 0);
+        this.setMeshGeometry(b, g, paint);
       }
     }
   }
@@ -521,12 +531,29 @@ export class Creature {
     this.mergeDirty = true;
   }
 
-  private setMeshGeometry(b: BoneRT, g: THREE.BufferGeometry) {
+  /**
+   * Swap in base or fused geometry. When `painted`, colour comes from the
+   * per-vertex colours baked by fuse(), so materials switch to white * vertex colour.
+   */
+  private setMeshGeometry(b: BoneRT, g: THREE.BufferGeometry, painted: boolean) {
     const mesh = b.mesh!;
-    if (mesh.geometry === g && !g.userData.base) return;
     mesh.geometry = g;
     // ink hulls and fuzz shells follow the fused surface
     for (const c of mesh.children) if (c instanceof THREE.Mesh) c.geometry = g;
+    const part = this.state.parts[b.src];
+    const lowPoly = (part.style ?? this.state.style) === 'lowpoly';
+    const tint = painted ? new THREE.Color(1, 1, 1) : new THREE.Color(part.color);
+    // body + fuzz shells (stray-hair lines keep their own per-hair colours)
+    const mats = [mesh.material, ...mesh.children.filter((c) => c instanceof THREE.Mesh).map((c) => (c as THREE.Mesh).material)];
+    for (const m of mats as THREE.MeshStandardMaterial[]) {
+      if (!m || !('color' in m) || m.userData?.ink) continue;
+      const want = painted || lowPoly;
+      if (m.vertexColors !== want) {
+        m.vertexColors = want;
+        m.needsUpdate = true;
+      }
+      m.color.copy(tint);
+    }
   }
 
   private near(a: BoneRT, b: BoneRT, k: number): boolean {
@@ -537,7 +564,11 @@ export class Creature {
     return ca.distanceTo(cb) < ga.boundingSphere!.radius + gb.boundingSphere!.radius + k;
   }
 
-  private fuse(b: BoneRT, base: THREE.BufferGeometry, out: THREE.BufferGeometry, nbrs: BoneRT[], kMax: number) {
+  /**
+   * Fuse this part's surface into its neighbours (smooth-min fillet) and,
+   * when `kc` > 0, bake a colour gradient that meets 50/50 at the seam.
+   */
+  private fuse(b: BoneRT, base: THREE.BufferGeometry, out: THREE.BufferGeometry, nbrs: BoneRT[], kMax: number, kc: number) {
     const solidA = base.userData.solid as Solid;
     const maxR = (sol: Solid) => {
       let m = 0;
@@ -545,23 +576,29 @@ export class Creature {
       return m * Math.min(1, sol.thickness);
     };
     const rA = maxR(solidA);
+    const own = new THREE.Color(this.state.parts[b.src].color);
 
     const toWorld = b.mesh!.matrixWorld;
     const toLocal = toWorld.clone().invert();
     const rotW = new THREE.Matrix3().setFromMatrix4(toWorld);
     const rotL = new THREE.Matrix3().setFromMatrix4(toLocal);
+    const myKey = this.state.parts[b.src].color.toLowerCase();
     const others = nbrs.map((o) => {
       const g = o.mesh!.userData.baseGeo as THREE.BufferGeometry;
       const solid = g.userData.solid as Solid;
       // keep fillets in proportion: a thin antenna shouldn't get a huge blob
       const k = Math.max(0.005, Math.min(kMax, 0.6 * Math.min(rA, maxR(solid))));
       const inv = o.mesh!.matrixWorld.clone().invert();
+      const colorKey = this.state.parts[o.src].color.toLowerCase();
       return {
         solid,
         k,
         inv,
         rot: new THREE.Matrix3().setFromMatrix4(o.mesh!.matrixWorld),
-        box: g.boundingBox!.clone().expandByScalar(k),
+        box: g.boundingBox!.clone().expandByScalar(Math.max(k, kc)),
+        color: new THREE.Color(this.state.parts[o.src].color),
+        // same-coloured neighbours don't tint
+        tints: kc > 0 && colorKey !== myKey,
       };
     });
 
@@ -569,8 +606,16 @@ export class Creature {
     const n0 = base.getAttribute('normal') as THREE.BufferAttribute;
     const p1 = out.getAttribute('position') as THREE.BufferAttribute;
     const n1 = out.getAttribute('normal') as THREE.BufferAttribute;
+    // low-poly keeps its per-facet shading variation underneath the tint
+    const jitter = base.getAttribute('color') as THREE.BufferAttribute | undefined;
+    let c1 = out.getAttribute('color') as THREE.BufferAttribute | undefined;
+    if (kc > 0 && !c1) {
+      c1 = new THREE.BufferAttribute(new Float32Array(p0.count * 3), 3);
+      out.setAttribute('color', c1);
+    }
     const pw = new THREE.Vector3(), nw = new THREE.Vector3(), q = new THREE.Vector3();
     const grad = new THREE.Vector3(), gw = new THREE.Vector3(), gsum = new THREE.Vector3();
+    const col = new THREE.Color();
 
     for (let i = 0; i < p0.count; i++) {
       pw.fromBufferAttribute(p0, i).applyMatrix4(toWorld);
@@ -579,16 +624,27 @@ export class Creature {
       let d = 0;
       gsum.copy(nw);
       let touched = false;
+      col.copy(own);
       for (const o of others) {
         q.copy(pw).applyMatrix4(o.inv);
         if (!o.box.containsPoint(q)) continue;
         const f = solidDistance(o.solid, q.x, q.y, q.z, grad);
+        if (o.tints && f < kc) {
+          // 50/50 at the seam, fading to our own colour kc away from it
+          const t = Math.min(1, Math.max(0, 1 - f / kc));
+          col.lerp(o.color, 0.5 * t * t * (3 - 2 * t));
+        }
         if (f >= o.k) continue;
         gw.copy(grad).applyMatrix3(o.rot).normalize();
         const h = Math.min(1, Math.max(0, 0.5 + (0.5 * (f - d)) / o.k));
         d = f * (1 - h) + d * h - o.k * h * (1 - h);
         gsum.multiplyScalar(h).addScaledVector(gw, 1 - h);
         touched = true;
+      }
+      if (c1) {
+        const j = jitter ? jitter.getX(i) : 1;
+        if (kc > 0) c1.setXYZ(i, col.r * j, col.g * j, col.b * j);
+        else c1.setXYZ(i, j, j, j);
       }
       if (!touched) {
         p1.setXYZ(i, p0.getX(i), p0.getY(i), p0.getZ(i));
@@ -611,6 +667,7 @@ export class Creature {
     }
     p1.needsUpdate = true;
     n1.needsUpdate = true;
+    if (c1) c1.needsUpdate = true;
     out.computeBoundingSphere();
   }
 
