@@ -8,8 +8,12 @@ export interface InflateOptions {
   thickness: number;
   /** coarse, jittered, flat-shaded mesh */
   lowPoly: boolean;
-  /** subtle hand-made lumps (clay) */
-  lumpy: boolean;
+  /** low-poly facet size multiplier (1 = default) */
+  facetScale?: number;
+  /** low-poly per-facet brightness variation */
+  colorJitter?: number;
+  /** strength of hand-made lumps (clay); 0 = smooth */
+  lumps?: number;
   seed?: number;
 }
 
@@ -166,8 +170,9 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   const size = Math.max(raw.w, raw.h, 1e-3);
   const area = Math.max(Math.abs(signedArea(outline)), size * size * 0.002);
 
-  let s = opts.lowPoly ? Math.sqrt(area / 45) : Math.sqrt(area / 650);
-  s = Math.max(s, size / (opts.lowPoly ? 14 : 90));
+  const facet = opts.facetScale ?? 1;
+  let s = opts.lowPoly ? Math.sqrt(area / 45) * facet : Math.sqrt(area / 650);
+  s = Math.max(s, opts.lowPoly ? (size * facet) / 14 : size / 90);
 
   const boundary = cleanOutline(outline, s);
   const bb = bounds(boundary);
@@ -337,10 +342,10 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   geo.setIndex(index);
   geo.computeVertexNormals();
 
-  if (opts.lumpy) {
+  if (opts.lumps) {
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
     const nor = geo.getAttribute('normal') as THREE.BufferAttribute;
-    const amp = Math.min(size * 0.012, 0.012);
+    const amp = Math.min(size * 0.012, 0.012) * opts.lumps;
     const freq = 9;
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
@@ -357,7 +362,8 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
     const count = geo.getAttribute('position').count;
     const colors = new Float32Array(count * 3);
     for (let f = 0; f < count; f += 3) {
-      const k = 0.9 + rand() * 0.14;
+      const j = opts.colorJitter ?? 0.14;
+      const k = 1 - j * 0.7 + rand() * j;
       for (let j = 0; j < 3; j++) colors.set([k, k, k], (f + j) * 3);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));

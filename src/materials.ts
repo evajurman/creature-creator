@@ -10,6 +10,56 @@ export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'toon', name: 'Toon', desc: 'Cel-shaded with ink lines' },
 ];
 
+/** A per-material slider. `geometry` ones change the mesh itself, not just the shader. */
+export interface StyleParam {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  geometry?: boolean;
+}
+
+export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
+  clay: [
+    { key: 'prints', label: 'Fingerprints', min: 0, max: 14, step: 0.1, value: 6 },
+    { key: 'lumps', label: 'Lumpiness', min: 0, max: 3, step: 0.05, value: 1, geometry: true },
+    { key: 'wax', label: 'Waxy sheen', min: 0, max: 1, step: 0.01, value: 0.35 },
+    { key: 'matte', label: 'Matte', min: 0.25, max: 1, step: 0.01, value: 0.62 },
+  ],
+  felt: [
+    { key: 'fuzz', label: 'Fuzz length', min: 0, max: 0.06, step: 0.001, value: 0.022 },
+    { key: 'density', label: 'Fuzz density', min: 0, max: 1, step: 0.01, value: 0.5 },
+    { key: 'hairs', label: 'Stray hairs', min: 0, max: 3, step: 0.05, value: 1 },
+    { key: 'glow', label: 'Edge glow', min: 0, max: 1.5, step: 0.01, value: 0.55 },
+  ],
+  lowpoly: [
+    { key: 'facets', label: 'Facet size', min: 0.4, max: 2.5, step: 0.05, value: 1, geometry: true },
+    { key: 'variation', label: 'Colour variation', min: 0, max: 0.5, step: 0.01, value: 0.14, geometry: true },
+    { key: 'matte', label: 'Matte', min: 0.05, max: 1, step: 0.01, value: 0.85 },
+  ],
+  plastic: [
+    { key: 'shine', label: 'Shininess', min: 0, max: 1, step: 0.01, value: 0.7 },
+    { key: 'coat', label: 'Clear coat', min: 0, max: 1, step: 0.01, value: 1 },
+    { key: 'metal', label: 'Metallic', min: 0, max: 1, step: 0.01, value: 0 },
+  ],
+  toon: [
+    { key: 'ink', label: 'Ink width', min: 0, max: 0.04, step: 0.001, value: 0.012 },
+    { key: 'bands', label: 'Shade steps', min: 2, max: 6, step: 1, value: 3 },
+    { key: 'shadow', label: 'Shadow depth', min: 0, max: 0.95, step: 0.01, value: 0.55 },
+  ],
+};
+
+export type StyleSettings = Record<string, number>;
+
+/** Defaults for a style, with any saved overrides applied. */
+export function styleSettings(style: StyleId, overrides?: StyleSettings): StyleSettings {
+  const out: StyleSettings = {};
+  for (const p of STYLE_PARAMS[style]) out[p.key] = overrides?.[p.key] ?? p.value;
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Procedural, seamlessly tiling height fields
 
@@ -247,13 +297,20 @@ function getFelt() {
   return feltTex;
 }
 
-let toonGradient: THREE.DataTexture | null = null;
-function getToonGradient() {
-  if (toonGradient) return toonGradient;
-  toonGradient = new THREE.DataTexture(new Uint8Array([70, 150, 255]), 3, 1, THREE.RedFormat);
-  toonGradient.minFilter = toonGradient.magFilter = THREE.NearestFilter;
-  toonGradient.needsUpdate = true;
-  return toonGradient;
+const toonGradients = new Map<string, THREE.DataTexture>();
+/** Stepped lighting ramp: `bands` flat tones from the shadow tone up to full light. */
+function getToonGradient(bands: number, shadow: number) {
+  const key = `${bands}:${shadow}`;
+  let t = toonGradients.get(key);
+  if (t) return t;
+  const low = (1 - shadow) * 0.6;
+  const data = new Uint8Array(bands);
+  for (let i = 0; i < bands; i++) data[i] = Math.round(255 * (low + (1 - low) * (i / (bands - 1))));
+  t = new THREE.DataTexture(data, bands, 1, THREE.RedFormat);
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.needsUpdate = true;
+  toonGradients.set(key, t);
+  return t;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,19 +427,20 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
 
 // ---------------------------------------------------------------------------
 
-export function makeMaterial(style: StyleId, color: string): THREE.Material {
+export function makeMaterial(style: StyleId, color: string, settings: StyleSettings = styleSettings(style)): THREE.Material {
   const c = new THREE.Color(color);
+  const k = settings;
   switch (style) {
     case 'clay':
       return triplanar(
         new THREE.MeshPhysicalMaterial({
           color: c,
-          roughness: 0.62,
+          roughness: k.matte,
           metalness: 0,
           bumpMap: getClayBump(),
-          bumpScale: 6,
+          bumpScale: k.prints,
           // a faint sheen fakes the soft, waxy falloff of plasticine at grazing angles
-          sheen: 0.35,
+          sheen: k.wax,
           sheenRoughness: 0.8,
           sheenColor: c.clone().lerp(new THREE.Color('#ffffff'), 0.4),
         }),
@@ -402,21 +460,31 @@ export function makeMaterial(style: StyleId, color: string): THREE.Material {
           sheenRoughness: 0.35,
           sheenColor: c.clone().lerp(new THREE.Color('#ffffff'), 0.6),
         }),
-        { tiling: 2.2, rim: 0.55 },
+        { tiling: 2.2, rim: k.glow },
       );
     }
     case 'lowpoly':
-      return new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0, flatShading: true, vertexColors: true });
+      return new THREE.MeshStandardMaterial({ color: c, roughness: k.matte, metalness: 0, flatShading: true, vertexColors: true });
     case 'plastic':
-      return new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.3, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.06 });
+      return new THREE.MeshPhysicalMaterial({
+        color: c,
+        roughness: 0.04 + (1 - k.shine) * 0.8,
+        metalness: k.metal,
+        clearcoat: k.coat,
+        clearcoatRoughness: 0.04 + (1 - k.shine) * 0.3,
+      });
     case 'toon':
-      return new THREE.MeshToonMaterial({ color: c, gradientMap: getToonGradient() });
+      return new THREE.MeshToonMaterial({ color: c, gradientMap: getToonGradient(Math.round(k.bands), k.shadow) });
   }
 }
 
 /** Concentric fuzz shells for felt: a halo of curly fibres standing off the surface. */
-export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, layers = 12, height = 0.022): THREE.Mesh[] {
+export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, settings: StyleSettings, layers = 12): THREE.Mesh[] {
   const f = getFelt();
+  const height = settings.fuzz;
+  if (height <= 0) return [];
+  // denser fuzz keeps more fibres alive in each shell
+  const floor = 0.42 - 0.4 * settings.density;
   const base = new THREE.Color(color);
   const out: THREE.Mesh[] = [];
   for (let i = 1; i <= layers; i++) {
@@ -425,8 +493,8 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, layers 
       new THREE.MeshStandardMaterial({ color: base, roughness: 1, metalness: 0 }),
       {
         tiling: 1,
-        rim: 0.9,
-        shell: { offset: height * Math.pow(level, 1.3), level: 0.22 + level * 0.74, hair: f.hair, hairTiling: 2.4 },
+        rim: settings.glow * 1.6,
+        shell: { offset: height * Math.pow(level, 1.3), level: floor + level * 0.74, hair: f.hair, hairTiling: 2.4 },
       },
     );
     const mesh = new THREE.Mesh(geo, m);
@@ -440,7 +508,7 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, layers 
 }
 
 /** Loose curly wisps sticking out of felt. */
-export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: number): THREE.LineSegments {
+export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: number, amount = 1): THREE.LineSegments {
   const r = rng(seed);
   const pos = geo.getAttribute('position');
   const nor = geo.getAttribute('normal');
@@ -459,7 +527,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
     total += b.sub(a).cross(c.sub(a)).length() / 2;
     cdf.push(total);
   }
-  const count = Math.round(Math.min(1400, Math.max(60, total * 900)));
+  const count = Math.round(Math.min(1400, Math.max(60, total * 900)) * amount);
   const verts: number[] = [];
   const cols: number[] = [];
   const baseCol = new THREE.Color(color);

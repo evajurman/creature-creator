@@ -236,3 +236,8 @@ input.text {
 .eye-pairs button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 .eye-pairs button.add { background: #fff; border-style: dashed; }
 .eye-pairs button.remove { background: #fff; color: #c2410c; }
+
+.style-params { margin-top: 10px; padding: 8px 10px 2px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+.style-params .slider { grid-template-columns: 96px 1fr; }
+.style-params-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13px; }
+button.link { border: 0; background: none; color: var(--accent); font-weight: 700; font-size: 12px; cursor: pointer; padding: 0; }

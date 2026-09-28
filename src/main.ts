@@ -9,7 +9,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { Creature, defaultState, EYE_STYLES, type BoneRT, type CreatureState, type EyeStyle } from './creature';
 import { bounds, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
-import { STYLES, type StyleId } from './materials';
+import { STYLE_PARAMS, STYLES, styleSettings, type StyleId } from './materials';
 import {
   RIGS,
   addLimb,
@@ -774,6 +774,54 @@ function renderStyles() {
     btn.classList.toggle('active', s.id === current);
     btn.onclick = () => setStyle(s.id);
     el.append(btn);
+  }
+  renderStyleParams(current);
+}
+
+/** Sliders for whichever material is showing; they apply to every part using it. */
+function renderStyleParams(style: StyleId) {
+  const el = $('#style-params');
+  el.innerHTML = '';
+  const values = styleSettings(style, state.materialSettings?.[style]);
+  const head = document.createElement('div');
+  head.className = 'style-params-head';
+  head.innerHTML = `<span>${STYLES.find((s) => s.id === style)!.name} settings</span>`;
+  const reset = document.createElement('button');
+  reset.className = 'link';
+  reset.textContent = 'Reset';
+  reset.onclick = () => {
+    if (state.materialSettings) delete state.materialSettings[style];
+    creature.sync();
+    commit();
+    renderStyleParams(style);
+  };
+  head.append(reset);
+  el.append(head);
+  let pending = false;
+  for (const p of STYLE_PARAMS[style]) {
+    const row = document.createElement('label');
+    row.className = 'slider';
+    const name = document.createElement('span');
+    name.textContent = p.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(p.min);
+    input.max = String(p.max);
+    input.step = String(p.step);
+    input.value = String(values[p.key]);
+    input.oninput = () => {
+      state.materialSettings ??= {};
+      (state.materialSettings[style] ??= {})[p.key] = parseFloat(input.value);
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        creature.sync();
+      });
+    };
+    input.onchange = () => commit();
+    row.append(name, input);
+    el.append(row);
   }
 }
 

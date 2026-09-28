@@ -1,6 +1,14 @@
 import * as THREE from 'three';
 import { buildInflatedGeometry, defaultOutline, solidDistance, type Solid, type Vec2 } from './inflate';
-import { makeFuzzShells, makeMaterial, makeOutlineMaterial, makeStrayHairs, type StyleId } from './materials';
+import {
+  makeFuzzShells,
+  makeMaterial,
+  makeOutlineMaterial,
+  makeStrayHairs,
+  styleSettings,
+  type StyleId,
+  type StyleSettings,
+} from './materials';
 import { expandRig, type ExpandedBone, type ExpandedRig, type RigState, type V3 } from './rigs';
 
 export interface PartState {
@@ -46,6 +54,8 @@ export interface CreatureState {
   merge?: boolean;
   /** Fillet size for merging, in world units. */
   mergeRadius?: number;
+  /** per-material slider values (missing keys use the defaults) */
+  materialSettings?: Partial<Record<StyleId, StyleSettings>>;
 }
 
 export interface BoneRT {
@@ -258,6 +268,10 @@ export class Creature {
     this.applyPose();
   }
 
+  settingsFor(style: StyleId): StyleSettings {
+    return styleSettings(style, this.state.materialSettings?.[style]);
+  }
+
   part(id: string): PartState {
     const b = this.bones.get(id)!;
     return this.state.parts[b.src];
@@ -276,8 +290,16 @@ export class Creature {
       const p = s.parts[b.src];
       const style = p.style ?? s.style;
       const outline = this.outlineFor(b);
-      const geoKey = JSON.stringify([outline, p.thickness, style === 'lowpoly', style === 'clay']);
-      const key = geoKey + style + p.color;
+      const k = this.settingsFor(style);
+      const geoOpts = {
+        thickness: p.thickness,
+        lowPoly: style === 'lowpoly',
+        facetScale: style === 'lowpoly' ? k.facets : undefined,
+        colorJitter: style === 'lowpoly' ? k.variation : undefined,
+        lumps: style === 'clay' ? k.lumps : 0,
+      };
+      const geoKey = JSON.stringify([outline, geoOpts]);
+      const key = geoKey + style + p.color + JSON.stringify(k);
       if (key === b.meshKey) continue;
       b.meshKey = key;
       if (b.mesh) {
@@ -289,27 +311,22 @@ export class Creature {
         (b.mesh.userData.mergeGeo as THREE.BufferGeometry | undefined)?.dispose();
       }
       const geo = cachedGeometry(geoKey, () =>
-        buildInflatedGeometry(outline, {
-          thickness: p.thickness,
-          lowPoly: style === 'lowpoly',
-          lumpy: style === 'clay',
-          seed: hashString(b.src),
-        }),
+        buildInflatedGeometry(outline, { ...geoOpts, seed: hashString(b.src) }),
       );
-      const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color));
+      const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
       mesh.userData.baseGeo = geo;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.userData.boneId = b.def.id;
-      if (style === 'toon') {
-        const ink = new THREE.Mesh(geo, makeOutlineMaterial());
+      if (style === 'toon' && k.ink > 0) {
+        const ink = new THREE.Mesh(geo, makeOutlineMaterial(k.ink));
         ink.userData.boneId = b.def.id;
         ink.raycast = () => {};
         mesh.add(ink);
       }
       if (style === 'felt') {
-        for (const shell of makeFuzzShells(geo, p.color)) mesh.add(shell);
-        mesh.add(makeStrayHairs(geo, p.color, hashString(b.def.id)));
+        for (const shell of makeFuzzShells(geo, p.color, k)) mesh.add(shell);
+        if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, hashString(b.def.id), k.hairs));
       }
       b.pivot.add(mesh);
       b.mesh = mesh;
@@ -495,7 +512,7 @@ export class Creature {
   private syncEyes() {
     const head = this.bones.get(this.rig.headId);
     const e = this.state.eyes;
-    const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length]);
+    const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length, this.state.materialSettings]);
     if (key === this.eyesKey) return;
     this.eyesKey = key;
     this.eyes.removeFromParent();
@@ -555,7 +572,7 @@ export class Creature {
       eye.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
       eye.position.copy(hit.point);
       const style = EYE_STYLES.some((o) => o.id === e.style) ? e.style : 'googly';
-      eye.add(buildEye(style, r, sgn, headStyle));
+      eye.add(buildEye(style, r, sgn, headStyle, this.settingsFor(headStyle)));
       eye.traverse((m) => {
         m.raycast = () => {};
         m.castShadow = true;
@@ -708,7 +725,7 @@ const sphereGeo = new THREE.SphereGeometry(1, 32, 20);
 const glossyWhite = () => new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.15, clearcoat: 1 });
 const glossyBlack = () => new THREE.MeshPhysicalMaterial({ color: 0x1b1720, roughness: 0.12, clearcoat: 1 });
 
-function buildEye(style: EyeStyle, r: number, sgn: number, headStyle: StyleId): THREE.Object3D {
+function buildEye(style: EyeStyle, r: number, sgn: number, headStyle: StyleId, headSettings: StyleSettings): THREE.Object3D {
   const g = new THREE.Group();
   const add = (geo: THREE.BufferGeometry, mat: THREE.Material, pos: V3, scale: V3) => {
     const m = new THREE.Mesh(geo, mat);
@@ -745,12 +762,12 @@ function buildEye(style: EyeStyle, r: number, sgn: number, headStyle: StyleId): 
     }
     case 'bead': {
       // a black bead rendered with the creature's own material
-      add(sphereGeo, makeMaterial(headStyle, '#1d1a22'), [0, 0, -r * 0.3], [r * 0.8, r * 0.8, r * 0.8]);
+      add(sphereGeo, makeMaterial(headStyle, '#1d1a22', headSettings), [0, 0, -r * 0.3], [r * 0.8, r * 0.8, r * 0.8]);
       break;
     }
     case 'dot': {
       // a flat disc of dark wool/clay pressed onto the face, in the creature's material
-      add(sphereGeo, makeMaterial(headStyle, '#2a2730'), [0, 0, 0], [r * 0.95, r * 0.95, r * 0.28]);
+      add(sphereGeo, makeMaterial(headStyle, '#2a2730', headSettings), [0, 0, 0], [r * 0.95, r * 0.95, r * 0.28]);
       break;
     }
     case 'button': {
