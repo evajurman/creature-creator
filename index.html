@@ -183,6 +183,15 @@
           <label class="color-pick"><input id="backdrop-color" type="color" /> Custom colour</label>
           <label class="check"><input id="ao" type="checkbox" checked /> Ambient occlusion</label>
           <label class="check"><input id="dof" type="checkbox" /> Depth of field (photo look)</label>
+          <div id="dof-controls">
+            <label class="slider dof-slider"><span>Focus</span><input id="dof-focus" type="range" min="-3" max="3" step="0.01" />
+              <span class="ends"><em>nearer</em><em>farther</em></span></label>
+            <label class="slider dof-slider"><span>Blur</span><input id="dof-blur" type="range" min="0" max="1" step="0.01" /></label>
+            <div class="row">
+              <button id="dof-pick" class="ghost" title="Then click the spot that should be sharp">🎯 Click to focus</button>
+              <button id="dof-reset" class="link" title="Focus on the orbit centre">Reset</button>
+            </div>
+          </div>
         </div>
         <div id="draw-bar" class="draw-bar" hidden>
           <label id="sym-label" class="pill-toggle" title="Mirror across the part's centre line (S)">

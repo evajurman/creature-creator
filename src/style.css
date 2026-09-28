@@ -278,3 +278,7 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .attach-bar .seg-btn.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
 .attach-name { padding: 0 6px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .attach-bar[hidden], .attach-pop[hidden] { display: none; }
+
+.dof-slider { grid-template-columns: 44px 1fr; font-size: 12px; }
+#dof-controls .row { margin-top: 4px; }
+#dof-pick.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
