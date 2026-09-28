@@ -10,6 +10,7 @@ import {
   type StyleSettings,
 } from './materials';
 import { expandRig, type ExpandedBone, type ExpandedRig, type RigState, type V3 } from './rigs';
+import { buildThing, disposeThing, type Thing } from './stuff';
 
 export interface PartState {
   outline: Vec2[] | null;
@@ -41,7 +42,21 @@ export interface EyesState {
   pairs: EyePair[];
 }
 
+/** A piece of stuff stuck onto a body part, positioned in that bone's frame. */
+export interface Attachment {
+  id: string;
+  bone: string;
+  /** embedded copy, so creature files are self-contained */
+  thing: Thing;
+  position: V3;
+  quaternion: [number, number, number, number];
+  scale: V3;
+  /** also show a mirrored copy on the twin limb */
+  mirror: boolean;
+}
+
 export interface CreatureState {
+  name?: string;
   /** the creature's own (editable) skeleton */
   rig: RigState;
   style: StyleId;
@@ -56,6 +71,9 @@ export interface CreatureState {
   mergeRadius?: number;
   /** per-material slider values (missing keys use the defaults) */
   materialSettings?: Partial<Record<StyleId, StyleSettings>>;
+  attachments?: Attachment[];
+  /** the thing currently on the Stuff workbench (kept here so undo/autosave cover it) */
+  workbench?: Thing;
 }
 
 export interface BoneRT {
@@ -154,6 +172,7 @@ export class Creature {
   private mergeDirty = true;
   /** rig editing shows the rest pose and joint handles */
   private rigMode = false;
+  private attached = new Map<string, { key: string; main: THREE.Group; twin: THREE.Group | null; twinBone: BoneRT | null }>();
 
   constructor(state: CreatureState) {
     this.state = state;
@@ -333,7 +352,96 @@ export class Creature {
     }
     this.applyPose();
     this.syncEyes();
+    this.syncAttachments();
     this.refreshHighlight();
+  }
+
+  // -------------------------------------------------------------------------
+  // attached stuff
+
+  twinOf(b: BoneRT): BoneRT | null {
+    if (b.def.sideSign === 0) return null;
+    return this.bones.get(b.def.baseId + (b.def.sideSign === 1 ? 'R' : 'L')) ?? null;
+  }
+
+  syncAttachments() {
+    const list = this.state.attachments ?? [];
+    const alive = new Set<string>();
+    for (const a of list) {
+      const bone = this.bones.get(a.bone);
+      if (!bone) continue;
+      alive.add(a.id);
+      const twinBone = a.mirror ? this.twinOf(bone) : null;
+      const key = JSON.stringify([a.thing.pieces, a.bone, twinBone?.def.id, this.state.materialSettings]);
+      let rec = this.attached.get(a.id);
+      if (!rec || rec.key !== key) {
+        if (rec) this.dropAttachment(rec);
+        const settings = (st: StyleId) => this.settingsFor(st);
+        const main = new THREE.Group();
+        main.add(buildThing(a.thing, settings));
+        bone.pivot.add(main);
+        let twin: THREE.Group | null = null;
+        if (twinBone) {
+          twin = new THREE.Group();
+          twin.add(buildThing(a.thing, settings));
+          twin.matrixAutoUpdate = false;
+          twinBone.pivot.add(twin);
+        }
+        for (const g of [main, twin]) g?.traverse((o) => (o.userData.attachmentId = a.id));
+        rec = { key, main, twin, twinBone };
+        this.attached.set(a.id, rec);
+      }
+      rec.main.position.set(...a.position);
+      rec.main.quaternion.set(...a.quaternion);
+      rec.main.scale.set(...a.scale);
+      this.updateTwin(a.id);
+    }
+    for (const [id, rec] of this.attached) {
+      if (alive.has(id)) continue;
+      this.dropAttachment(rec);
+      this.attached.delete(id);
+    }
+  }
+
+  private dropAttachment(rec: { main: THREE.Group; twin: THREE.Group | null }) {
+    for (const g of [rec.main, rec.twin]) {
+      if (!g) continue;
+      g.removeFromParent();
+      disposeThing(g);
+    }
+  }
+
+  /**
+   * The twin limb's frame is this one mirrored across its local Z, so the
+   * mirrored copy uses M * A with M = diag(1, 1, -1).
+   */
+  updateTwin(id: string) {
+    const rec = this.attached.get(id);
+    if (!rec?.twin) return;
+    rec.main.updateMatrix();
+    rec.twin.matrix.makeScale(1, 1, -1).multiply(rec.main.matrix);
+    rec.twin.matrixWorldNeedsUpdate = true;
+  }
+
+  attachmentObject(id: string): THREE.Group | null {
+    return this.attached.get(id)?.main ?? null;
+  }
+
+  attachmentMeshes(): THREE.Object3D[] {
+    const out: THREE.Object3D[] = [];
+    for (const rec of this.attached.values()) {
+      for (const g of [rec.main, rec.twin]) g?.traverse((o) => o instanceof THREE.Mesh && out.push(o));
+    }
+    return out;
+  }
+
+  /** A reasonable first placement: centred on the part, on its front surface. */
+  attachPoint(boneId: string): V3 {
+    const b = this.bones.get(boneId);
+    const geo = b?.mesh?.userData.baseGeo as THREE.BufferGeometry | undefined;
+    if (!b || !geo?.boundingBox) return [0, 0, 0];
+    const bb = geo.boundingBox;
+    return [(bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, bb.max.z * 0.9];
   }
 
   applyPose() {
@@ -643,6 +751,10 @@ export class Creature {
       for (const c of b.mesh!.children) c.visible = !id;
     }
     this.eyes.visible = !id;
+    for (const rec of this.attached.values()) {
+      rec.main.visible = !id;
+      if (rec.twin) rec.twin.visible = !id;
+    }
     this.refreshHighlight();
   }
 

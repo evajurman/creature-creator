@@ -16,9 +16,11 @@
           <button data-mode="build" class="active" title="Build (1)">✏️ Build</button>
           <button data-mode="rig" title="Rig (2)">🦴 Rig</button>
           <button data-mode="pose" title="Pose (3)">🤸 Pose</button>
+          <button data-mode="stuff" title="Stuff (4)">🗡 Stuff</button>
         </div>
         <div class="spacer"></div>
         <div class="tools">
+          <button id="file-btn" title="Save and open files">📁 File</button>
           <button id="undo" title="Undo (Ctrl+Z)">↶</button>
           <button id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
           <button id="backdrop-btn" title="Backdrop &amp; lighting">🎨 Backdrop</button>
@@ -47,6 +49,11 @@
               <span class="ends"><em>flat</em><em>chubby</em></span>
             </label>
             <button id="reset-shape" class="ghost">Reset shape</button>
+            <div class="attach-sec">
+              <div class="sub-title">Stuff on this part</div>
+              <div id="attach-list" class="parts"></div>
+              <button id="attach-add" class="ghost">📎 Attach stuff…</button>
+            </div>
           </div>
 
           <h3>Colour</h3>
@@ -99,6 +106,40 @@
           <div id="saved-rig-list" class="saved-rigs"></div>
         </section>
 
+        <section id="stuff-panel" hidden>
+          <h3>Workbench</h3>
+          <input id="thing-name" class="text wide" type="text" placeholder="Name this thing" maxlength="40" />
+          <button id="piece-draw" class="primary">✏️ Draw a piece <kbd>D</kbd></button>
+          <p class="muted small">Draw pieces on the board. The blue crosshair is where it attaches to a body part.</p>
+          <div id="pieces" class="parts"></div>
+
+          <div class="card" id="piece-card" hidden>
+            <div class="seg" id="piece-kind">
+              <button data-kind="flat">▭ Flat cut-out</button>
+              <button data-kind="puffy">⬭ Puffy</button>
+            </div>
+            <label class="slider"><span>Thickness</span><input id="piece-thickness" type="range" /></label>
+            <label class="slider" id="piece-round-row"><span>Rounded</span><input id="piece-round" type="range" min="0" max="1" step="0.01" /></label>
+            <label class="slider"><span>Layer</span><input id="piece-z" type="range" min="-0.2" max="0.2" step="0.002" /></label>
+            <div class="swatches" id="piece-swatches"></div>
+            <label class="color-pick"><input id="piece-color" type="color" /> Custom</label>
+            <div class="mini-styles" id="piece-styles"></div>
+            <div class="row">
+              <button id="piece-hole" class="ghost" title="Draw a hole through this piece (flat pieces)">◌ Cut a hole</button>
+              <button id="piece-clear-holes" class="ghost">Fill holes</button>
+              <button id="piece-del" class="ghost">🗑 Delete</button>
+            </div>
+          </div>
+
+          <div class="row">
+            <button id="thing-save" class="primary slim">💾 Save to collection</button>
+            <button id="thing-new" class="ghost">New</button>
+          </div>
+
+          <h3>Collection</h3>
+          <div id="thing-list" class="thing-list"></div>
+        </section>
+
         <section id="pose-panel" hidden>
           <h3>Posing</h3>
           <p class="muted">Drag the <b class="dot orange"></b> joints to bend limbs. Drag the <b class="dot blue square"></b> handle to move the whole creature. Drag empty space to spin the camera, scroll to zoom.</p>
@@ -112,6 +153,30 @@
         <canvas id="gl"></canvas>
         <canvas id="overlay"></canvas>
         <div id="hint" class="hint"></div>
+        <div id="attach-bar" class="draw-bar attach-bar" hidden>
+          <span id="attach-name" class="attach-name"></span>
+          <button data-gizmo="translate" class="seg-btn" title="Move (W)">✥ Move</button>
+          <button data-gizmo="rotate" class="seg-btn" title="Rotate (E)">⟳ Rotate</button>
+          <button data-gizmo="scale" class="seg-btn" title="Scale (R)">⤢ Scale</button>
+          <label id="attach-mirror-label" class="pill-toggle" title="Show a mirrored copy on the other side">
+            <input id="attach-mirror" type="checkbox" /> ⟷ Both sides
+          </label>
+          <button id="attach-remove" class="seg-btn" title="Remove">🗑</button>
+          <button id="attach-done">Done</button>
+        </div>
+        <div id="attach-pop" class="popover attach-pop" hidden>
+          <div class="pop-title">Attach from your collection <button id="attach-pop-close" class="link">close</button></div>
+          <div id="attach-options" class="thing-list"></div>
+        </div>
+        <div id="file-pop" class="popover" hidden>
+          <div class="pop-title">Files</div>
+          <input id="creature-name" class="text wide" type="text" placeholder="Creature name" maxlength="60" />
+          <button id="file-save-creature" class="ghost wide">💾 Save creature (.creature)</button>
+          <button id="file-save-collection" class="ghost wide">📦 Export collection (.collection)</button>
+          <button id="file-open" class="ghost wide">📂 Open a file…</button>
+          <p class="muted small">Creature files include any stuff the creature is wearing. Collections hold your saved stuff and rigs.</p>
+          <input id="file-input" type="file" accept=".creature,.stuff,.collection,.json" multiple hidden />
+        </div>
         <div id="backdrop" class="popover" hidden>
           <div class="pop-title">Backdrop</div>
           <div id="backdrops" class="swatches"></div>

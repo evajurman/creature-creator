@@ -241,3 +241,40 @@ input.text {
 .style-params .slider { grid-template-columns: 96px 1fr; }
 .style-params-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13px; }
 button.link { border: 0; background: none; color: var(--accent); font-weight: 700; font-size: 12px; cursor: pointer; padding: 0; }
+
+.attach-sec { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.sub-title { font-size: 12px; font-weight: 800; color: var(--muted); margin-bottom: 6px; }
+.attach-sec .parts { margin-bottom: 8px; }
+input.text.wide, button.wide { width: 100%; margin-bottom: 8px; }
+button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; }
+#stuff-panel .primary { margin: 8px 0 2px; }
+.seg { display: flex; background: var(--bg); border-radius: 10px; padding: 3px; margin-bottom: 6px; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 6px; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer; color: var(--muted); }
+.seg button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.mini-styles { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.mini-styles button {
+  display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); background: #fff;
+  border-radius: 999px; padding: 3px 8px 3px 4px; font-size: 11px; font-weight: 700; cursor: pointer;
+}
+.mini-styles button.active { border-color: var(--accent); background: var(--accent-soft); }
+.mini-styles .ball { width: 16px; height: 16px; }
+#piece-card .row { flex-wrap: wrap; justify-content: flex-start; }
+
+.thing-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.thing-card { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.thing-card .thumb { width: 100%; aspect-ratio: 1; border-radius: 8px; object-fit: cover; background: var(--bg); }
+.thing-name { font-weight: 800; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thing-actions { display: flex; gap: 4px; }
+.thing-actions button { flex: 1; padding: 3px 4px; font-size: 11px; }
+.thing-card.pick { cursor: pointer; }
+.thing-card.pick:hover { border-color: var(--accent); }
+.attach-pop { width: 300px; max-height: 70%; overflow-y: auto; right: auto; left: 12px; }
+.pop-title { display: flex; justify-content: space-between; align-items: center; }
+
+.attach-bar .seg-btn {
+  border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 5px 10px;
+  border-radius: 999px; font-weight: 700; cursor: pointer;
+}
+.attach-bar .seg-btn.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
+.attach-name { padding: 0 6px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.attach-bar[hidden], .attach-pop[hidden] { display: none; }

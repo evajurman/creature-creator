@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -7,8 +8,24 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { Creature, defaultState, EYE_STYLES, type BoneRT, type CreatureState, type EyeStyle } from './creature';
-import { bounds, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
+import { Creature, defaultState, EYE_STYLES, type Attachment, type BoneRT, type CreatureState, type EyeStyle } from './creature';
+import { bounds, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
+import {
+  buildThing,
+  collection,
+  disposeThing,
+  downloadText,
+  envelope,
+  newPiece,
+  newThing,
+  parseEnvelope,
+  putThing,
+  removeThing,
+  safeFileName,
+  uid,
+  type Piece,
+  type Thing,
+} from './stuff';
 import { STYLE_PARAMS, STYLES, styleSettings, type StyleId } from './materials';
 import {
   RIGS,
@@ -155,15 +172,24 @@ const STORAGE_KEY = 'creature-creator/v1';
 let state: CreatureState = load() ?? defaultState(rigFromTemplate(RIGS[0]));
 let creature: Creature;
 let selected = '';
-type Mode = 'build' | 'rig' | 'pose';
+type Mode = 'build' | 'rig' | 'pose' | 'stuff';
 let mode: Mode = 'build';
 let eyePair = 0;
 
 function load(): CreatureState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw) as CreatureState & { rigId?: string };
+    return raw ? migrate(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Bring a saved creature (autosave or file) up to the current format. */
+function migrate(data: unknown): CreatureState | null {
+  try {
+    const s = data as CreatureState & { rigId?: string };
+    if (!s || typeof s !== 'object' || !s.parts) return null;
     // saves from before rigs were editable: adopt the template, drop the old-format pose
     if (!s.rig) {
       const t = RIGS.find((r) => r.id === s.rigId);
@@ -218,6 +244,8 @@ function restore(snap: string) {
     creature.state = s;
     creature.sync();
   }
+  syncWorkbench();
+  if (selectedAttachment) selectAttachment(selectedAttachment);
   save();
   renderUI();
 }
@@ -246,7 +274,10 @@ function buildCreature() {
   scene.add(creature.group);
   if (!creature.bones.has(selected)) selected = creature.list[0].def.id;
   creature.select(selected);
+  creature.group.visible = mode !== 'stuff';
   updateSkeletonVisibility();
+  // the gizmo pointed at the old creature's objects
+  if (selectedAttachment) selectAttachment(selectedAttachment);
 }
 
 // ---------------------------------------------------------------------------
@@ -333,13 +364,34 @@ canvas.addEventListener('pointerup', (e) => {
     commit();
     return;
   }
-  if (!pointer.moved && e.button === 0) {
-    const id = pickPart(e.clientX, e.clientY);
-    if (id) selectPart(id);
+  if (pointer.moved || e.button !== 0 || gizmo.dragging) return;
+  if (mode === 'stuff') {
+    const id = pickPiece(e.clientX, e.clientY);
+    if (id) {
+      selectedPiece = id;
+      flashPart();
+      renderStuffPanel();
+    }
+    return;
+  }
+  if (mode === 'build') {
+    const att = pickAttachment(e.clientX, e.clientY);
+    if (att) {
+      const a = state.attachments?.find((x) => x.id === att);
+      if (a && creature.bones.has(a.bone)) selectPart(a.bone);
+      selectAttachment(att);
+      return;
+    }
+  }
+  const id = pickPart(e.clientX, e.clientY);
+  if (id) {
+    deselectAttachment();
+    selectPart(id);
   }
 });
 
 canvas.addEventListener('dblclick', (e) => {
+  if (mode === 'stuff') return;
   const id = pickPart(e.clientX, e.clientY);
   if (!id) return;
   selectPart(id);
@@ -393,7 +445,7 @@ function pickHandle(x: number, y: number): THREE.Object3D | null {
 }
 
 function handlesVisible() {
-  return !drawState && (mode !== 'build' || $<HTMLInputElement>('#skeleton-build').checked);
+  return !drawState && mode !== 'stuff' && (mode !== 'build' || $<HTMLInputElement>('#skeleton-build').checked);
 }
 
 function updateSkeletonVisibility() {
@@ -439,11 +491,19 @@ function focusOnBone(b: BoneRT) {
 // ---------------------------------------------------------------------------
 // drawing
 
+/** What a stroke is for: a body part's outline, or a piece (or hole) on the stuff workbench. */
+type DrawTarget = { kind: 'bone'; boneId: string } | { kind: 'piece'; hole: boolean };
+
 interface DrawState {
-  boneId: string;
+  target: DrawTarget;
+  /** object whose local XY plane is drawn on */
+  frame: THREE.Object3D;
+  label: string;
+  /** symmetry axis (x = 0) drawn between these local points */
+  axis: [Vec2, Vec2];
   /** stroke in screen space, after the stabiliser */
   pts: Vec2[];
-  /** the same stroke in the part's plane, for the mirror preview */
+  /** the same stroke in the drawing plane, for the mirror preview */
   local: Vec2[];
   /** stabiliser position */
   pen: Vec2 | null;
@@ -469,23 +529,44 @@ function saveDrawPrefs() {
 
 function drawHint() {
   if (!drawState) return;
-  const name = partLabel(creature.bones.get(drawState.boneId)!.src).toLowerCase();
-  hint(drawPrefs.symmetry ? `Draw one half of the ${name}; it mirrors across the dashed line` : `Draw the ${name} as one closed loop`, 0);
+  const { label, target } = drawState;
+  if (target.kind === 'piece') {
+    const what = target.hole ? 'a hole inside the selected piece' : 'a piece';
+    hint(drawPrefs.symmetry ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`, 0);
+    return;
+  }
+  hint(drawPrefs.symmetry ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`, 0);
 }
 
-function enterDraw() {
+function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
   if (drawState) exitDraw();
-  const b = creature.bones.get(selected);
-  if (!b) return;
   controls.autoRotate = false;
   $('#spin').classList.remove('on');
-  drawState = { boneId: selected, pts: [], local: [], pen: null, active: false };
+  deselectAttachment();
+  if (target.kind === 'bone') {
+    const b = creature.bones.get(target.boneId);
+    if (!b) return;
+    const reach = Math.max(b.length, b.def.width) * 2.5 + 0.5;
+    drawState = {
+      target,
+      frame: b.pivot,
+      label: partLabel(b.src).toLowerCase(),
+      axis: [[0, b.length / 2 - reach], [0, b.length / 2 + reach]],
+      pts: [],
+      local: [],
+      pen: null,
+      active: false,
+    };
+    creature.setDrawFocus(target.boneId);
+    focusOnBone(b);
+  } else {
+    drawState = { target, frame: board, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false };
+    focusOnBoard();
+  }
   overlay.classList.add('active');
   $('#draw-bar').hidden = false;
   syncDrawBar();
-  creature.setDrawFocus(selected);
   updateSkeletonVisibility();
-  focusOnBone(b);
   drawHint();
 }
 
@@ -513,51 +594,60 @@ function toggleSymmetry() {
   renderOverlay();
 }
 
-function partPlane(b: BoneRT): THREE.Plane {
-  b.pivot.updateMatrixWorld(true);
-  const normal = new THREE.Vector3(0, 0, 1).transformDirection(b.pivot.matrixWorld);
-  return new THREE.Plane().setFromNormalAndCoplanarPoint(normal, b.pivot.getWorldPosition(new THREE.Vector3()));
+function partPlane(frame: THREE.Object3D): THREE.Plane {
+  frame.updateMatrixWorld(true);
+  const normal = new THREE.Vector3(0, 0, 1).transformDirection(frame.matrixWorld);
+  return new THREE.Plane().setFromNormalAndCoplanarPoint(normal, frame.getWorldPosition(new THREE.Vector3()));
 }
 
-function screenToLocal(b: BoneRT, plane: THREE.Plane, x: number, y: number): Vec2 | null {
+function screenToLocal(frame: THREE.Object3D, plane: THREE.Plane, x: number, y: number): Vec2 | null {
   setRay(x, y);
   const hit = new THREE.Vector3();
   if (!raycaster.ray.intersectPlane(plane, hit)) return null;
-  const l = b.pivot.worldToLocal(hit);
+  const l = frame.worldToLocal(hit);
   return [Math.round(l.x * 1e4) / 1e4, Math.round(l.y * 1e4) / 1e4];
 }
 
-/** Part-plane point -> overlay pixel coordinates. */
-function localToOverlay(b: BoneRT, [x, y]: Vec2): Vec2 {
-  const v = b.pivot.localToWorld(new THREE.Vector3(x, y, 0)).project(camera);
+/** Drawing-plane point -> overlay pixel coordinates. */
+function localToOverlay(frame: THREE.Object3D, [x, y]: Vec2): Vec2 {
+  const v = frame.localToWorld(new THREE.Vector3(x, y, 0)).project(camera);
   return [((v.x + 1) / 2) * overlay.clientWidth, ((1 - v.y) / 2) * overlay.clientHeight];
 }
 
-function strokeToLocal(b: BoneRT, pts: Vec2[]): Vec2[] {
-  const plane = partPlane(b);
+function strokeToLocal(frame: THREE.Object3D, pts: Vec2[]): Vec2[] {
+  const plane = partPlane(frame);
   const out: Vec2[] = [];
   for (const [x, y] of pts) {
-    const p = screenToLocal(b, plane, x, y);
+    const p = screenToLocal(frame, plane, x, y);
     if (!p) continue;
     const last = out[out.length - 1];
-    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.004) out.push(p);
+    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.003) out.push(p);
   }
   return out;
 }
 
+function tooSmall(loop: Vec2[], minArea: number, minSize: number) {
+  const bb = loop.length ? bounds(loop) : null;
+  return !bb || loop.length < 6 || Math.abs(signedArea(loop)) < minArea || Math.max(bb.w, bb.h) < minSize;
+}
+
 function finishStroke() {
   if (!drawState) return;
-  const b = creature.bones.get(drawState.boneId)!;
-  let local = strokeToLocal(b, drawState.pts);
-  drawState.pts = [];
-  drawState.local = [];
-  drawState.active = false;
+  const ds = drawState;
+  let local = strokeToLocal(ds.frame, ds.pts);
+  ds.pts = [];
+  ds.local = [];
+  ds.active = false;
+  if (ds.target.kind === 'piece') {
+    finishPieceStroke(local, ds.target.hole);
+    return;
+  }
+  const b = creature.bones.get(ds.target.boneId)!;
   if (local.length >= 6) {
     if (drawPrefs.symmetry) local = symmetrize(local);
     local = smoothLoop(local, drawPrefs.smoothing);
   }
-  const bb = local.length ? bounds(local) : null;
-  if (!bb || local.length < 6 || Math.abs(signedArea(local)) < 0.0015 || Math.max(bb.w, bb.h) < 0.05) {
+  if (tooSmall(local, 0.0015, 0.05)) {
     renderOverlay();
     hint('Too small or too thin: try a bigger loop', 1800, true);
     return;
@@ -574,8 +664,7 @@ function finishStroke() {
 function addStrokePoint(p: Vec2) {
   if (!drawState) return;
   drawState.pts.push(p);
-  const b = creature.bones.get(drawState.boneId)!;
-  const l = screenToLocal(b, partPlane(b), p[0], p[1]);
+  const l = screenToLocal(drawState.frame, partPlane(drawState.frame), p[0], p[1]);
   if (l) drawState.local.push(l);
 }
 
@@ -616,14 +705,12 @@ function renderOverlay() {
   octx.setTransform(dpr, 0, 0, dpr, 0, 0);
   octx.clearRect(0, 0, overlay.clientWidth, overlay.clientHeight);
   if (!drawState) return;
-  const b = creature.bones.get(drawState.boneId)!;
+  const frame = drawState.frame;
   octx.lineJoin = octx.lineCap = 'round';
 
   if (drawPrefs.symmetry) {
-    // the mirror axis runs along the bone
-    const reach = Math.max(b.length, b.def.width) * 2.5 + 0.5;
-    const a = localToOverlay(b, [0, b.length / 2 - reach]);
-    const z = localToOverlay(b, [0, b.length / 2 + reach]);
+    const a = localToOverlay(frame, drawState.axis[0]);
+    const z = localToOverlay(frame, drawState.axis[1]);
     octx.setLineDash([10, 8]);
     octx.strokeStyle = 'rgba(59,130,246,.75)';
     octx.lineWidth = 2;
@@ -644,7 +731,7 @@ function renderOverlay() {
     octx.lineWidth = 3;
     octx.beginPath();
     drawState.local.forEach(([x, y], i) => {
-      const [sx, sy] = localToOverlay(b, [-x, y]);
+      const [sx, sy] = localToOverlay(frame, [-x, y]);
       if (i) octx.lineTo(sx, sy);
       else octx.moveTo(sx, sy);
     });
@@ -674,6 +761,560 @@ $<HTMLInputElement>('#smooth').oninput = (e) => {
   drawPrefs.smoothing = parseFloat((e.target as HTMLInputElement).value);
   saveDrawPrefs();
 };
+
+// ---------------------------------------------------------------------------
+// stuff workbench
+
+// The board sits at chest height; its XY plane is the drawing plane and its
+// origin (the crosshair) is where the thing will attach to a body part.
+const board = new THREE.Group();
+board.position.set(0, 1, 0);
+board.visible = false;
+scene.add(board);
+const boardGrid = new THREE.Group();
+{
+  const grid = new THREE.GridHelper(2.4, 24, 0x9a8f9c, 0xcfc4b8);
+  grid.rotation.x = Math.PI / 2;
+  (grid.material as THREE.Material).transparent = true;
+  (grid.material as THREE.Material).opacity = 0.45;
+  boardGrid.add(grid);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.035, 0.05, 32),
+    new THREE.MeshBasicMaterial({ color: 0x3b82f6, depthTest: false, transparent: true }),
+  );
+  ring.renderOrder = 999;
+  boardGrid.add(ring);
+  const cross = new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-0.09, 0, 0), new THREE.Vector3(0.09, 0, 0),
+      new THREE.Vector3(0, -0.09, 0), new THREE.Vector3(0, 0.09, 0),
+    ]),
+    new THREE.LineBasicMaterial({ color: 0x3b82f6, depthTest: false, transparent: true }),
+  );
+  cross.renderOrder = 999;
+  boardGrid.add(cross);
+  board.add(boardGrid);
+}
+let bench: THREE.Group | null = null;
+let benchKey = '';
+let selectedPiece = '';
+
+function workbench(): Thing {
+  state.workbench ??= newThing();
+  return state.workbench;
+}
+
+function piece(): Piece | undefined {
+  return workbench().pieces.find((p) => p.id === selectedPiece);
+}
+
+function syncWorkbench() {
+  const wb = workbench();
+  const key = JSON.stringify([wb.pieces, state.materialSettings]);
+  if (key === benchKey) return;
+  benchKey = key;
+  if (bench) {
+    board.remove(bench);
+    disposeThing(bench);
+  }
+  bench = buildThing(wb, (s) => creature.settingsFor(s));
+  board.add(bench);
+}
+
+function focusOnBoard() {
+  const c = board.getWorldPosition(new THREE.Vector3());
+  let r = 0.7;
+  if (bench) {
+    const box = new THREE.Box3().setFromObject(bench);
+    if (!box.isEmpty()) r = Math.max(0.5, box.getSize(new THREE.Vector3()).length() * 0.7);
+  }
+  const dist = r / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  flyTo(c.clone().add(new THREE.Vector3(0, 0, Math.max(1.4, dist))), c);
+}
+
+function finishPieceStroke(raw: Vec2[], hole: boolean) {
+  const wb = workbench();
+  let loops: Vec2[][] = [raw];
+  if (raw.length >= 6 && drawPrefs.symmetry) {
+    const crosses = raw.some((p) => p[0] > 0.01) && raw.some((p) => p[0] < -0.01);
+    // a half-outline that starts and ends on the axis also means "one symmetric shape"
+    const tol = Math.max(0.03, bounds(raw).w * 0.15);
+    const half = Math.abs(raw[0][0]) < tol && Math.abs(raw[raw.length - 1][0]) < tol;
+    // across the axis: one symmetric shape; off to one side: the shape plus its mirror image
+    loops = crosses || half ? [symmetrize(raw)] : [raw, raw.map(([x, y]) => [-x, y] as Vec2).reverse()];
+  }
+  loops = loops.map((l) => (l.length >= 6 ? smoothLoop(l, drawPrefs.smoothing) : l));
+  if (loops.some((l) => tooSmall(l, 0.0002, 0.02))) {
+    renderOverlay();
+    hint('Too small or too thin: try a bigger loop', 1800, true);
+    return;
+  }
+  if (hole) {
+    const target = piece();
+    if (!target || target.kind !== 'flat') {
+      exitDraw();
+      hint('Holes can only be cut in a flat piece', 2200, true);
+      return;
+    }
+    let cut = 0;
+    for (const l of loops) {
+      const [cx, cy] = l.reduce((a, p) => [a[0] + p[0] / l.length, a[1] + p[1] / l.length], [0, 0]);
+      if (!pointInPolygon(cx, cy, target.outline)) continue;
+      target.holes.push(l);
+      cut++;
+    }
+    exitDraw();
+    if (!cut) {
+      hint('Draw the hole inside the selected piece', 2200, true);
+      return;
+    }
+  } else {
+    const made = loops.map((l) => newPiece(l, piece()));
+    wb.pieces.push(...made);
+    selectedPiece = made[0].id;
+    exitDraw();
+  }
+  syncWorkbench();
+  commit();
+  renderStuffPanel();
+  flashPart();
+}
+
+function pickPiece(x: number, y: number): string | null {
+  if (!bench) return null;
+  setRay(x, y);
+  const hit = raycaster.intersectObjects(bench.children, false)[0];
+  return hit ? (hit.object.userData.pieceId as string) : null;
+}
+
+/** Glow the selected piece (k fades 1 -> 0). */
+function flashPiece(k: number) {
+  bench?.children.forEach((m) => {
+    const mat = (m as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    if (!mat || !('emissive' in mat)) return;
+    if (m.userData.pieceId === selectedPiece && k > 0) mat.emissive.setRGB(1, 0.42, 0.29).multiplyScalar(0.45 * k);
+    else mat.emissive.setScalar(0);
+  });
+}
+
+/** Render just the thing, framed, into a small square image for the collection. */
+function captureThumb(): string {
+  if (!bench) return '';
+  const box = new THREE.Box3().setFromObject(bench);
+  if (box.isEmpty()) return '';
+  const savedPos = camera.position.clone();
+  const savedTarget = controls.target.clone();
+  const c = box.getCenter(new THREE.Vector3());
+  const r = box.getSize(new THREE.Vector3()).length() / 2;
+  camera.position.copy(c).add(new THREE.Vector3(r * 0.35, r * 0.25, r / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.1));
+  camera.lookAt(c);
+  boardGrid.visible = false;
+  const url = withCleanScene(() => {
+    composer.render();
+    const size = 160;
+    const out = document.createElement('canvas');
+    out.width = out.height = size;
+    const s = Math.min(canvas.width, canvas.height);
+    out.getContext('2d')!.drawImage(canvas, (canvas.width - s) / 2, (canvas.height - s) / 2, s, s, 0, 0, size, size);
+    return out.toDataURL('image/jpeg', 0.82);
+  });
+  boardGrid.visible = true;
+  camera.position.copy(savedPos);
+  controls.target.copy(savedTarget);
+  camera.lookAt(savedTarget);
+  return url;
+}
+
+function stripThumb(t: Thing): Thing {
+  const { thumb: _thumb, ...rest } = structuredClone(t);
+  return rest;
+}
+
+function renderStuffPanel() {
+  const wb = workbench();
+  const nameInput = $<HTMLInputElement>('#thing-name');
+  if (document.activeElement !== nameInput) nameInput.value = wb.name;
+  if (!wb.pieces.some((p) => p.id === selectedPiece)) selectedPiece = wb.pieces[wb.pieces.length - 1]?.id ?? '';
+
+  const list = $('#pieces');
+  list.innerHTML = '';
+  wb.pieces.forEach((p, i) => {
+    const btn = document.createElement('button');
+    btn.innerHTML = `<i style="background:${p.color}"></i>`;
+    btn.append(`${p.kind === 'flat' ? '▭' : '⬭'} Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
+    btn.classList.toggle('active', p.id === selectedPiece);
+    btn.onclick = () => {
+      selectedPiece = p.id;
+      flashPart();
+      renderStuffPanel();
+    };
+    list.append(btn);
+  });
+  if (!wb.pieces.length) list.innerHTML = '<p class="muted small">No pieces yet: draw one to start.</p>';
+
+  const p = piece();
+  $('#piece-card').hidden = !p;
+  if (p) {
+    document.querySelectorAll<HTMLButtonElement>('#piece-kind button').forEach((b) => b.classList.toggle('active', b.dataset.kind === p.kind));
+    const th = $<HTMLInputElement>('#piece-thickness');
+    if (p.kind === 'flat') Object.assign(th, { min: '0.005', max: '0.3', step: '0.001' });
+    else Object.assign(th, { min: '0.1', max: '3', step: '0.01' });
+    th.value = String(p.thickness);
+    $('#piece-round-row').hidden = p.kind !== 'flat';
+    $<HTMLInputElement>('#piece-round').value = String(p.round);
+    $<HTMLInputElement>('#piece-z').value = String(p.z);
+    $<HTMLButtonElement>('#piece-hole').disabled = p.kind !== 'flat';
+    $<HTMLButtonElement>('#piece-clear-holes').hidden = !p.holes.length;
+    const sw = $('#piece-swatches');
+    sw.innerHTML = '';
+    for (const c of SWATCHES) {
+      const b = document.createElement('button');
+      b.style.background = c;
+      b.title = c;
+      b.classList.toggle('active', c.toLowerCase() === p.color.toLowerCase());
+      b.onclick = () => updatePiece((q) => (q.color = c));
+      sw.append(b);
+    }
+    $<HTMLInputElement>('#piece-color').value = p.color;
+    const st = $('#piece-styles');
+    st.innerHTML = '';
+    for (const s of STYLES) {
+      const b = document.createElement('button');
+      b.innerHTML = `<span class="ball ${s.id}"></span>`;
+      b.append(s.name);
+      b.classList.toggle('active', s.id === p.style);
+      b.onclick = () => updatePiece((q) => (q.style = s.id));
+      st.append(b);
+    }
+  }
+  renderCollection();
+}
+
+function updatePiece(fn: (p: Piece) => void, doCommit = true) {
+  const p = piece();
+  if (!p) return;
+  fn(p);
+  syncWorkbench();
+  if (doCommit) {
+    commit();
+    renderStuffPanel();
+  }
+}
+
+function renderCollection() {
+  for (const [sel, forAttach] of [['#thing-list', false], ['#attach-options', true]] as const) {
+    const el = $(sel);
+    el.innerHTML = '';
+    const things = collection();
+    if (!things.length) {
+      el.innerHTML = forAttach
+        ? '<p class="muted small">Your collection is empty. Make something in the 🗡 Stuff tab first.</p>'
+        : '<p class="muted small">Nothing saved yet.</p>';
+      continue;
+    }
+    for (const t of things) {
+      const card = document.createElement('div');
+      card.className = 'thing-card';
+      const img = document.createElement(t.thumb ? 'img' : 'div');
+      img.className = 'thumb';
+      if (t.thumb) (img as HTMLImageElement).src = t.thumb;
+      const name = document.createElement('span');
+      name.className = 'thing-name';
+      name.textContent = t.name;
+      card.append(img, name);
+      if (forAttach) {
+        card.classList.add('pick');
+        card.onclick = () => attachThing(t);
+      } else {
+        const actions = document.createElement('div');
+        actions.className = 'thing-actions';
+        const mk = (label: string, title: string, fn: () => void) => {
+          const b = document.createElement('button');
+          b.className = 'ghost';
+          b.textContent = label;
+          b.title = title;
+          b.onclick = fn;
+          actions.append(b);
+        };
+        mk('Edit', 'Open on the workbench', () => {
+          state.workbench = structuredClone(t);
+          selectedPiece = '';
+          syncWorkbench();
+          commit();
+          renderStuffPanel();
+          focusOnBoard();
+        });
+        mk('⬇', 'Download as a .stuff file', () =>
+          downloadText(`${safeFileName(t.name, 'thing')}.stuff`, JSON.stringify(envelope('stuff', t))),
+        );
+        mk('✕', 'Remove from collection', () => {
+          if (!confirm(`Remove "${t.name}" from your collection? (Creatures already wearing it keep their copy.)`)) return;
+          removeThing(t.id);
+          renderCollection();
+        });
+        card.append(actions);
+      }
+      el.append(card);
+    }
+  }
+}
+
+$('#piece-draw').onclick = () => enterDraw({ kind: 'piece', hole: false });
+$('#piece-hole').onclick = () => enterDraw({ kind: 'piece', hole: true });
+$('#piece-clear-holes').onclick = () => updatePiece((p) => (p.holes = []));
+$('#piece-del').onclick = () => {
+  const wb = workbench();
+  wb.pieces = wb.pieces.filter((p) => p.id !== selectedPiece);
+  selectedPiece = '';
+  syncWorkbench();
+  commit();
+  renderStuffPanel();
+};
+document.querySelectorAll<HTMLButtonElement>('#piece-kind button').forEach((b) => {
+  b.onclick = () =>
+    updatePiece((p) => {
+      const kind = b.dataset.kind as Piece['kind'];
+      if (kind === p.kind) return;
+      p.kind = kind;
+      p.thickness = kind === 'flat' ? 0.04 : 0.6;
+    });
+});
+for (const [id, key] of [['#piece-thickness', 'thickness'], ['#piece-round', 'round'], ['#piece-z', 'z']] as const) {
+  const input = $<HTMLInputElement>(id);
+  input.oninput = () => updatePiece((p) => (p[key] = parseFloat(input.value)), false);
+  input.onchange = () => commit();
+}
+$<HTMLInputElement>('#piece-color').oninput = (e) => updatePiece((p) => (p.color = (e.target as HTMLInputElement).value), false);
+$<HTMLInputElement>('#piece-color').onchange = () => {
+  commit();
+  renderStuffPanel();
+};
+$<HTMLInputElement>('#thing-name').oninput = (e) => {
+  workbench().name = (e.target as HTMLInputElement).value;
+};
+$<HTMLInputElement>('#thing-name').onchange = () => commit();
+$('#thing-new').onclick = () => {
+  state.workbench = newThing();
+  selectedPiece = '';
+  syncWorkbench();
+  commit();
+  renderStuffPanel();
+};
+$('#thing-save').onclick = () => {
+  const wb = workbench();
+  if (!wb.pieces.length) {
+    hint('Draw at least one piece first', 2000, true);
+    return;
+  }
+  wb.name = wb.name.trim() || 'Thing';
+  wb.thumb = captureThumb();
+  if (!putThing(wb)) {
+    hint('Browser storage is full: export your collection to a file and remove some things', 3500, true);
+    return;
+  }
+  // creatures already wearing this thing pick up the new version
+  for (const a of state.attachments ?? []) if (a.thing.id === wb.id) a.thing = stripThumb(wb);
+  creature.sync();
+  commit();
+  renderStuffPanel();
+  hint(`Saved "${wb.name}" to your collection`, 2000);
+};
+
+// ---------------------------------------------------------------------------
+// attaching stuff to body parts
+
+const gizmo = new TransformControls(camera, canvas);
+gizmo.setSpace('local');
+gizmo.setSize(0.8);
+scene.add(gizmo.getHelper());
+gizmo.addEventListener('dragging-changed', (e) => {
+  controls.enabled = !(e as unknown as { value: boolean }).value;
+});
+gizmo.addEventListener('objectChange', () => {
+  const a = currentAttachment();
+  const obj = gizmo.object;
+  if (!a || !obj) return;
+  a.position = obj.position.toArray() as V3;
+  a.quaternion = obj.quaternion.toArray() as [number, number, number, number];
+  a.scale = obj.scale.toArray() as V3;
+  creature.updateTwin(a.id);
+});
+gizmo.addEventListener('mouseUp', () => commit());
+
+let selectedAttachment = '';
+
+function currentAttachment(): Attachment | undefined {
+  return state.attachments?.find((a) => a.id === selectedAttachment);
+}
+
+function selectAttachment(id: string) {
+  const obj = creature.attachmentObject(id);
+  if (!obj) return deselectAttachment();
+  selectedAttachment = id;
+  gizmo.attach(obj);
+  $('#attach-bar').hidden = false;
+  syncAttachBar();
+  renderAttachList();
+}
+
+function deselectAttachment() {
+  selectedAttachment = '';
+  gizmo.detach();
+  $('#attach-bar').hidden = true;
+  renderAttachList();
+}
+
+function syncAttachBar() {
+  const a = currentAttachment();
+  if (!a) return;
+  document.querySelectorAll<HTMLButtonElement>('#attach-bar [data-gizmo]').forEach((b) => b.classList.toggle('on', b.dataset.gizmo === gizmo.mode));
+  const bone = creature.bones.get(a.bone);
+  const hasTwin = !!bone && !!creature.twinOf(bone);
+  $('#attach-mirror-label').hidden = !hasTwin;
+  $<HTMLInputElement>('#attach-mirror').checked = a.mirror;
+  $('#attach-mirror-label').classList.toggle('on', a.mirror);
+  $('#attach-name').textContent = a.thing.name;
+}
+
+function attachThing(t: Thing) {
+  const bone = creature.bones.get(selected);
+  if (!bone) return;
+  const a: Attachment = {
+    id: uid(),
+    bone: selected,
+    thing: stripThumb(t),
+    position: creature.attachPoint(selected),
+    quaternion: [0, 0, 0, 1],
+    scale: [1, 1, 1],
+    mirror: !!creature.twinOf(bone),
+  };
+  state.attachments = [...(state.attachments ?? []), a];
+  creature.sync();
+  commit();
+  $('#attach-pop').hidden = true;
+  selectAttachment(a.id);
+  hint('Drag the arrows to place it; switch to rotate or scale in the top bar', 3000);
+}
+
+function renderAttachList() {
+  const el = $('#attach-list');
+  el.innerHTML = '';
+  const bone = creature.bones.get(selected);
+  if (!bone) return;
+  const twin = creature.twinOf(bone)?.def.id;
+  const mine = (state.attachments ?? []).filter((a) => a.bone === selected || (a.mirror && a.bone === twin));
+  for (const a of mine) {
+    const btn = document.createElement('button');
+    btn.textContent = `📎 ${a.thing.name}`;
+    btn.classList.toggle('active', a.id === selectedAttachment);
+    btn.onclick = () => (a.id === selectedAttachment ? deselectAttachment() : selectAttachment(a.id));
+    el.append(btn);
+  }
+}
+
+function pickAttachment(x: number, y: number): string | null {
+  setRay(x, y);
+  const hit = raycaster.intersectObjects(creature.attachmentMeshes(), false)[0];
+  return hit ? (hit.object.userData.attachmentId as string) : null;
+}
+
+$('#attach-add').onclick = () => {
+  const pop = $('#attach-pop');
+  pop.hidden = !pop.hidden;
+  renderCollection();
+};
+$('#attach-pop-close').onclick = () => ($('#attach-pop').hidden = true);
+document.querySelectorAll<HTMLButtonElement>('#attach-bar [data-gizmo]').forEach((b) => {
+  b.onclick = () => {
+    gizmo.setMode(b.dataset.gizmo as 'translate' | 'rotate' | 'scale');
+    syncAttachBar();
+  };
+});
+$<HTMLInputElement>('#attach-mirror').onchange = (e) => {
+  const a = currentAttachment();
+  if (!a) return;
+  a.mirror = (e.target as HTMLInputElement).checked;
+  creature.sync();
+  commit();
+  selectAttachment(a.id);
+};
+$('#attach-remove').onclick = () => {
+  state.attachments = (state.attachments ?? []).filter((a) => a.id !== selectedAttachment);
+  deselectAttachment();
+  creature.sync();
+  commit();
+  renderAttachList();
+};
+$('#attach-done').onclick = () => deselectAttachment();
+
+// ---------------------------------------------------------------------------
+// files
+
+$('#file-btn').onclick = () => {
+  const pop = $('#file-pop');
+  pop.hidden = !pop.hidden;
+  $('#file-btn').classList.toggle('on', !pop.hidden);
+  $<HTMLInputElement>('#creature-name').value = state.name ?? '';
+};
+$<HTMLInputElement>('#creature-name').oninput = (e) => {
+  state.name = (e.target as HTMLInputElement).value;
+};
+$<HTMLInputElement>('#creature-name').onchange = () => commit();
+$('#file-save-creature').onclick = () => {
+  const { workbench: _wb, ...data } = state;
+  downloadText(`${safeFileName(state.name ?? '', 'creature')}.creature`, JSON.stringify(envelope('creature', data)));
+};
+$('#file-save-collection').onclick = () => {
+  const data = { things: collection(), rigs: savedRigs() };
+  downloadText('my-collection.collection', JSON.stringify(envelope('collection', data)));
+};
+$('#file-open').onclick = () => $<HTMLInputElement>('#file-input').click();
+$<HTMLInputElement>('#file-input').onchange = async (e) => {
+  const input = e.target as HTMLInputElement;
+  for (const file of Array.from(input.files ?? [])) {
+    try {
+      openFile(await file.text());
+    } catch (err) {
+      hint(`${file.name}: ${(err as Error).message}`, 3500, true);
+    }
+  }
+  input.value = '';
+};
+
+function openFile(text: string) {
+  const env = parseEnvelope(text);
+  if (env.kind === 'creature') {
+    const s = migrate(env.data);
+    if (!s) throw new Error('The creature in this file could not be read.');
+    s.workbench = state.workbench;
+    // stuff the creature is wearing joins the collection too
+    const have = new Set(collection().map((t) => t.id));
+    for (const a of s.attachments ?? []) if (!have.has(a.thing.id)) putThing(a.thing);
+    exitDraw();
+    deselectAttachment();
+    state = s;
+    selected = '';
+    buildCreature();
+    commit();
+    renderUI();
+    if (mode !== 'stuff') frameCreature(true);
+    hint(`Opened ${s.name || 'creature'}`, 2000);
+  } else if (env.kind === 'stuff') {
+    const t = env.data as Thing;
+    if (!Array.isArray(t.pieces)) throw new Error('The stuff in this file could not be read.');
+    putThing(t);
+    renderCollection();
+    hint(`Added "${t.name}" to your collection`, 2000);
+  } else if (env.kind === 'collection') {
+    const data = env.data as { things?: Thing[]; rigs?: RigState[] };
+    for (const t of data.things ?? []) putThing(t);
+    for (const r of data.rigs ?? []) saveRig(r, r.name);
+    renderCollection();
+    renderRigs();
+    renderRigPanel();
+    hint(`Added ${data.things?.length ?? 0} things and ${data.rigs?.length ?? 0} rigs to your collection`, 2500);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // UI
@@ -903,6 +1544,8 @@ function renderUI() {
   renderMerge();
   renderEyes();
   renderRigPanel();
+  renderAttachList();
+  renderStuffPanel();
 }
 
 function setColor(c: string, doCommit: boolean) {
@@ -954,6 +1597,22 @@ function setMode(m: Mode) {
   $('#build-panel').hidden = m !== 'build';
   $('#rig-panel').hidden = m !== 'rig';
   $('#pose-panel').hidden = m !== 'pose';
+  $('#stuff-panel').hidden = m !== 'stuff';
+  if (m !== 'build') {
+    deselectAttachment();
+    $('#attach-pop').hidden = true;
+  }
+  const wasStuff = board.visible;
+  board.visible = m === 'stuff';
+  creature.group.visible = m !== 'stuff';
+  if (m === 'stuff') {
+    syncWorkbench();
+    renderStuffPanel();
+    focusOnBoard();
+    hint('Draw pieces on the board; the blue crosshair is where it attaches', 3200);
+  } else if (wasStuff) {
+    frameCreature();
+  }
   creature.setRigMode(m === 'rig');
   updateSkeletonVisibility();
   if (m === 'pose') hint('Drag the orange joints to pose', 2200);
@@ -976,6 +1635,8 @@ function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
   // an edited skeleton is no longer the saved/template one
   if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
   buildCreature();
+  // stuff on removed bones goes with them
+  if (state.attachments) state.attachments = state.attachments.filter((a) => creature.bones.has(a.bone));
   if (copies.length) selected = copies[0].to;
   creature.select(selected);
   commit();
@@ -1077,7 +1738,7 @@ function hint(text: string, ms = 2000, warn = false) {
 
 // wire up static controls
 document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => (b.onclick = () => setMode(b.dataset.mode as Mode)));
-$('#draw').onclick = () => enterDraw();
+$('#draw').onclick = () => enterDraw({ kind: 'bone', boneId: selected });
 $('#cancel-draw').onclick = () => exitDraw();
 $('#reset-shape').onclick = () => {
   selPart().outline = null;
@@ -1266,6 +1927,12 @@ window.addEventListener('keydown', (e) => {
     toggleSymmetry();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
     if (k === 'd' && mode === 'build') enterDraw();
+    else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece', hole: false });
+    else if (k === '4') setMode('stuff');
+    else if (selectedAttachment && (k === 'w' || k === 'e' || k === 'r')) {
+      gizmo.setMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
+      syncAttachBar();
+    }
     else if (k === '1') setMode('build');
     else if (k === '2') setMode('rig');
     else if (k === '3') setMode('pose');
@@ -1302,7 +1969,8 @@ function loop(now: number) {
   }
   controls.update();
   const f = 1 - (now - flashStart) / 700;
-  creature.flash(drawState ? null : selected, Math.max(0, f));
+  if (mode === 'stuff') flashPiece(drawState ? 0 : Math.max(0, f));
+  else creature.flash(drawState ? null : selected, Math.max(0, f));
   creature.updateMerge();
   if (drawState && !drawState.active) renderOverlay();
   (bokeh.uniforms as Record<string, THREE.IUniform>).focus.value = camera.position.distanceTo(controls.target);
