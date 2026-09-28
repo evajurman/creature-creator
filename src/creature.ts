@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { buildInflatedGeometry, defaultOutline, solidDistance, type Solid, type Vec2 } from './inflate';
 import { makeFuzzShells, makeMaterial, makeOutlineMaterial, makeStrayHairs, type StyleId } from './materials';
-import { getRig, type BoneDef, type RigDef, type V3 } from './rigs';
+import { expandRig, type ExpandedBone, type ExpandedRig, type RigState, type V3 } from './rigs';
 
 export interface PartState {
   outline: Vec2[] | null;
@@ -20,18 +20,25 @@ export const EYE_STYLES: { id: EyeStyle; name: string }[] = [
   { id: 'button', name: 'Button' },
 ];
 
-export interface EyesState {
-  enabled: boolean;
-  style: EyeStyle;
+export interface EyePair {
   size: number;
   spacing: number;
   height: number;
 }
 
+export interface EyesState {
+  enabled: boolean;
+  /** one style for every pair */
+  style: EyeStyle;
+  pairs: EyePair[];
+}
+
 export interface CreatureState {
-  rigId: string;
+  /** the creature's own (editable) skeleton */
+  rig: RigState;
   style: StyleId;
   parts: Record<string, PartState>;
+  /** per-bone rotation relative to the rest pose */
   pose: Record<string, [number, number, number, number]>;
   rootOffset: V3;
   eyes: EyesState;
@@ -42,7 +49,7 @@ export interface CreatureState {
 }
 
 export interface BoneRT {
-  def: BoneDef;
+  def: ExpandedBone;
   /** id of the part whose drawing/colour this bone uses */
   src: string;
   pivot: THREE.Object3D;
@@ -53,29 +60,32 @@ export interface BoneRT {
   mesh: THREE.Mesh | null;
   meshKey: string;
   tip: THREE.Mesh;
+  /** rig mode: handle at the bone's start, shown where a limb attaches */
+  startHandle: THREE.Mesh;
+  /** true when the bone starts somewhere other than its parent's tip */
+  attach: boolean;
   line: THREE.Line;
   guide: THREE.Group;
 }
 
 const DEFAULT_COLORS = ['#7cc6a4', '#f6a5b5', '#8fb8ec', '#f7c873', '#b9a3e3'];
 
-export function defaultState(rigId: string, color?: string): CreatureState {
-  const rig = getRig(rigId);
+export function defaultState(rig: RigState, color?: string): CreatureState {
   const body = color ?? DEFAULT_COLORS[Math.floor(Math.random() * DEFAULT_COLORS.length)];
   const parts: Record<string, PartState> = {};
-  for (const b of rig.bones) {
+  for (const b of expandRig(rig).bones) {
     if (b.mirrorOf) continue;
     parts[b.id] = { outline: null, thickness: b.thickness ?? 1, color: b.color ?? body };
   }
   return {
-    rigId: rig.id,
+    rig: structuredClone(rig),
     style: 'clay',
     parts,
     pose: {},
     rootOffset: [0, 0, 0],
     merge: true,
     mergeRadius: 0.1,
-    eyes: { enabled: true, style: 'googly', size: 0.5, spacing: 0.5, height: 0.55 },
+    eyes: { enabled: true, style: 'googly', pairs: [{ size: 0.5, spacing: 0.5, height: 0.55 }] },
   };
 }
 
@@ -100,12 +110,29 @@ const rootMat = new THREE.MeshBasicMaterial({ color: 0x3b82f6, depthTest: false,
 const lineMat = new THREE.LineBasicMaterial({ color: 0x3a3340, depthTest: false, transparent: true, opacity: 0.55 });
 const outlineLineMat = new THREE.LineBasicMaterial({ color: 0xff6b4a, depthTest: false, transparent: true, opacity: 0.9 });
 const planeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+const startMat = new THREE.MeshBasicMaterial({ color: 0x8b5cf6, depthTest: false, transparent: true });
 const tipGeo = new THREE.SphereGeometry(0.032, 16, 12);
+const startGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
+
+/** Rest-pose world frame of a bone: X = drawing side, Y = along the bone, origin at its start. */
+function restFrame(def: ExpandedBone) {
+  const start = new THREE.Vector3(...def.start);
+  const dir = new THREE.Vector3(...def.end).sub(start);
+  const length = Math.max(dir.length(), 1e-3);
+  dir.normalize();
+  const side = new THREE.Vector3(...def.side);
+  side.addScaledVector(dir, -side.dot(dir));
+  if (side.lengthSq() < 1e-6) side.set(1, 0, 0).addScaledVector(dir, -dir.x);
+  if (side.lengthSq() < 1e-6) side.set(0, 0, 1);
+  side.normalize();
+  const normal = new THREE.Vector3().crossVectors(side, dir).normalize();
+  return { length, world: new THREE.Matrix4().makeBasis(side, dir, normal).setPosition(start) };
+}
 const rootGeo = new THREE.BoxGeometry(0.07, 0.07, 0.07);
 
 export class Creature {
   readonly group = new THREE.Group();
-  readonly rig: RigDef;
+  rig: ExpandedRig;
   readonly bones = new Map<string, BoneRT>();
   readonly list: BoneRT[] = [];
   readonly rootHandle: THREE.Mesh;
@@ -115,10 +142,13 @@ export class Creature {
   selected: string | null = null;
   private drawFocus: string | null = null;
   private mergeDirty = true;
+  /** rig editing shows the rest pose and joint handles */
+  private rigMode = false;
 
   constructor(state: CreatureState) {
     this.state = state;
-    this.rig = getRig(state.rigId);
+    this.rig = expandRig(state.rig);
+    this.ensureParts();
     this.buildSkeleton();
     this.rootHandle = new THREE.Mesh(rootGeo, rootMat);
     this.rootHandle.renderOrder = 1000;
@@ -131,18 +161,20 @@ export class Creature {
   // -------------------------------------------------------------------------
   // skeleton
 
+  /** Every drawable bone needs a part slot (new limbs start from their parent's look). */
+  private ensureParts() {
+    const fallback = Object.values(this.state.parts)[0] ?? { outline: null, thickness: 1, color: DEFAULT_COLORS[0] };
+    for (const b of this.rig.bones) {
+      if (b.mirrorOf || this.state.parts[b.id]) continue;
+      const parentPart = b.parent ? this.state.parts[this.rig.bones.find((o) => o.id === b.parent)?.mirrorOf ?? b.parent] : null;
+      const like = parentPart ?? fallback;
+      this.state.parts[b.id] = { outline: null, thickness: b.thickness ?? 1, color: b.color ?? like.color, style: like.style };
+    }
+  }
+
   private buildSkeleton() {
     for (const def of this.rig.bones) {
-      const start = new THREE.Vector3(...def.start);
-      const end = new THREE.Vector3(...def.end);
-      const dir = end.clone().sub(start);
-      const length = dir.length();
-      dir.normalize();
-      const side = new THREE.Vector3(...def.side);
-      side.addScaledVector(dir, -side.dot(dir)).normalize();
-      const normal = new THREE.Vector3().crossVectors(side, dir).normalize();
-      const restWorld = new THREE.Matrix4().makeBasis(side, dir, normal).setPosition(start);
-
+      const { length, world: restWorld } = restFrame(def);
       const parent = def.parent ? this.bones.get(def.parent)! : null;
       const local = parent ? parent.restWorld.clone().invert().multiply(restWorld) : restWorld.clone();
       const pivot = new THREE.Object3D();
@@ -155,7 +187,16 @@ export class Creature {
       tip.position.set(0, length, 0);
       tip.renderOrder = 1000;
       tip.userData.handle = def.id;
+      tip.userData.kind = 'end';
       pivot.add(tip);
+
+      const startHandle = new THREE.Mesh(startGeo, startMat);
+      startHandle.renderOrder = 1000;
+      startHandle.userData.handle = def.id;
+      startHandle.userData.kind = 'start';
+      startHandle.visible = false;
+      pivot.add(startHandle);
+      const attach = !parent || new THREE.Vector3(...def.start).distanceTo(new THREE.Vector3(...parent.def.end)) > 0.02;
 
       const line = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, length, 0)]),
@@ -179,12 +220,42 @@ export class Creature {
         mesh: null,
         meshKey: '',
         tip,
+        startHandle,
+        attach,
         line,
         guide,
       };
       this.bones.set(def.id, rt);
       this.list.push(rt);
     }
+  }
+
+  /**
+   * Rig editing: re-seat every bone from an edited skeleton with the same
+   * bones, without rebuilding meshes (they stretch to fit until the next full build).
+   */
+  relayout(rig: RigState) {
+    const next = expandRig(rig);
+    for (const def of next.bones) {
+      const b = this.bones.get(def.id);
+      if (!b) continue;
+      const { length, world } = restFrame(def);
+      const local = b.parent ? b.parent.restWorld.clone().invert().multiply(world) : world.clone();
+      local.decompose(b.pivot.position, b.restQuat, new THREE.Vector3());
+      b.pivot.quaternion.copy(b.restQuat);
+      b.restWorld = world;
+      b.def = def;
+      if (b.mesh) b.mesh.scale.y = length / b.length;
+      b.tip.position.set(0, length, 0);
+      b.line.geometry.setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, length, 0)]);
+    }
+    this.rootHandle.position.copy(this.list[0].pivot.position);
+    this.mergeDirty = true;
+  }
+
+  setRigMode(on: boolean) {
+    this.rigMode = on;
+    this.applyPose();
   }
 
   part(id: string): PartState {
@@ -251,18 +322,19 @@ export class Creature {
   applyPose() {
     this.mergeDirty = true;
     for (const b of this.list) {
-      const q = this.state.pose[b.def.id];
-      if (q) b.pivot.quaternion.set(...q);
-      else b.pivot.quaternion.copy(b.restQuat);
+      const q = this.rigMode ? null : this.state.pose[b.def.id];
+      b.pivot.quaternion.copy(b.restQuat);
+      if (q) b.pivot.quaternion.multiply(new THREE.Quaternion(...q));
     }
-    this.group.position.set(...this.state.rootOffset);
+    if (this.rigMode) this.group.position.set(0, 0, 0);
+    else this.group.position.set(...this.state.rootOffset);
   }
 
   capturePose() {
     const pose: CreatureState['pose'] = {};
     for (const b of this.list) {
       if (b.pivot.quaternion.angleTo(b.restQuat) > 1e-4) {
-        const q = b.pivot.quaternion;
+        const q = b.restQuat.clone().invert().multiply(b.pivot.quaternion);
         pose[b.def.id] = [q.x, q.y, q.z, q.w];
       }
     }
@@ -423,7 +495,7 @@ export class Creature {
   private syncEyes() {
     const head = this.bones.get(this.rig.headId);
     const e = this.state.eyes;
-    const key = JSON.stringify([e, head?.meshKey, this.state.style]);
+    const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length]);
     if (key === this.eyesKey) return;
     this.eyesKey = key;
     this.eyes.removeFromParent();
@@ -457,16 +529,17 @@ export class Creature {
 
     const probe = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
     const ray = new THREE.Raycaster();
-    const r = Math.max(0.02, Math.min(sizeR, sizeU) * 0.16 * (0.4 + e.size * 1.2));
 
     const headPart = this.state.parts[head.src];
     const headStyle = headPart.style ?? this.state.style;
     const localUp = up.clone().transformDirection(toLocal);
 
+    for (const pair of e.pairs) {
+    const r = Math.max(0.02, Math.min(sizeR, sizeU) * 0.16 * (0.4 + pair.size * 1.2));
     for (const sgn of [1, -1]) {
       const originW = new THREE.Vector3()
-        .addScaledVector(right, (minR + maxR) / 2 + sgn * (sizeR / 2) * e.spacing * 0.8)
-        .addScaledVector(up, minU + sizeU * e.height)
+        .addScaledVector(right, (minR + maxR) / 2 + sgn * (sizeR / 2) * pair.spacing * 0.8)
+        .addScaledVector(up, minU + sizeU * pair.height)
         .addScaledVector(forward, maxF + 1);
       ray.set(originW.applyMatrix4(toLocal), localForward.clone().negate());
       const hit = ray.intersectObject(probe, false)[0];
@@ -488,6 +561,7 @@ export class Creature {
         m.castShadow = true;
       });
       this.eyes.add(eye);
+    }
     }
   }
 
@@ -559,15 +633,20 @@ export class Creature {
     for (const b of this.list) {
       b.tip.visible = v;
       b.line.visible = v;
+      b.startHandle.visible = v && this.rigMode && b.attach;
     }
-    this.rootHandle.visible = v;
+    this.rootHandle.visible = v && !this.rigMode;
   }
 
   setHandleHover(obj: THREE.Object3D | null) {
-    for (const b of this.list) b.tip.material = b.tip === obj ? tipHoverMat : tipMat;
+    for (const b of this.list) {
+      b.tip.material = b.tip === obj ? tipHoverMat : tipMat;
+      b.startHandle.material = b.startHandle === obj ? tipHoverMat : startMat;
+    }
   }
 
   handles(): THREE.Object3D[] {
+    if (this.rigMode) return [...this.list.map((b) => b.startHandle), ...this.list.map((b) => b.tip)];
     return [this.rootHandle, ...this.list.map((b) => b.tip)];
   }
 

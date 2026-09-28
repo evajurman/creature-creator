@@ -212,3 +212,27 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 }
 .draw-bar button kbd { background: rgba(255,255,255,.2); color: #fff; }
 .draw-bar[hidden], .popover[hidden] { display: none; }
+
+.dot.purple { background: #8b5cf6; }
+.rigs { grid-template-columns: repeat(5, 1fr); }
+.rigs button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rig-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.rig-actions button { text-align: left; }
+.rig-actions button:disabled, button.ghost:disabled { opacity: .4; cursor: default; }
+input.text {
+  flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px;
+  background: #fff; font-weight: 700; font-size: 13px;
+}
+.saved-rigs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.saved-rig { display: flex; gap: 6px; }
+.saved-rig button:first-child { flex: 1; text-align: left; }
+
+.eye-pairs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.eye-pairs button {
+  border: 1px solid var(--line); background: var(--bg); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.eye-pairs button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+.eye-pairs button.add { background: #fff; border-style: dashed; }
+.eye-pairs button.remove { background: #fff; color: #c2410c; }

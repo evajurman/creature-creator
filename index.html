@@ -14,7 +14,8 @@
         <div class="brand"><span class="logo">🦎</span> Creature Creator</div>
         <div class="modes" role="tablist">
           <button data-mode="build" class="active" title="Build (1)">✏️ Build</button>
-          <button data-mode="pose" title="Pose (2)">🤸 Pose</button>
+          <button data-mode="rig" title="Rig (2)">🦴 Rig</button>
+          <button data-mode="pose" title="Pose (3)">🤸 Pose</button>
         </div>
         <div class="spacer"></div>
         <div class="tools">
@@ -63,11 +64,38 @@
 
           <h3>Eyes</h3>
           <div id="eye-styles" class="eye-styles"></div>
+          <div id="eye-pairs" class="eye-pairs"></div>
           <div id="eye-sliders">
             <label class="slider"><span>Size</span><input id="eye-size" type="range" min="0" max="1" step="0.01" /></label>
             <label class="slider"><span>Spacing</span><input id="eye-spacing" type="range" min="0" max="1" step="0.01" /></label>
             <label class="slider"><span>Height</span><input id="eye-height" type="range" min="0.05" max="0.95" step="0.01" /></label>
           </div>
+        </section>
+
+        <section id="rig-panel" hidden>
+          <h3>Skeleton</h3>
+          <p class="muted small">Drag the <b class="dot orange"></b> joints to reshape bones; everything further along the limb follows. Drag a <b class="dot purple square"></b> square to move a whole limb, e.g. slide the arms up or down.</p>
+          <label class="check"><input id="rig-sym" type="checkbox" checked /> Symmetry: new limbs come in left/right pairs</label>
+
+          <div class="card">
+            <div class="card-title" id="rig-title">Body</div>
+            <p class="muted small" id="rig-pair-note"></p>
+            <div class="rig-actions">
+              <button id="rig-add" class="ghost" title="Sprout a new limb from the side of this part">➕ Add limb</button>
+              <button id="rig-extend" class="ghost" title="Add a segment on the end of this part">↗ Extend</button>
+              <button id="rig-dup" class="ghost" title="Copy this limb and everything attached to it">⧉ Duplicate</button>
+              <button id="rig-del" class="ghost" title="Remove this part and everything attached to it">🗑 Delete</button>
+              <button id="rig-unlink" class="ghost" title="Let the left and right sides be edited separately">⛓ Unlink pair</button>
+              <button id="rig-eyes" class="ghost" title="Put the eyes on this part">👀 Eyes here</button>
+            </div>
+          </div>
+
+          <h3>Save rig</h3>
+          <div class="row">
+            <input id="rig-name" class="text" type="text" placeholder="Rig name" maxlength="40" />
+            <button id="rig-save" class="ghost">💾 Save</button>
+          </div>
+          <div id="saved-rig-list" class="saved-rigs"></div>
         </section>
 
         <section id="pose-panel" hidden>

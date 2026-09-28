@@ -10,7 +10,24 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { Creature, defaultState, EYE_STYLES, type BoneRT, type CreatureState, type EyeStyle } from './creature';
 import { bounds, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import { STYLES, type StyleId } from './materials';
-import { RIGS } from './rigs';
+import {
+  RIGS,
+  addLimb,
+  deleteLimb,
+  deleteSavedRig,
+  duplicateLimb,
+  extendBone,
+  getRig,
+  moveJoint,
+  partIds,
+  rigFromTemplate,
+  saveRig,
+  savedRigs,
+  unlinkPair,
+  type PartCopy,
+  type RigState,
+  type V3,
+} from './rigs';
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -135,17 +152,35 @@ composer.addPass(new OutputPass());
 // state + history
 
 const STORAGE_KEY = 'creature-creator/v1';
-let state: CreatureState = load() ?? defaultState('biped');
+let state: CreatureState = load() ?? defaultState(rigFromTemplate(RIGS[0]));
 let creature: Creature;
 let selected = '';
-let mode: 'build' | 'pose' = 'build';
+type Mode = 'build' | 'rig' | 'pose';
+let mode: Mode = 'build';
+let eyePair = 0;
 
 function load(): CreatureState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const s = JSON.parse(raw) as CreatureState;
-    return RIGS.some((r) => r.id === s.rigId) ? s : null;
+    const s = JSON.parse(raw) as CreatureState & { rigId?: string };
+    // saves from before rigs were editable: adopt the template, drop the old-format pose
+    if (!s.rig) {
+      const t = RIGS.find((r) => r.id === s.rigId);
+      if (!t) return null;
+      s.rig = rigFromTemplate(t);
+      s.pose = {};
+      delete s.rigId;
+    }
+    const e = s.eyes as Partial<CreatureState['eyes']> & { size?: number; spacing?: number; height?: number };
+    if (!e.pairs) {
+      s.eyes = {
+        enabled: e.enabled ?? true,
+        style: e.style ?? 'googly',
+        pairs: [{ size: e.size ?? 0.5, spacing: e.spacing ?? 0.5, height: e.height ?? 0.55 }],
+      };
+    }
+    return s;
   } catch {
     return null;
   }
@@ -175,7 +210,7 @@ function commit() {
 
 function restore(snap: string) {
   const s = JSON.parse(snap) as CreatureState;
-  if (s.rigId !== creature.rig.id) {
+  if (JSON.stringify(s.rig) !== JSON.stringify(state.rig)) {
     state = s;
     buildCreature();
   } else {
@@ -207,6 +242,7 @@ function updateUndo() {
 function buildCreature() {
   if (creature) scene.remove(creature.group);
   creature = new Creature(state);
+  creature.setRigMode(mode === 'rig');
   scene.add(creature.group);
   if (!creature.bones.has(selected)) selected = creature.list[0].def.id;
   creature.select(selected);
@@ -218,7 +254,16 @@ function buildCreature() {
 
 const raycaster = new THREE.Raycaster();
 const pointer = { downX: 0, downY: 0, moved: false };
-let drag: { id: string; plane: THREE.Plane; offset: THREE.Vector3 } | null = null;
+let drag: {
+  id: string;
+  kind: 'root' | 'start' | 'end';
+  plane: THREE.Plane;
+  offset: THREE.Vector3;
+  startHit: THREE.Vector3;
+  /** rig mode: skeleton at the start of the drag, so each move re-applies from scratch */
+  rigBase?: string;
+  moved: boolean;
+} | null = null;
 
 canvas.addEventListener('pointerdown', (e) => {
   pointer.downX = e.clientX;
@@ -235,7 +280,8 @@ canvas.addEventListener('pointerdown', (e) => {
     id === 'root' ? new THREE.Vector3(0, 1, 0) : camera.getWorldDirection(new THREE.Vector3()).negate();
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pos);
   const offset = id === 'root' ? creature.group.position.clone().sub(pos) : new THREE.Vector3();
-  drag = { id, plane, offset };
+  const kind = id === 'root' ? 'root' : (h.userData.kind as 'start' | 'end');
+  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: mode === 'rig' ? JSON.stringify(state.rig) : undefined };
   $('#viewport').style.cursor = 'grabbing';
 });
 
@@ -245,7 +291,14 @@ canvas.addEventListener('pointermove', (e) => {
     setRay(e.clientX, e.clientY);
     const hit = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
     if (!hit) return;
-    if (drag.id === 'root') {
+    drag.moved = drag.moved || pointer.moved;
+    if (drag.rigBase && drag.kind !== 'root') {
+      if (!drag.moved) return;
+      const d = hit.clone().sub(drag.startHit);
+      state.rig = JSON.parse(drag.rigBase) as RigState;
+      moveJoint(state.rig, drag.id, drag.kind, d.toArray() as V3);
+      creature.relayout(state.rig);
+    } else if (drag.id === 'root') {
       creature.group.position.copy(hit.add(drag.offset));
       creature.group.position.y = Math.max(creature.group.position.y, -1);
     } else {
@@ -262,9 +315,20 @@ canvas.addEventListener('pointermove', (e) => {
 
 canvas.addEventListener('pointerup', (e) => {
   if (drag) {
+    const d = drag;
     drag = null;
     controls.enabled = true;
     $('#viewport').style.cursor = '';
+    if (d.rigBase) {
+      if (d.moved) {
+        // rebuild meshes at their new lengths and re-seat the pose
+        if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
+        buildCreature();
+        commit();
+      }
+      selectPart(d.id);
+      return;
+    }
     creature.capturePose();
     commit();
     return;
@@ -329,7 +393,7 @@ function pickHandle(x: number, y: number): THREE.Object3D | null {
 }
 
 function handlesVisible() {
-  return !drawState && (mode === 'pose' || $<HTMLInputElement>('#skeleton-build').checked);
+  return !drawState && (mode !== 'build' || $<HTMLInputElement>('#skeleton-build').checked);
 }
 
 function updateSkeletonVisibility() {
@@ -621,7 +685,7 @@ const SWATCHES = [
 
 function partLabel(src: string): string {
   const b = creature.bones.get(src)!;
-  return b.def.name.replace(/ \((L|R)\)$/, '');
+  return b.def.sideSign !== 0 ? b.def.name.replace(/ \((L|R)\)$/, '') : b.def.name;
 }
 
 function sources(): BoneRT[] {
@@ -647,12 +711,17 @@ function flashPart() {
 function renderRigs() {
   const el = $('#rigs');
   el.innerHTML = '';
-  for (const r of RIGS) {
+  const options = [
+    ...RIGS.map((r) => ({ base: r.id, icon: r.icon, name: r.name })),
+    ...savedRigs().map((r) => ({ base: r.base, icon: '🦴', name: r.name })),
+  ];
+  for (const o of options) {
     const btn = document.createElement('button');
-    btn.innerHTML = `<span>${r.icon}</span>${r.name}`;
-    btn.title = r.name;
-    btn.classList.toggle('active', r.id === state.rigId);
-    btn.onclick = () => switchRig(r.id);
+    btn.innerHTML = `<span>${o.icon}</span>`;
+    btn.append(o.name);
+    btn.title = o.name;
+    btn.classList.toggle('active', o.base === state.rig.base);
+    btn.onclick = () => switchRig(o.base);
     el.append(btn);
   }
 }
@@ -731,9 +800,48 @@ function renderEyes() {
     };
     el.append(btn);
   }
-  $<HTMLInputElement>('#eye-size').value = String(e.size);
-  $<HTMLInputElement>('#eye-spacing').value = String(e.spacing);
-  $<HTMLInputElement>('#eye-height').value = String(e.height);
+  eyePair = Math.min(eyePair, e.pairs.length - 1);
+  const tabs = $('#eye-pairs');
+  tabs.innerHTML = '';
+  e.pairs.forEach((_, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = `Pair ${i + 1}`;
+    btn.classList.toggle('active', i === eyePair);
+    btn.onclick = () => {
+      eyePair = i;
+      renderEyes();
+    };
+    tabs.append(btn);
+  });
+  const add = document.createElement('button');
+  add.textContent = '+ Add';
+  add.className = 'add';
+  add.onclick = () => {
+    const last = e.pairs[e.pairs.length - 1];
+    e.pairs.push({ size: Math.max(0.15, last.size * 0.75), spacing: last.spacing, height: Math.max(0.1, last.height - 0.22) });
+    eyePair = e.pairs.length - 1;
+    e.enabled = true;
+    creature.sync();
+    commit();
+    renderEyes();
+  };
+  tabs.append(add);
+  if (e.pairs.length > 1) {
+    const del = document.createElement('button');
+    del.textContent = 'Remove';
+    del.className = 'remove';
+    del.onclick = () => {
+      e.pairs.splice(eyePair, 1);
+      creature.sync();
+      commit();
+      renderEyes();
+    };
+    tabs.append(del);
+  }
+  const pair = e.pairs[eyePair];
+  $<HTMLInputElement>('#eye-size').value = String(pair.size);
+  $<HTMLInputElement>('#eye-spacing').value = String(pair.spacing);
+  $<HTMLInputElement>('#eye-height').value = String(pair.height);
   $('#eye-sliders').style.opacity = e.enabled ? '1' : '.4';
 }
 
@@ -746,6 +854,7 @@ function renderUI() {
   renderStyles();
   renderMerge();
   renderEyes();
+  renderRigPanel();
 }
 
 function setColor(c: string, doCommit: boolean) {
@@ -771,12 +880,14 @@ function setStyle(id: StyleId) {
   renderStyles();
 }
 
-function switchRig(id: string) {
-  if (id === state.rigId) return;
+function switchRig(base: string) {
+  if (base === state.rig.base) return;
+  const rig = base.startsWith('saved:') ? savedRigs().find((r) => r.base === base) : rigFromTemplate(getRig(base));
+  if (!rig) return;
   const dirty = Object.values(state.parts).some((p) => p.outline) || Object.keys(state.pose).length > 0;
   if (dirty && !confirm('Switch body plan? Your drawn shapes and pose will be cleared (colours and material stay).')) return;
   const body = state.parts[creature.list[0].src].color;
-  const next = defaultState(id, body);
+  const next = defaultState(rig, body);
   next.style = state.style;
   next.eyes = state.eyes;
   exitDraw();
@@ -788,15 +899,118 @@ function switchRig(id: string) {
   frameCreature(true);
 }
 
-function setMode(m: 'build' | 'pose') {
+function setMode(m: Mode) {
   if (drawState) exitDraw();
   mode = m;
   document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
   $('#build-panel').hidden = m !== 'build';
+  $('#rig-panel').hidden = m !== 'rig';
   $('#pose-panel').hidden = m !== 'pose';
+  creature.setRigMode(m === 'rig');
   updateSkeletonVisibility();
   if (m === 'pose') hint('Drag the orange joints to pose', 2200);
+  if (m === 'rig') {
+    hint('Drag joints to reshape the skeleton; purple squares move a whole limb', 3200);
+    renderRigPanel();
+  }
 }
+
+// ---------------------------------------------------------------------------
+// rig editing
+
+/** Apply a skeleton edit, give new bones a look, rebuild, and select the first new bone. */
+function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
+  const copies = fn(state.rig);
+  for (const c of copies) {
+    const from = state.parts[c.from];
+    if (from && !state.parts[c.to]) state.parts[c.to] = { ...structuredClone(from), outline: copyShape ? structuredClone(from.outline) : null };
+  }
+  // an edited skeleton is no longer the saved/template one
+  if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
+  buildCreature();
+  if (copies.length) selected = copies[0].to;
+  creature.select(selected);
+  commit();
+  renderUI();
+}
+
+function renderRigPanel() {
+  const b = creature.bones.get(selected);
+  $('#rig-title').textContent = b ? b.def.name : 'Nothing selected';
+  const isRoot = !b?.parent;
+  const paired = !!b && b.def.sideSign !== 0;
+  $<HTMLButtonElement>('#rig-dup').disabled = !b || isRoot;
+  $<HTMLButtonElement>('#rig-del').disabled = !b || isRoot;
+  $<HTMLButtonElement>('#rig-unlink').disabled = !paired;
+  $<HTMLButtonElement>('#rig-eyes').disabled = !b || state.rig.headId === selected;
+  $('#rig-pair-note').textContent = paired ? 'Mirrored pair: both sides move together.' : '';
+
+  const list = $('#saved-rig-list');
+  list.innerHTML = '';
+  for (const r of savedRigs()) {
+    const row = document.createElement('div');
+    row.className = 'saved-rig';
+    const load = document.createElement('button');
+    load.className = 'ghost';
+    load.textContent = `🦴 ${r.name}`;
+    load.onclick = () => switchRig(r.base);
+    const del = document.createElement('button');
+    del.className = 'ghost';
+    del.textContent = '✕';
+    del.title = 'Delete saved rig';
+    del.onclick = () => {
+      if (!confirm(`Delete the saved rig "${r.name}"?`)) return;
+      deleteSavedRig(r.name);
+      renderRigPanel();
+      renderRigs();
+    };
+    row.append(load, del);
+    list.append(row);
+  }
+  if (!list.children.length) list.innerHTML = '<p class="muted small">No saved rigs yet.</p>';
+}
+
+$('#rig-add').onclick = () => rigEdit((rig) => addLimb(rig, selected, $<HTMLInputElement>('#rig-sym').checked), false);
+$('#rig-extend').onclick = () => rigEdit((rig) => extendBone(rig, selected), false);
+$('#rig-dup').onclick = () => rigEdit((rig) => duplicateLimb(rig, selected), true);
+$('#rig-unlink').onclick = () => rigEdit((rig) => unlinkPair(rig, selected), true);
+$('#rig-del').onclick = () => {
+  const parent = creature.bones.get(selected)?.parent?.def.id ?? '';
+  rigEdit((rig) => {
+    for (const d of deleteLimb(rig, selected)) {
+      for (const id of partIds(d)) {
+        delete state.parts[id];
+        delete state.pose[id];
+      }
+    }
+    return [];
+  }, false);
+  selectPart(creature.bones.has(parent) ? parent : creature.list[0].def.id);
+};
+$('#rig-eyes').onclick = () => {
+  state.rig.headId = selected;
+  buildCreature();
+  commit();
+  renderRigPanel();
+  hint('Eyes moved to this part', 1800);
+};
+$('#rig-save').onclick = () => {
+  const input = $<HTMLInputElement>('#rig-name');
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    hint('Give the rig a name first', 1800, true);
+    return;
+  }
+  saveRig(state.rig, name);
+  state.rig.base = 'saved:' + name;
+  state.rig.name = name;
+  input.value = '';
+  commit();
+  renderRigs();
+  renderRigPanel();
+  hint(`Saved rig "${name}"`, 1800);
+};
 
 let hintTimer = 0;
 function hint(text: string, ms = 2000, warn = false) {
@@ -814,7 +1028,7 @@ function hint(text: string, ms = 2000, warn = false) {
 }
 
 // wire up static controls
-document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => (b.onclick = () => setMode(b.dataset.mode as 'build' | 'pose')));
+document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => (b.onclick = () => setMode(b.dataset.mode as Mode)));
 $('#draw').onclick = () => enterDraw();
 $('#cancel-draw').onclick = () => exitDraw();
 $('#reset-shape').onclick = () => {
@@ -904,7 +1118,7 @@ function renderMerge() {
 for (const k of ['size', 'spacing', 'height'] as const) {
   const input = $<HTMLInputElement>(`#eye-${k}`);
   input.oninput = () => {
-    state.eyes[k] = parseFloat(input.value);
+    state.eyes.pairs[eyePair][k] = parseFloat(input.value);
     creature.sync();
   };
   input.onchange = () => commit();
@@ -925,7 +1139,7 @@ $('#spin').onclick = () => {
 $('#new').onclick = () => {
   if (!confirm('Start a new creature? (You can undo this.)')) return;
   exitDraw();
-  state = defaultState(state.rigId);
+  state = defaultState(state.rig);
   buildCreature();
   commit();
   renderUI();
@@ -1005,7 +1219,8 @@ window.addEventListener('keydown', (e) => {
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
     if (k === 'd' && mode === 'build') enterDraw();
     else if (k === '1') setMode('build');
-    else if (k === '2') setMode('pose');
+    else if (k === '2') setMode('rig');
+    else if (k === '3') setMode('pose');
     else if (k === 'f') frameCreature();
   }
 });
