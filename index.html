@@ -93,25 +93,55 @@
             <label class="slider"><span>Size</span><input id="eye-size" type="range" min="0" max="1" step="0.01" /></label>
             <label class="slider"><span>Spacing</span><input id="eye-spacing" type="range" min="0" max="1" step="0.01" /></label>
             <label class="slider"><span>Height</span><input id="eye-height" type="range" min="0.05" max="0.95" step="0.01" /></label>
+            <label class="slider"><span>Stand-off</span><input id="eye-lift" type="range" min="0" max="1" step="0.01" />
+              <span class="ends"><em>on the face</em><em>lifted</em></span></label>
+          </div>
+          <div id="eye-look">
+            <div class="sub-title">Bead, dot &amp; button look</div>
+            <div class="seg" id="eye-finish">
+              <button data-finish="body" title="The head's own material">Body</button>
+              <button data-finish="gloss">Glossy</button>
+              <button data-finish="matte">Matte</button>
+              <button data-finish="glass">Glass</button>
+            </div>
+            <div class="swatches eye-swatches" id="eye-swatches"></div>
+            <label class="color-pick"><input id="eye-color" type="color" /> Eye colour</label>
           </div>
         </section>
 
         <section id="rig-panel" hidden>
           <h3>Skeleton</h3>
           <p class="muted small">Drag the <b class="dot orange"></b> joints to reshape bones; everything further along the limb follows. Drag a <b class="dot purple square"></b> square to move a whole limb, e.g. slide the arms up or down.</p>
-          <label class="check"><input id="rig-sym" type="checkbox" checked /> Symmetry: new limbs come in left/right pairs</label>
+          <label id="rig-lock-label" class="pill-toggle rig-lock" title="Keep the skeleton symmetric: new bones come in pairs, centre bones stay on the centre line">
+            <input id="rig-sym" type="checkbox" checked /> <span id="rig-lock-icon">🔒</span> Lock symmetry
+          </label>
 
           <div class="card">
             <div class="card-title" id="rig-title">Body</div>
             <p class="muted small" id="rig-pair-note"></p>
             <div class="rig-actions">
-              <button id="rig-add" class="ghost" title="Sprout a new limb from the side of this part">➕ Add limb</button>
+              <button id="rig-bone" class="ghost" title="Add a single bone from the side of this part">🦴 Add bone</button>
+              <button id="rig-add" class="ghost" title="Sprout a two-segment limb from the side of this part">➕ Add limb</button>
               <button id="rig-extend" class="ghost" title="Add a segment on the end of this part">↗ Extend</button>
+              <button id="rig-split" class="ghost" title="Split this bone in the middle into two jointed halves">✂ Split</button>
               <button id="rig-dup" class="ghost" title="Copy this limb and everything attached to it">⧉ Duplicate</button>
               <button id="rig-del" class="ghost" title="Remove this part and everything attached to it">🗑 Delete</button>
               <button id="rig-unlink" class="ghost" title="Let the left and right sides be edited separately">⛓ Unlink pair</button>
               <button id="rig-eyes" class="ghost" title="Put the eyes on this part">👀 Eyes here</button>
             </div>
+
+            <div class="sub-title rig-sub">Default shape</div>
+            <label class="slider"><span>Base width</span><input id="rig-w0" type="range" min="0.02" max="1.2" step="0.005" /></label>
+            <label class="slider"><span>Tip width</span><input id="rig-w1" type="range" min="0.02" max="1.2" step="0.005" /></label>
+            <p class="muted small" id="rig-drawn-note" hidden>This part has a drawing, so these widths only show if you Reset shape in Build.</p>
+
+            <div class="sub-title rig-sub">Bend</div>
+            <label class="check"><input id="rig-bendy" type="checkbox" /> Bendy: curve this bone into an arc</label>
+            <label class="slider" id="rig-bend-row"><span>Bend</span><input id="rig-bend" type="range" min="-1" max="1" step="0.01" />
+              <span class="ends"><em>one way</em><em>the other</em></span></label>
+            <label class="slider" id="rig-bend-dir-row"><span>Direction</span><input id="rig-bend-dir" type="range" min="-180" max="180" step="1" />
+              <span class="ends"><em>sideways</em><em>forward / back</em></span></label>
+            <p class="muted small">Or drag the <b class="dot green diamond"></b> diamond on the selected bone to bend it any way.</p>
           </div>
 
           <h3>Save rig</h3>

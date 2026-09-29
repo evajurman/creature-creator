@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { buildInflatedGeometry, defaultOutline, solidDistance, type Solid, type Vec2 } from './inflate';
 import {
   castsShadow,
+  setFuzzMask,
   setOpacity,
   makeFuzzShells,
   makeMaterial,
@@ -9,6 +10,7 @@ import {
   makeStrayHairs,
   styleSettings,
   type StyleId,
+  type FuzzSpot,
   type StyleSettings,
 } from './materials';
 import { expandRig, type ExpandedBone, type ExpandedRig, type RigState, type V3 } from './rigs';
@@ -39,11 +41,19 @@ export interface EyePair {
   height: number;
 }
 
+export type EyeFinish = 'body' | 'gloss' | 'matte' | 'glass';
+
 export interface EyesState {
   enabled: boolean;
   /** one style for every pair */
   style: EyeStyle;
   pairs: EyePair[];
+  /** bead / dot / button: what they're made of ('body' = the head's own material) */
+  finish?: EyeFinish;
+  /** bead / dot / button colour */
+  color?: string;
+  /** how far the eyes stand off the face, 0..1 */
+  lift?: number;
 }
 
 /** A piece of stuff stuck onto a body part, positioned in that bone's frame. */
@@ -107,6 +117,8 @@ export interface BoneRT {
   tip: THREE.Mesh;
   /** rig mode: handle at the bone's start, shown where a limb attaches */
   startHandle: THREE.Mesh;
+  /** rig mode: drag to bend the bone (selected bone only) */
+  bendHandle: THREE.Mesh;
   /** true when the bone starts somewhere other than its parent's tip */
   attach: boolean;
   line: THREE.Line;
@@ -157,9 +169,147 @@ const outlineLineMat = new THREE.LineBasicMaterial({ color: 0xff6b4a, depthTest:
 const planeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
 const startMat = new THREE.MeshBasicMaterial({ color: 0x8b5cf6, depthTest: false, transparent: true });
 // handle/guide materials are shared by every creature: never dispose them with one
-for (const m of [tipMat, tipHoverMat, rootMat, lineMat, outlineLineMat, planeMat, startMat]) m.userData.shared = true;
+const bendMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, depthTest: false, transparent: true });
+for (const m of [tipMat, tipHoverMat, rootMat, lineMat, outlineLineMat, planeMat, startMat, bendMat]) m.userData.shared = true;
 const tipGeo = new THREE.SphereGeometry(0.032, 16, 12);
 const startGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
+const bendGeo = new THREE.OctahedronGeometry(0.042);
+
+// ---------------------------------------------------------------------------
+// bendy bones: the bone's local frame (X = side, Y = along the bone, Z = out
+// of the drawing) is curved into a circular arc. The arc bends toward a
+// direction around the bone: 0 = +X (sideways in the drawing plane), pi/2 = +Z.
+
+export interface Bend {
+  len: number;
+  /** total turn, radians (0 = straight) */
+  theta: number;
+  /** direction around the bone, radians */
+  dir: number;
+}
+
+/** A bone's bend. A right twin's frame is its left twin's mirrored through local Z, so its direction mirrors too. */
+export function bendOf(def: ExpandedBone, len: number): Bend {
+  const theta = def.bendy ? (def.bend ?? 0) * Math.PI : 0;
+  const dir = (def.bendDir ?? 0) * (def.sideSign === -1 ? -1 : 1);
+  return { len, theta, dir };
+}
+
+function bendKey(bd: Bend): string {
+  return bd.theta ? `|bend:${bd.len.toFixed(4)}:${bd.theta.toFixed(4)}:${bd.dir.toFixed(4)}` : '';
+}
+
+/** The straight in-plane bend: (u, y) with u along the bend direction. */
+function planarBend(len: number, theta: number, u: number, y: number): [number, number, number] {
+  const s = Math.min(len, Math.max(0, y));
+  const over = y - s; // past either end the bone carries on straight along its tangent
+  const phi = (theta * s) / len;
+  let cu = 0, cy = s;
+  if (Math.abs(theta) > 1e-5) {
+    const r = len / theta;
+    cu = r * (1 - Math.cos(phi));
+    cy = r * Math.sin(phi);
+  }
+  const c = Math.cos(phi), sn = Math.sin(phi);
+  // the offset (u, over) turns with the curve: +u -> (cos, -sin), +Y -> (sin, cos)
+  return [cu + c * u + sn * over, cy - sn * u + c * over, phi];
+}
+
+/** Where the straight-bone point (x, y, z) goes once bent, plus the turn angle there. */
+function bendPoint(bd: Bend, x: number, y: number, z: number): [number, number, number, number] {
+  if (!bd.theta) return [x, y, z, 0];
+  const c = Math.cos(bd.dir), s = Math.sin(bd.dir);
+  const u = c * x + s * z; // along the bend direction
+  const w = -s * x + c * z; // across it (unchanged by the bend)
+  const [u2, y2, phi] = planarBend(bd.len, bd.theta, u, y);
+  return [c * u2 - s * w, y2, s * u2 + c * w, phi];
+}
+
+/** Turn a direction vector (x, y, z) by the bend's local turn angle `phi`. */
+function bendVector(bd: Bend, phi: number, x: number, y: number, z: number): [number, number, number] {
+  const c = Math.cos(bd.dir), s = Math.sin(bd.dir);
+  const u = c * x + s * z;
+  const w = -s * x + c * z;
+  const cp = Math.cos(phi), sp = Math.sin(phi);
+  const u2 = cp * u + sp * y;
+  const y2 = -sp * u + cp * y;
+  return [c * u2 - s * w, y2, s * u2 + c * w];
+}
+
+/** Curve a part's geometry (and its merge spheres) to follow its bent bone. */
+function bendGeometry(src: THREE.BufferGeometry, bd: Bend): THREE.BufferGeometry {
+  const g = src.clone();
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  const nor = g.getAttribute('normal') as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const [x, y, z, phi] = bendPoint(bd, pos.getX(i), pos.getY(i), pos.getZ(i));
+    pos.setXYZ(i, x, y, z);
+    const [nx, ny, nz] = bendVector(bd, phi, nor.getX(i), nor.getY(i), nor.getZ(i));
+    nor.setXYZ(i, nx, ny, nz);
+  }
+  const solid = src.userData.solid as Solid | undefined;
+  if (solid) {
+    const sp = Float32Array.from(solid.spheres);
+    const zs = new Float32Array(sp.length / 3);
+    for (let i = 0; i < sp.length; i += 3) {
+      const [x, y, z] = bendPoint(bd, sp[i], sp[i + 1], solid.zs ? solid.zs[i / 3] : 0);
+      sp[i] = x;
+      sp[i + 1] = y;
+      zs[i / 3] = z;
+    }
+    g.userData = { ...src.userData, solid: { ...solid, spheres: sp, zs }, sharedNormals: undefined };
+  }
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
+/** A child's local transform after its parent bone is bent (it rides along the arc). */
+function bendChild(bd: Bend, local: THREE.Matrix4): THREE.Matrix4 {
+  if (!bd.theta) return local;
+  const p = new THREE.Vector3().setFromMatrixPosition(local);
+  const s = Math.min(bd.len, Math.max(0, p.y));
+  const [u, y, phi] = planarBend(bd.len, bd.theta, 0, s);
+  // bend in a frame where the bend direction is +X, then turn back
+  const toDir = new THREE.Matrix4().makeRotationY(-bd.dir);
+  const planar = new THREE.Matrix4().makeRotationZ(-phi).setPosition(u, y, 0);
+  const arc = toDir.clone().multiply(planar).multiply(toDir.clone().invert());
+  return arc.multiply(new THREE.Matrix4().makeTranslation(0, -s, 0)).multiply(local);
+}
+
+/** Points along a (possibly bent) bone, for the skeleton line. */
+function bonePoints(bd: Bend): THREE.Vector3[] {
+  const n = bd.theta ? 16 : 1;
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const [x, y, z] = bendPoint(bd, 0, (bd.len * i) / n, 0);
+    return new THREE.Vector3(x, y, z);
+  });
+}
+
+/** Where a bone's middle sits (the bend handle). */
+function bendMid(bd: Bend): THREE.Vector3 {
+  const [x, y, z] = bendPoint(bd, 0, bd.len / 2, 0);
+  return new THREE.Vector3(x, y, z);
+}
+
+/**
+ * The bend that puts a bone's middle at local point `p`: direction from where
+ * it sits around the bone, amount from how far it's pulled off the straight line.
+ */
+export function bendFromMid(len: number, p: THREE.Vector3): { bend: number; dir: number } {
+  const off = Math.hypot(p.x, p.z);
+  const dir = Math.atan2(p.z, p.x);
+  // sideways offset of an arc's midpoint: len * (1 - cos(theta/2)) / theta, rising to theta ~= 2.33
+  const sag = (theta: number) => (theta < 1e-4 ? (len * theta) / 8 : (len * (1 - Math.cos(theta / 2))) / theta);
+  let lo = 0, hi = 2.33;
+  if (off >= sag(hi)) return { bend: hi / Math.PI, dir };
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (sag(mid) < off) lo = mid;
+    else hi = mid;
+  }
+  return { bend: (lo + hi) / 2 / Math.PI, dir };
+}
 
 /** Rest-pose world frame of a bone: X = drawing side, Y = along the bone, origin at its start. */
 function restFrame(def: ExpandedBone) {
@@ -228,15 +378,19 @@ export class Creature {
     for (const def of this.rig.bones) {
       const { length, world: restWorld } = restFrame(def);
       const parent = def.parent ? this.bones.get(def.parent)! : null;
-      const local = parent ? parent.restWorld.clone().invert().multiply(restWorld) : restWorld.clone();
+      let local = parent ? parent.restWorld.clone().invert().multiply(restWorld) : restWorld.clone();
+      // children of a bendy bone ride along its curve
+      if (parent) local = bendChild(bendOf(parent.def, parent.length), local);
       const pivot = new THREE.Object3D();
       const scale = new THREE.Vector3();
       local.decompose(pivot.position, pivot.quaternion, scale);
       pivot.userData.boneId = def.id;
       (parent ? parent.pivot : this.group).add(pivot);
 
+      const bd = bendOf(def, length);
+      const tipAt = bendPoint(bd, 0, length, 0);
       const tip = new THREE.Mesh(tipGeo, tipMat);
-      tip.position.set(0, length, 0);
+      tip.position.set(tipAt[0], tipAt[1], tipAt[2]);
       tip.renderOrder = 1000;
       tip.userData.handle = def.id;
       tip.userData.kind = 'end';
@@ -250,10 +404,16 @@ export class Creature {
       pivot.add(startHandle);
       const attach = !parent || new THREE.Vector3(...def.start).distanceTo(new THREE.Vector3(...parent.def.end)) > 0.02;
 
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, length, 0)]),
-        lineMat,
-      );
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(bonePoints(bd)), lineMat);
+
+      // rig mode: drag this to bend the bone (shown on the selected bone)
+      const bendHandle = new THREE.Mesh(bendGeo, bendMat);
+      bendHandle.position.copy(bendMid(bd));
+      bendHandle.renderOrder = 1000;
+      bendHandle.userData.handle = def.id;
+      bendHandle.userData.kind = 'bend';
+      bendHandle.visible = false;
+      pivot.add(bendHandle);
       line.renderOrder = 999;
       pivot.add(line);
 
@@ -273,6 +433,7 @@ export class Creature {
         meshKey: '',
         tip,
         startHandle,
+        bendHandle,
         attach,
         line,
         guide,
@@ -292,14 +453,19 @@ export class Creature {
       const b = this.bones.get(def.id);
       if (!b) continue;
       const { length, world } = restFrame(def);
-      const local = b.parent ? b.parent.restWorld.clone().invert().multiply(world) : world.clone();
+      let local = b.parent ? b.parent.restWorld.clone().invert().multiply(world) : world.clone();
+      if (b.parent) local = bendChild(bendOf(b.parent.def, b.parent.length), local);
       local.decompose(b.pivot.position, b.restQuat, new THREE.Vector3());
       b.pivot.quaternion.copy(b.restQuat);
       b.restWorld = world;
       b.def = def;
       if (b.mesh) b.mesh.scale.y = length / b.length;
-      b.tip.position.set(0, length, 0);
-      b.line.geometry.setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, length, 0)]);
+      const bd = bendOf(def, length);
+      const tipAt = bendPoint(bd, 0, length, 0);
+      b.tip.position.set(tipAt[0], tipAt[1], tipAt[2]);
+      b.bendHandle.position.copy(bendMid(bd));
+      b.line.geometry.dispose();
+      b.line.geometry = new THREE.BufferGeometry().setFromPoints(bonePoints(bd));
     }
     this.rootHandle.position.copy(this.list[0].pivot.position);
     this.mergeDirty = true;
@@ -320,7 +486,7 @@ export class Creature {
   }
 
   outlineFor(b: BoneRT): Vec2[] {
-    return this.state.parts[b.src].outline ?? defaultOutline(b.length, b.def.width);
+    return this.state.parts[b.src].outline ?? defaultOutline(b.length, b.def.width, b.def.widthEnd ?? b.def.width);
   }
 
   // -------------------------------------------------------------------------
@@ -368,7 +534,7 @@ export class Creature {
         lumps: style === 'clay' ? k.lumps : 0,
       };
       const geoKey = JSON.stringify([outline, geoOpts]);
-      const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1);
+      const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1) + bendKey(bendOf(b.def, b.length));
       if (key === b.meshKey) continue;
       b.meshKey = key;
       if (b.mesh) {
@@ -379,9 +545,13 @@ export class Creature {
         });
         (b.mesh.userData.mergeGeo as THREE.BufferGeometry | undefined)?.dispose();
       }
-      const geo = cachedGeometry(geoKey, () =>
+      const straight = cachedGeometry(geoKey, () =>
         buildInflatedGeometry(outline, { ...geoOpts, seed: hashString(b.src) }),
       );
+      const bd = bendOf(b.def, b.length);
+      const geo = bd.theta
+        ? cachedGeometry(geoKey + bendKey(bd), () => bendGeometry(straight, bd))
+        : straight;
       const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
       mesh.userData.baseGeo = geo;
       mesh.userData.opacity = p.opacity ?? 1;
@@ -731,8 +901,11 @@ export class Creature {
     this.eyesKey = key;
     this.eyes.removeFromParent();
     this.eyes = new THREE.Group();
+    // felt: clear fuzz from under the eyes (reset first; refilled below)
+    for (const b of this.list) if (b.mesh) setFuzzMask(b.mesh, []);
     if (!head || !head.mesh || !e.enabled) return;
     head.pivot.add(this.eyes);
+    const spots: FuzzSpot[] = [];
 
     // Work in the head's rest frame so eyes stick to the face whatever the pose.
     const toWorld = head.restWorld;
@@ -784,16 +957,20 @@ export class Creature {
       const x = new THREE.Vector3().crossVectors(y, z);
       const eye = new THREE.Group();
       eye.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
-      eye.position.copy(hit.point);
+      // stand-off: lift the eye out along its facing direction
+      eye.position.copy(hit.point).addScaledVector(z, (e.lift ?? 0) * r * 1.2);
       const style = EYE_STYLES.some((o) => o.id === e.style) ? e.style : 'googly';
-      eye.add(buildEye(style, r, sgn, headStyle, this.settingsFor(headStyle)));
+      eye.add(buildEye(style, r, sgn, headStyle, this.settingsFor(headStyle), e));
       eye.traverse((m) => {
         m.raycast = () => {};
         m.castShadow = true;
       });
       this.eyes.add(eye);
+      // bare patch just inside the eye's own rim, so it stays hidden behind it
+      spots.push({ x: hit.point.x, y: hit.point.y, z: hit.point.z, r: r * (style === 'flat' ? 1.1 : style === 'button' ? 1.0 : 0.85) });
     }
     }
+    setFuzzMask(head.mesh, spots);
   }
 
   // -------------------------------------------------------------------------
@@ -802,6 +979,7 @@ export class Creature {
   select(id: string | null) {
     this.selected = id;
     this.refreshHighlight();
+    this.setSkeletonVisible(this.skeletonShown); // move the bend handle to the new selection
   }
 
   /** Bones that share a drawing with `id` (itself plus its mirror twin). */
@@ -866,11 +1044,17 @@ export class Creature {
     this.refreshHighlight();
   }
 
+  private skeletonShown = false;
+
   setSkeletonVisible(v: boolean) {
+    this.skeletonShown = v;
+    const sel = this.selected ? this.bones.get(this.selected) : null;
     for (const b of this.list) {
       b.tip.visible = v;
       b.line.visible = v;
       b.startHandle.visible = v && this.rigMode && b.attach;
+      // the bend handle only on the selected bone (the twin follows by symmetry)
+      b.bendHandle.visible = v && this.rigMode && b === sel;
     }
     this.rootHandle.visible = v && !this.rigMode;
   }
@@ -879,11 +1063,12 @@ export class Creature {
     for (const b of this.list) {
       b.tip.material = b.tip === obj ? tipHoverMat : tipMat;
       b.startHandle.material = b.startHandle === obj ? tipHoverMat : startMat;
+      b.bendHandle.material = b.bendHandle === obj ? tipHoverMat : bendMat;
     }
   }
 
   handles(): THREE.Object3D[] {
-    if (this.rigMode) return [...this.list.map((b) => b.startHandle), ...this.list.map((b) => b.tip)];
+    if (this.rigMode) return [...this.list.map((b) => b.bendHandle), ...this.list.map((b) => b.startHandle), ...this.list.map((b) => b.tip)];
     return [this.rootHandle, ...this.list.map((b) => b.tip)];
   }
 
@@ -980,8 +1165,35 @@ const sphereGeo = new THREE.SphereGeometry(1, 32, 20);
 const glossyWhite = () => new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.15, clearcoat: 1 });
 const glossyBlack = () => new THREE.MeshPhysicalMaterial({ color: 0x1b1720, roughness: 0.12, clearcoat: 1 });
 
-function buildEye(style: EyeStyle, r: number, sgn: number, headStyle: StyleId, headSettings: StyleSettings): THREE.Object3D {
+/**
+ * A sphere built at its real size (rather than a unit sphere scaled down), so
+ * textured materials keep the same density and bump strength as the head.
+ */
+function realSphere(sx: number, sy: number, sz: number): THREE.BufferGeometry {
+  const g = sphereGeo.clone().scale(sx, sy, sz);
+  // low-poly materials read per-vertex colour
+  g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(g.getAttribute('position').count * 3).fill(1), 3));
+  return g;
+}
+
+/** Material for bead / dot / button eyes. */
+function eyeMaterial(finish: EyeFinish, color: string, headStyle: StyleId, headSettings: StyleSettings): THREE.Material {
+  switch (finish) {
+    case 'gloss':
+      return new THREE.MeshPhysicalMaterial({ color, roughness: 0.12, clearcoat: 1, clearcoatRoughness: 0.05 });
+    case 'matte':
+      return new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+    case 'glass':
+      // a coloured glass marble: strong tint so the colour reads
+      return makeMaterial('glass', color, { ...styleSettings('glass'), ...(headStyle === 'glass' ? headSettings : {}), tint: 0.85 });
+    default:
+      return makeMaterial(headStyle, color, headSettings);
+  }
+}
+
+function buildEye(style: EyeStyle, r: number, sgn: number, headStyle: StyleId, headSettings: StyleSettings, e: EyesState): THREE.Object3D {
   const g = new THREE.Group();
+  const finish = e.finish ?? 'body';
   const add = (geo: THREE.BufferGeometry, mat: THREE.Material, pos: V3, scale: V3) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(...pos);
@@ -1016,18 +1228,22 @@ function buildEye(style: EyeStyle, r: number, sgn: number, headStyle: StyleId, h
       break;
     }
     case 'bead': {
-      // a black bead rendered with the creature's own material
-      add(sphereGeo, makeMaterial(headStyle, '#1d1a22', headSettings), [0, 0, -r * 0.3], [r * 0.8, r * 0.8, r * 0.8]);
+      // a bead, by default in the creature's own material
+      add(realSphere(r * 0.8, r * 0.8, r * 0.8), eyeMaterial(finish, e.color ?? '#1d1a22', headStyle, headSettings), [0, 0, -r * 0.3], [1, 1, 1]);
       break;
     }
     case 'dot': {
-      // a flat disc of dark wool/clay pressed onto the face, in the creature's material
-      add(sphereGeo, makeMaterial(headStyle, '#2a2730', headSettings), [0, 0, 0], [r * 0.95, r * 0.95, r * 0.28]);
+      // a flat disc of dark wool/clay pressed onto the face
+      add(realSphere(r * 0.95, r * 0.95, r * 0.28), eyeMaterial(finish, e.color ?? '#2a2730', headStyle, headSettings), [0, 0, 0], [1, 1, 1]);
       break;
     }
     case 'button': {
       const R = r * 1.05;
-      const mat = new THREE.MeshPhysicalMaterial({ color: 0x2a2230, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.2 });
+      // buttons are glossy plastic unless a finish is chosen
+      const mat =
+        finish === 'body'
+          ? new THREE.MeshPhysicalMaterial({ color: e.color ?? 0x2a2230, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.2 })
+          : eyeMaterial(finish, e.color ?? '#2a2230', headStyle, headSettings);
       const body = new THREE.CylinderGeometry(1, 0.94, 1, 40);
       body.rotateX(Math.PI / 2);
       add(body, mat, [0, 0, R * 0.1], [R, R, R * 0.2]);

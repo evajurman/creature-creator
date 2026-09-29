@@ -387,6 +387,8 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
 export interface Solid {
   spheres: Float32Array;
   thickness: number;
+  /** per-sphere z centres, once a bend has carried the spheres out of the XY plane */
+  zs?: Float32Array;
 }
 
 /**
@@ -395,44 +397,73 @@ export interface Solid {
  */
 export function solidDistance(solid: Solid, x: number, y: number, z: number, grad: THREE.Vector3): number {
   const t = Math.max(solid.thickness, 0.05);
-  const zs = z / t;
   const sp = solid.spheres;
+  const zc = solid.zs;
   let best = Infinity;
   let bi = -1;
   let bl = 1;
+  let bz = 0;
   for (let i = 0; i < sp.length; i += 3) {
     const dx = x - sp[i], dy = y - sp[i + 1];
-    const l = Math.sqrt(dx * dx + dy * dy + zs * zs);
+    const dz = (z - (zc ? zc[i / 3] : 0)) / t;
+    const l = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const d = l - sp[i + 2];
     if (d < best) {
       best = d;
       bi = i;
       bl = l;
+      bz = dz;
     }
   }
   if (bi < 0) {
     grad.set(0, 0, 1);
     return Infinity;
   }
-  grad.set(x - sp[bi], y - sp[bi + 1], zs / t).divideScalar(bl || 1).normalize();
+  grad.set(x - sp[bi], y - sp[bi + 1], bz / t).divideScalar(bl || 1).normalize();
   return best * Math.min(1, t);
 }
 
 /** Default capsule-ish outline running along +Y from 0 to length. */
-export function defaultOutline(length: number, width: number): Vec2[] {
+export function defaultOutline(length: number, width: number, widthEnd = width): Vec2[] {
   const out: Vec2[] = [];
-  const rx = width / 2;
-  const ry = length / 2 + width * 0.28;
+  const ry = length / 2 + ((width + widthEnd) / 2) * 0.28;
   const cy = length / 2;
-  const n = 48;
+  const n = 64;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
     // slight superellipse so limbs look like sausages, not pointy ellipses
     const c = Math.cos(a), sn = Math.sin(a);
     const e = 0.8;
-    out.push([rx * Math.sign(c) * Math.abs(c) ** e, cy + ry * Math.sign(sn) * Math.abs(sn) ** e]);
+    const y = cy + ry * Math.sign(sn) * Math.abs(sn) ** e;
+    // taper from the base width to the tip width along the bone
+    const t = Math.min(1, Math.max(0, (y - (cy - ry)) / (2 * ry)));
+    const rx = (width + (widthEnd - width) * t) / 2;
+    out.push([rx * Math.sign(c) * Math.abs(c) ** e, y]);
   }
   return out;
+}
+
+/**
+ * Keep the part of a closed loop below (or above) the horizontal line y = h
+ * (Sutherland-Hodgman against one half-plane). Returns null if nothing is left.
+ */
+export function clipLoop(loop: Vec2[], h: number, keep: 'below' | 'above'): Vec2[] | null {
+  const inside = (p: Vec2) => (keep === 'below' ? p[1] <= h : p[1] >= h);
+  const cut = (a: Vec2, b: Vec2): Vec2 => {
+    const t = (h - a[1]) / (b[1] - a[1]);
+    return [a[0] + (b[0] - a[0]) * t, h];
+  };
+  const out: Vec2[] = [];
+  for (let i = 0; i < loop.length; i++) {
+    const cur = loop[i], prev = loop[(i + loop.length - 1) % loop.length];
+    if (inside(cur)) {
+      if (!inside(prev)) out.push(cut(prev, cur));
+      out.push(cur);
+    } else if (inside(prev)) {
+      out.push(cut(prev, cur));
+    }
+  }
+  return out.length >= 3 ? out : null;
 }
 
 // ---------------------------------------------------------------------------

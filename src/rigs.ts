@@ -12,7 +12,19 @@ export interface BoneDef {
   start: V3;
   end: V3;
   side: V3;
+  /** default shape width at the base of the bone */
   width: number;
+  /** default shape width at the tip (defaults to `width`) */
+  widthEnd?: number;
+  /** curve the bone into an arc in its drawing plane */
+  bendy?: boolean;
+  /** how far it curves, -1..1 (a full 1 is about a half-circle) */
+  bend?: number;
+  /**
+   * which way it curves, radians around the bone: 0 = sideways in the drawing
+   * plane, pi/2 = out of the drawing (for a body: forward), pi = the other side
+   */
+  bendDir?: number;
   thickness?: number;
   color?: string;
   /** Define once on the +X side; a mirrored twin is generated. */
@@ -264,12 +276,24 @@ const round3 = (a: V3): V3 => a.map((v) => Math.round(v * 1000) / 1000) as V3;
  * moves the whole bone. Everything hanging below follows. `delta` is in world
  * space for the scene bone that was grabbed; mirrored twins follow.
  */
-export function moveJoint(rig: RigState, sceneId: string, kind: 'start' | 'end', delta: V3) {
+export function moveJoint(rig: RigState, sceneId: string, kind: 'start' | 'end', delta: V3, lockCenter = false) {
   const bones = expandRig(rig).bones;
   const grabbed = bones.find((b) => b.id === sceneId);
   if (!grabbed) return;
   const byId = new Map(rig.bones.map((b) => [b.id, b]));
   const moved = new Set<string>();
+  // with symmetry locked, bones sitting on the centre line stay on it
+  const centred = new Map<string, [boolean, boolean]>();
+  if (lockCenter) {
+    for (const d of rig.bones) if (!d.mirror) centred.set(d.id, [Math.abs(d.start[0]) < 0.02, Math.abs(d.end[0]) < 0.02]);
+  }
+  const relock = () => {
+    for (const [id, [s, e]] of centred) {
+      const d = byId.get(id)!;
+      if (s) d.start = [0, d.start[1], d.start[2]];
+      if (e) d.end = [0, d.end[1], d.end[2]];
+    }
+  };
 
   // scene bones below the grabbed one on this side, and on the twin side
   const below = (rootId: string) => {
@@ -302,10 +326,14 @@ export function moveJoint(rig: RigState, sceneId: string, kind: 'start' | 'end',
     const twin = grabbed.baseId + (grabbed.sideSign === 1 ? 'R' : 'L');
     for (const b of below(twin)) shift(b, mirrorV(delta), b.sideSign);
   }
+  relock();
 }
 
-/** Sprout a new two-segment limb from the side of a bone. */
-export function addLimb(rig: RigState, sceneId: string, symmetric: boolean): PartCopy[] {
+/**
+ * Sprout a new limb from the side of a bone: two segments, or a single bone
+ * with `segments: 1`. With `symmetric`, it comes as a mirrored pair.
+ */
+export function addLimb(rig: RigState, sceneId: string, symmetric: boolean, segments: 1 | 2 = 2): PartCopy[] {
   const f = findDef(rig, sceneId);
   if (!f) return [];
   const { ex } = f;
@@ -322,12 +350,77 @@ export function addLimb(rig: RigState, sceneId: string, symmetric: boolean): Par
   // pair defs live on +X; a single limb on a paired bone attaches to that exact side
   const toDef = (v: V3): V3 => (mirror && v[0] < 0 ? mirrorV(v) : v);
   const parent = pairParent && mirror ? ex.baseId : ex.id;
+  const src = partSrc(f.def);
+  if (segments === 1) {
+    const id = uniqueId(rig, 'bone');
+    const end = add3(s1, [outward * 0.4, -0.16, 0]);
+    rig.bones.push({ id, name: 'Bone', parent, start: round3(toDef(s1)), end: round3(toDef(end)), side: [0, 1, 0], width: w, mirror });
+    return [{ from: src, to: mirror ? id + 'L' : id }];
+  }
   const id1 = uniqueId(rig, 'limb');
   rig.bones.push({ id: id1, name: 'Limb', parent, start: round3(toDef(s1)), end: round3(toDef(e1)), side: [0, 1, 0], width: w, mirror });
   const id2 = uniqueId(rig, 'limb');
   rig.bones.push({ id: id2, name: 'Limb tip', parent: id1, start: round3(toDef(e1)), end: round3(toDef(e2)), side: [0, 1, 0], width: w * 0.85, mirror });
-  const src = partSrc(f.def);
   return [id1, id2].map((id) => ({ from: src, to: mirror ? id + 'L' : id }));
+}
+
+/** Result of splitting a bone: which drawings to cut, and where. */
+export interface SplitResult {
+  /** [lower part id, upper (new) part id] pairs, one per side */
+  pairs: [string, string][];
+  /** height (along the bone) of the cut, in the bone's drawing coordinates */
+  at: number;
+}
+
+/**
+ * Split a bone at its middle into two jointed halves. Anything that hung off
+ * the far half moves to the new bone; a bendy bone shares its curve between them.
+ */
+export function splitBone(rig: RigState, sceneId: string): SplitResult | null {
+  const f = findDef(rig, sceneId);
+  if (!f) return null;
+  const d = f.def;
+  const dir = sub3(d.end, d.start);
+  const len = len3(dir);
+  if (len < 0.04) return null;
+  const mid = round3(scale3(add3(d.start, d.end), 0.5));
+  const w0 = d.width, w1 = d.widthEnd ?? d.width;
+  const wMid = Math.round(((w0 + w1) / 2) * 1000) / 1000;
+  const nid = uniqueId(rig, d.id.replace(/\d+$/, ''));
+  const upper: BoneDef = {
+    ...structuredClone(d),
+    id: nid,
+    name: d.name.replace(/ \d+$/, '') + ' 2',
+    parent: d.id,
+    start: mid,
+    end: [...d.end],
+    width: wMid,
+    widthEnd: w1,
+    anchor: false,
+  };
+  if (d.bendy && d.bend) {
+    upper.bend = d.bend / 2;
+    d.bend = d.bend / 2;
+  }
+  d.end = mid;
+  d.widthEnd = wMid;
+
+  // children attached past the middle now hang off the new bone
+  // how far along the (original) bone a point sits: 0 = base, 1 = tip
+  const along = (p: V3) => ((p[0] - d.start[0]) * dir[0] + (p[1] - d.start[1]) * dir[1] + (p[2] - d.start[2]) * dir[2]) / (len * len);
+  for (const c of rig.bones) {
+    if (c === upper) continue;
+    if (c.parent === d.id) {
+      if (along(c.start) > 0.5) c.parent = nid;
+    } else if (!c.mirror && d.mirror && (c.parent === d.id + 'L' || c.parent === d.id + 'R')) {
+      // a single bone hanging off one twin: measure it on the +X side where `d` lives
+      const side = c.parent.slice(-1);
+      if (along(side === 'R' ? mirrorV(c.start) : c.start) > 0.5) c.parent = nid + side;
+    }
+  }
+  rig.bones.splice(rig.bones.indexOf(d) + 1, 0, upper);
+  const lower = partIds(d), top = partIds(upper);
+  return { pairs: lower.map((id, i) => [id, top[i]] as [string, string]), at: len / 2 };
 }
 
 /** Add one segment continuing on from the tip of a bone (a hand, a tail tip...). */

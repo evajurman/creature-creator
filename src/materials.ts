@@ -362,6 +362,8 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
       shader.uniforms.shellLevel = { value: o.shell.level };
       shader.uniforms.hairMap = { value: o.shell.hair };
       shader.uniforms.hairTiling = { value: o.shell.hairTiling };
+      // spots to keep bare (under eyes); updated in place by setFuzzMask
+      shader.uniforms.eyeMask = { value: (mat.userData.eyeMask ??= emptyMask()) };
     }
     shader.vertexShader =
       'varying vec3 vTriPos;\nvarying vec3 vTriNormal;\nuniform float shellOffset;\n' +
@@ -418,12 +420,15 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
       );
     }
     if (o.shell) {
-      fs = 'uniform float shellLevel;\nuniform sampler2D hairMap;\nuniform float hairTiling;\n' + fs;
+      fs = 'uniform float shellLevel;\nuniform sampler2D hairMap;\nuniform float hairTiling;\nuniform vec4 eyeMask[8];\n' + fs;
       fs = fs.replace(
         '#include <clipping_planes_fragment>',
         `#include <clipping_planes_fragment>
          vec4 fibre = triS(hairMap, vTriPos, hairTiling);
-         if (fibre.r < shellLevel) discard;`,
+         if (fibre.r < shellLevel) discard;
+         for (int i = 0; i < 8; i++) {
+           if (eyeMask[i].w > 0.0 && distance(vTriPos, eyeMask[i].xyz) < eyeMask[i].w) discard;
+         }`,
       );
       // deeper fibres sit in shadow, tips catch the light; each fibre gets a warm/cool tint
       fs = fs.replace(
@@ -532,6 +537,8 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, setting
         shell: { offset: height * Math.pow(level, 1.3), level: floor + level * 0.74, hair: f.hair, hairTiling: 2.4 },
       },
     );
+    // bare spots (under eyes), filled by setFuzzMask before or after the shader compiles
+    m.userData.eyeMask = emptyMask();
     const mesh = new THREE.Mesh(geo, m);
     mesh.raycast = () => {};
     mesh.castShadow = false;
@@ -564,6 +571,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
   }
   const count = Math.round(Math.min(1400, Math.max(60, total * 900)) * amount);
   const verts: number[] = [];
+  const roots: number[] = [];
   const cols: number[] = [];
   const baseCol = new THREE.Color(color);
   const warm = new THREE.Color(1.1, 1.0, 0.85), cool = new THREE.Color(0.92, 0.98, 1.08);
@@ -595,6 +603,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
     axis.set(r() - 0.5, r() - 0.5, r() - 0.5).addScaledVector(n, 0.8).normalize();
     const turn = (0.35 + r() * 0.8) * (r() < 0.5 ? -1 : 1);
     const steps = 9;
+    roots.push(p.x, p.y, p.z);
     col.copy(baseCol).multiply(r() < 0.5 ? warm : cool).multiplyScalar(0.9 + r() * 0.25);
     const cur = p.clone().addScaledVector(n, -0.001);
     for (let s = 0; s < steps; s++) {
@@ -611,7 +620,52 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
   const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }));
   lines.raycast = () => {};
   lines.userData.fx = true;
+  // for setFuzzMask: where each wisp grows from, and the untouched positions
+  lines.userData.hairRoots = Float32Array.from(roots);
+  lines.userData.hairVerts = 18; // 9 segments x 2 ends
+  lines.userData.orig = Float32Array.from(verts);
   return lines;
+}
+
+/** A bare spot on felt (under an eye): centre and radius in the part's local space. */
+export interface FuzzSpot {
+  x: number;
+  y: number;
+  z: number;
+  r: number;
+}
+
+function emptyMask(): THREE.Vector4[] {
+  return Array.from({ length: 8 }, () => new THREE.Vector4(0, 0, 0, 0));
+}
+
+/**
+ * Keep felt fuzz and stray hairs off the given spots, so e.g. a button eye
+ * sits on a clean patch rather than having wisps poke through it.
+ * Pass no spots to grow everything back.
+ */
+export function setFuzzMask(part: THREE.Object3D, spots: FuzzSpot[]) {
+  part.traverse((o) => {
+    const mat = (o as THREE.Mesh).material as THREE.Material | undefined;
+    const mask = mat?.userData?.eyeMask as THREE.Vector4[] | undefined;
+    if (mask) mask.forEach((v, i) => (spots[i] ? v.set(spots[i].x, spots[i].y, spots[i].z, spots[i].r) : v.set(0, 0, 0, 0)));
+    const roots = o.userData.hairRoots as Float32Array | undefined;
+    if (roots && o instanceof THREE.LineSegments) {
+      const pos = o.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const orig = o.userData.orig as Float32Array;
+      const per = o.userData.hairVerts as number;
+      for (let h = 0; h < roots.length / 3; h++) {
+        const x = roots[h * 3], y = roots[h * 3 + 1], z = roots[h * 3 + 2];
+        const bare = spots.some((sp) => (sp.x - x) ** 2 + (sp.y - y) ** 2 + (sp.z - z) ** 2 < sp.r * sp.r);
+        for (let v = h * per; v < (h + 1) * per; v++) {
+          // a hidden wisp collapses onto its root (a zero-length, invisible line)
+          if (bare) pos.setXYZ(v, x, y, z);
+          else pos.setXYZ(v, orig[v * 3], orig[v * 3 + 1], orig[v * 3 + 2]);
+        }
+      }
+      pos.needsUpdate = true;
+    }
+  });
 }
 
 /**

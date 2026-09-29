@@ -324,3 +324,15 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .creature-actions { display: flex; gap: 6px; }
 .creature-actions button { padding: 4px 8px; font-size: 12px; }
 .creature-actions button.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
+
+.rig-lock { display: inline-flex; margin: 4px 0 6px; }
+.rig-sub { margin: 12px 0 2px; }
+#rig-bend-row.off { opacity: .4; pointer-events: none; }
+
+#rig-bend-dir-row.off { opacity: .4; pointer-events: none; }
+.dot.green { background: #22c55e; }
+.dot.diamond { border-radius: 2px; transform: rotate(45deg) scale(.85); }
+
+#eye-look[hidden] { display: none; }
+#eye-look { margin-top: 8px; }
+.eye-swatches { grid-template-columns: repeat(8, 1fr); margin: 6px 0; }

@@ -9,8 +9,8 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { Creature, defaultState, EYE_STYLES, type Attachment, type BoneRT, type CreatureState, type EyeStyle, type Placement } from './creature';
-import { bounds, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
+import { bendFromMid, Creature, defaultState, EYE_STYLES, type Attachment, type BoneRT, type CreatureState, type EyeFinish, type EyeStyle, type PartState, type Placement } from './creature';
+import { bounds, clipLoop, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import {
   buildThing,
   collection,
@@ -41,7 +41,9 @@ import {
   rigFromTemplate,
   saveRig,
   savedRigs,
+  splitBone,
   unlinkPair,
+  type BoneDef,
   type PartCopy,
   type RigState,
   type V3,
@@ -488,7 +490,7 @@ const raycaster = new THREE.Raycaster();
 const pointer = { downX: 0, downY: 0, moved: false };
 let drag: {
   id: string;
-  kind: 'root' | 'start' | 'end';
+  kind: 'root' | 'start' | 'end' | 'bend';
   plane: THREE.Plane;
   offset: THREE.Vector3;
   startHit: THREE.Vector3;
@@ -513,7 +515,7 @@ canvas.addEventListener('pointerdown', (e) => {
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pos);
   // the root offset lives inside the creature's placement, so work in its local space
   const offset = id === 'root' ? creature.group.position.clone().sub(creature.root.worldToLocal(pos.clone())) : new THREE.Vector3();
-  const kind = id === 'root' ? 'root' : (h.userData.kind as 'start' | 'end');
+  const kind = id === 'root' ? 'root' : (h.userData.kind as 'start' | 'end' | 'bend');
   drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: mode === 'rig' ? JSON.stringify(state.rig) : undefined };
   $('#viewport').style.cursor = 'grabbing';
 });
@@ -525,12 +527,25 @@ canvas.addEventListener('pointermove', (e) => {
     const hit = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
     if (!hit) return;
     drag.moved = drag.moved || pointer.moved;
-    if (drag.rigBase && drag.kind !== 'root') {
+    if (drag.rigBase && drag.kind === 'bend') {
+      // the green diamond: put the bone's middle where the pointer is
+      if (!drag.moved) return;
+      const b = creature.bones.get(drag.id);
+      const def = b && state.rig.bones.find((x) => x.id === b.def.baseId);
+      if (!b || !def) return;
+      const { bend, dir } = bendFromMid(b.length, b.pivot.worldToLocal(hit.clone()));
+      def.bendy = bend > 0.01;
+      def.bend = Math.round(bend * 1000) / 1000;
+      // defs describe the left twin; a right twin's direction is mirrored
+      def.bendDir = Math.round((b.def.sideSign === -1 ? -dir : dir) * 1000) / 1000;
+      creature.relayout(state.rig);
+      creature.sync();
+    } else if (drag.rigBase && drag.kind !== 'root' && drag.kind !== 'bend') {
       if (!drag.moved) return;
       // skeleton coordinates are relative to the creature's placement (it may be turned)
       const d = hit.clone().sub(drag.startHit).applyQuaternion(creature.root.quaternion.clone().invert());
       state.rig = JSON.parse(drag.rigBase) as RigState;
-      moveJoint(state.rig, drag.id, drag.kind, d.toArray() as V3);
+      moveJoint(state.rig, drag.id, drag.kind, d.toArray() as V3, rigLocked());
       creature.relayout(state.rig);
     } else if (drag.id === 'root') {
       creature.group.position.copy(creature.root.worldToLocal(hit).add(drag.offset));
@@ -2091,6 +2106,26 @@ function renderEyes() {
   $<HTMLInputElement>('#eye-spacing').value = String(pair.spacing);
   $<HTMLInputElement>('#eye-height').value = String(pair.height);
   $('#eye-sliders').style.opacity = e.enabled ? '1' : '.4';
+  $<HTMLInputElement>('#eye-lift').value = String(e.lift ?? 0);
+  // finish and colour only apply to the styles made of a material
+  const shaped = e.enabled && (e.style === 'bead' || e.style === 'dot' || e.style === 'button');
+  $('#eye-look').hidden = !shaped;
+  if (shaped) {
+    const finish = e.finish ?? 'body';
+    document.querySelectorAll<HTMLButtonElement>('#eye-finish button').forEach((b) => b.classList.toggle('active', b.dataset.finish === finish));
+    const current = (e.color ?? (e.style === 'bead' ? '#1d1a22' : '#2a2730')).toLowerCase();
+    const sw = $('#eye-swatches');
+    sw.innerHTML = '';
+    for (const c of EYE_SWATCHES) {
+      const b = document.createElement('button');
+      b.style.background = c;
+      b.title = c;
+      b.classList.toggle('active', c === current);
+      b.onclick = () => setEyeLook((x) => (x.color = c));
+      sw.append(b);
+    }
+    $<HTMLInputElement>('#eye-color').value = current;
+  }
 }
 
 function renderUI() {
@@ -2216,9 +2251,23 @@ function renderRigPanel() {
   const paired = !!b && b.def.sideSign !== 0;
   $<HTMLButtonElement>('#rig-dup').disabled = !b || isRoot;
   $<HTMLButtonElement>('#rig-del').disabled = !b || isRoot;
-  $<HTMLButtonElement>('#rig-unlink').disabled = !paired;
+  $<HTMLButtonElement>('#rig-unlink').disabled = !paired || rigLocked();
   $<HTMLButtonElement>('#rig-eyes').disabled = !b || state.rig.headId === selected;
+  $<HTMLButtonElement>('#rig-split').disabled = !b;
   $('#rig-pair-note').textContent = paired ? 'Mirrored pair: both sides move together.' : '';
+  $<HTMLInputElement>('#rig-sym').checked = rigLocked();
+  $('#rig-lock-label').classList.toggle('on', rigLocked());
+  $('#rig-lock-icon').textContent = rigLocked() ? '🔒' : '🔓';
+  if (b) {
+    $<HTMLInputElement>('#rig-w0').value = String(b.def.width);
+    $<HTMLInputElement>('#rig-w1').value = String(b.def.widthEnd ?? b.def.width);
+    $('#rig-drawn-note').hidden = !state.parts[b.src]?.outline;
+    $<HTMLInputElement>('#rig-bendy').checked = !!b.def.bendy;
+    $<HTMLInputElement>('#rig-bend').value = String(b.def.bend ?? 0);
+    $<HTMLInputElement>('#rig-bend-dir').value = String(Math.round(((b.def.bendDir ?? 0) * 180) / Math.PI));
+    $('#rig-bend-row').classList.toggle('off', !b.def.bendy);
+    $('#rig-bend-dir-row').classList.toggle('off', !b.def.bendy);
+  }
 
   const list = $('#saved-rig-list');
   list.innerHTML = '';
@@ -2245,7 +2294,90 @@ function renderRigPanel() {
   if (!list.children.length) list.innerHTML = '<p class="muted small">No saved rigs yet.</p>';
 }
 
-$('#rig-add').onclick = () => rigEdit((rig) => addLimb(rig, selected, $<HTMLInputElement>('#rig-sym').checked), false);
+$('#rig-add').onclick = () => rigEdit((rig) => addLimb(rig, selected, rigLocked()), false);
+$('#rig-bone').onclick = () => rigEdit((rig) => addLimb(rig, selected, rigLocked(), 1), false);
+$('#rig-split').onclick = () => {
+  const r = splitBone(state.rig, selected);
+  if (!r) {
+    hint('This bone is too short to split', 1800, true);
+    return;
+  }
+  // cut any drawing in two at the split so each half keeps its piece
+  for (const [lo, hi] of r.pairs) {
+    const p = state.parts[lo];
+    if (!p) continue; // right twins share the left's drawing
+    const upper: PartState = { ...structuredClone(p), outline: null };
+    if (p.outline) {
+      const below = clipLoop(p.outline, r.at, 'below');
+      const above = clipLoop(p.outline, r.at, 'above');
+      p.outline = below;
+      upper.outline = above ? above.map(([x, y]) => [x, y - r.at] as Vec2) : null;
+    }
+    state.parts[hi] = upper;
+  }
+  rigEdit(() => [], false);
+  hint('Split into two jointed halves', 1800);
+};
+
+// ---- lock symmetry (remembered) ----
+const RIG_PREFS_KEY = 'creature-creator/rig-prefs';
+let rigLock = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(RIG_PREFS_KEY) ?? '{}').lock ?? true;
+  } catch {
+    return true;
+  }
+})() as boolean;
+function rigLocked() {
+  return rigLock;
+}
+$<HTMLInputElement>('#rig-sym').onchange = (e) => {
+  rigLock = (e.target as HTMLInputElement).checked;
+  try {
+    localStorage.setItem(RIG_PREFS_KEY, JSON.stringify({ lock: rigLock }));
+  } catch {
+    /* ignore */
+  }
+  renderRigPanel();
+  hint(rigLock ? 'Symmetry locked: new bones come in pairs, centre bones stay centred' : 'Symmetry unlocked', 2000);
+};
+
+// ---- per-bone default-shape widths and bend, applied live ----
+let boneEditPending = false;
+function editBone(fn: (d: BoneDef) => void) {
+  const b = creature.bones.get(selected);
+  const def = b && state.rig.bones.find((d) => d.id === b.def.baseId);
+  if (!def) return;
+  fn(def);
+  if (boneEditPending) return;
+  boneEditPending = true;
+  requestAnimationFrame(() => {
+    boneEditPending = false;
+    // re-seat bones (bends move children) and rebuild the affected parts
+    creature.relayout(state.rig);
+    creature.sync();
+  });
+}
+function commitBoneEdit() {
+  if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
+  commit();
+  renderRigPanel();
+}
+const round3n = (v: string) => Math.round(parseFloat(v) * 1000) / 1000;
+$<HTMLInputElement>('#rig-w0').oninput = (e) => editBone((d) => (d.width = round3n((e.target as HTMLInputElement).value)));
+$<HTMLInputElement>('#rig-w1').oninput = (e) => editBone((d) => (d.widthEnd = round3n((e.target as HTMLInputElement).value)));
+$<HTMLInputElement>('#rig-bend').oninput = (e) => editBone((d) => (d.bend = round3n((e.target as HTMLInputElement).value)));
+$<HTMLInputElement>('#rig-bend-dir').oninput = (e) =>
+  editBone((d) => (d.bendDir = Math.round(parseFloat((e.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000));
+for (const id of ['#rig-w0', '#rig-w1', '#rig-bend', '#rig-bend-dir']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
+$<HTMLInputElement>('#rig-bendy').onchange = (e) => {
+  const on = (e.target as HTMLInputElement).checked;
+  editBone((d) => {
+    d.bendy = on;
+    if (on && !d.bend) d.bend = 0.35; // start with a visible curve
+  });
+  requestAnimationFrame(() => commitBoneEdit());
+};
 $('#rig-extend').onclick = () => rigEdit((rig) => extendBone(rig, selected), false);
 $('#rig-dup').onclick = () => rigEdit((rig) => duplicateLimb(rig, selected), true);
 $('#rig-unlink').onclick = () => rigEdit((rig) => unlinkPair(rig, selected), true);
@@ -2579,6 +2711,31 @@ for (const k of ['size', 'spacing', 'height'] as const) {
   };
   input.onchange = () => commit();
 }
+
+const EYE_SWATCHES = ['#1d1a22', '#2a2730', '#3b2a20', '#1f3a5a', '#2f5d3a', '#6a1f2a', '#8a6d3b', '#f4f1ea'];
+
+function setEyeLook(fn: (e: CreatureState['eyes']) => void) {
+  fn(state.eyes);
+  creature.sync();
+  commit();
+  renderEyes();
+}
+document.querySelectorAll<HTMLButtonElement>('#eye-finish button').forEach((b) => {
+  b.onclick = () => setEyeLook((e) => (e.finish = b.dataset.finish as EyeFinish));
+});
+$<HTMLInputElement>('#eye-color').oninput = (ev) => {
+  state.eyes.color = (ev.target as HTMLInputElement).value;
+  creature.sync();
+};
+$<HTMLInputElement>('#eye-color').onchange = () => {
+  commit();
+  renderEyes();
+};
+$<HTMLInputElement>('#eye-lift').oninput = (ev) => {
+  state.eyes.lift = parseFloat((ev.target as HTMLInputElement).value);
+  creature.sync();
+};
+$<HTMLInputElement>('#eye-lift').onchange = () => commit();
 
 $<HTMLInputElement>('#skeleton-build').onchange = () => updateSkeletonVisibility();
 $('#reset-pose').onclick = () => {
