@@ -63,10 +63,22 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.VSMShadowMap;
+// Shadows don't depend on the camera: the loop redraws the map only when a
+// shadow caster or the key light actually changed (see shadowsChanged).
+renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.toneMappingExposure = 1.0;
 
 const scene = new THREE.Scene();
+
+// Render on demand: the loop only draws when something asked for it (any
+// input, a commit, camera motion, a merge or skin update...). A couple of
+// extra frames cover work that lands in a later rAF callback.
+let renderFrames = 3;
+function invalidate(frames = 3) {
+  renderFrames = Math.max(renderFrames, frames);
+}
+
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 setGlassEnvironment(scene.environment);
@@ -267,6 +279,22 @@ const gtao = new GTAOPass(scene, camera, 1, 1);
 gtao.updateGtaoMaterial({ radius: 0.28, distanceExponent: 1.6, thickness: 1.2, scale: 1.3, samples: 16 });
 gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
 gtao.blendIntensity = 1.0;
+// GTAO's normal/depth pass draws every mesh with one override material, so felt
+// fuzz shells lose their offset and land exactly on the surface they cover:
+// twelve redundant copies. Hide them for that pass (the result is identical).
+const gtaoRender = gtao.render.bind(gtao);
+gtao.render = (...args: Parameters<GTAOPass['render']>) => {
+  const shells: THREE.Object3D[] = [];
+  scene.traverseVisible((o) => {
+    if (o.userData.fx && o instanceof THREE.Mesh) shells.push(o);
+  });
+  shells.forEach((o) => (o.visible = false));
+  try {
+    gtaoRender(...args);
+  } finally {
+    shells.forEach((o) => (o.visible = true));
+  }
+};
 composer.addPass(gtao);
 // optional macro-photo depth of field, focused on whatever the camera orbits
 const bokeh = new BokehPass(scene, camera, { focus: 5, aperture: 0.004, maxblur: 0.012 });
@@ -363,6 +391,7 @@ const history: string[] = [];
 let hIndex = -1;
 
 function commit() {
+  invalidate();
   world.creatures[world.active] = state;
   const snap = JSON.stringify(world);
   if (snap === history[hIndex]) return;
@@ -376,6 +405,7 @@ function commit() {
 }
 
 function restore(snap: string) {
+  invalidate();
   const next = JSON.parse(snap) as World;
   // Rebuild only creatures whose skeleton changed (or that are new); the rest
   // just take their restored state.
@@ -385,6 +415,8 @@ function restore(snap: string) {
     if (c && JSON.stringify(c.state.rig) === JSON.stringify(s.rig)) {
       c.state = s;
       c.sync();
+      // merge settings may differ without any part or pose changing
+      c.markMergeDirty();
     } else {
       c?.dispose();
       creatures[i] = makeCreature(s);
@@ -2969,8 +3001,42 @@ function resize() {
   overlay.height = h * dpr;
   sizeMirror();
   renderOverlay();
+  invalidate();
 }
 new ResizeObserver(resize).observe(viewport);
+
+// Anything the user does may change the scene. Pointer moves only count over
+// the viewport (hover highlights, gizmo) or while a button is held.
+for (const type of ['pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'click']) {
+  window.addEventListener(type, () => invalidate(), { capture: true, passive: true });
+}
+window.addEventListener(
+  'pointermove',
+  (e) => {
+    if (e.buttons || viewport.contains(e.target as Node)) invalidate();
+  },
+  { capture: true, passive: true },
+);
+
+/**
+ * Everything the shadow map depends on: each visible caster (and its geometry
+ * edits) plus the key light's placement and frustum. Compared frame to frame.
+ */
+let shadowState: unknown[] = [];
+function shadowsChanged(): boolean {
+  scene.updateMatrixWorld();
+  const next: unknown[] = [];
+  const cam = key.shadow.camera;
+  next.push(...key.matrixWorld.elements, ...key.target.matrixWorld.elements, cam.left, cam.right, cam.top, cam.bottom, cam.far);
+  scene.traverseVisible((o) => {
+    if (!(o instanceof THREE.Mesh) || !o.castShadow) return;
+    const pos = o.geometry.getAttribute('position');
+    next.push(o, o.geometry, pos?.version ?? 0, o.material, ...o.matrixWorld.elements);
+  });
+  const changed = next.length !== shadowState.length || next.some((v, i) => v !== shadowState[i]);
+  shadowState = next;
+  return changed;
+}
 
 /**
  * Once nothing has changed for a moment, rebuild merged joins as seamless
@@ -2992,6 +3058,7 @@ function settleWhenIdle(now: number) {
   $('#settle-badge').hidden = !building;
 }
 
+let lastSkins = '';
 function loop(now: number) {
   requestAnimationFrame(loop);
   if (tween) {
@@ -3000,15 +3067,27 @@ function loop(now: number) {
     camera.position.lerpVectors(tween.p0, tween.p1, k);
     controls.target.lerpVectors(tween.t0v, tween.t1v, k);
     if (t >= 1) tween = null;
+    invalidate(2);
   }
-  controls.update();
+  // true while damping or auto-rotating
+  if (controls.update()) invalidate(2);
   const f = 1 - (now - flashStart) / 700;
+  // one extra frame after the flash ends clears the glow
+  if (f > -0.1) invalidate(1);
   if (mode === 'stuff') flashPiece(drawState ? 0 : Math.max(0, f));
   else creature.flash(drawState ? null : selected, Math.max(0, f));
-  for (const c of creatures) c.updateMerge();
+  for (const c of creatures) if (c.updateMerge()) invalidate();
   settleWhenIdle(now);
+  // skins finish building asynchronously, between frames
+  const skins = creatures.map((c) => c.skinState).join();
+  if (skins !== lastSkins) invalidate();
+  lastSkins = skins;
   if (drawState && !drawState.active) renderOverlay();
+  if (dof.enabled && now < focusMarkerUntil + 100) invalidate(1);
   updateFocus(now);
+  if (renderFrames <= 0) return;
+  renderFrames--;
+  if (shadowsChanged()) renderer.shadowMap.needsUpdate = true;
   composer.render();
 }
 

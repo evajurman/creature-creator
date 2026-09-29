@@ -117,6 +117,8 @@ interface SkinEntry {
   painted: boolean;
   /** colours the paint was made with */
   colorKey: string;
+  /** the look it was last dressed in (see dressSkin) */
+  lookKey?: string;
 }
 
 export interface BoneRT {
@@ -564,6 +566,7 @@ export class Creature {
       const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1) + bendKey(bendOf(b.def, b.length));
       if (key === b.meshKey) continue;
       b.meshKey = key;
+      this.mergeDirty = true;
       if (b.mesh) {
         b.pivot.remove(b.mesh);
         b.mesh.traverse((o) => {
@@ -721,7 +724,9 @@ export class Creature {
   }
 
   applyPose() {
-    this.mergeDirty = true;
+    // only a real change re-merges: sync() calls this on every look edit too
+    const before = this.list.map((b) => b.pivot.quaternion.clone());
+    const pos = this.group.position.clone();
     for (const b of this.list) {
       const q = this.rigMode ? null : this.state.pose[b.def.id];
       b.pivot.quaternion.copy(b.restQuat);
@@ -729,6 +734,7 @@ export class Creature {
     }
     if (this.rigMode) this.group.position.set(0, 0, 0);
     else this.group.position.set(...this.state.rootOffset);
+    if (!this.group.position.equals(pos) || this.list.some((b, i) => !b.pivot.quaternion.equals(before[i]))) this.mergeDirty = true;
   }
 
   capturePose() {
@@ -754,9 +760,9 @@ export class Creature {
   // union. Each vertex near a neighbouring part is moved onto the blended
   // surface (a fillet) and its normal is blended too, so the seam disappears.
 
-  /** Recompute merged geometry if the pose or parts changed. Cheap when clean. */
-  updateMerge() {
-    if (!this.mergeDirty) return;
+  /** Recompute merged geometry if the pose or parts changed. Cheap when clean. Returns true if it did. */
+  updateMerge(): boolean {
+    if (!this.mergeDirty) return false;
     this.mergeDirty = false;
     // Only shape changes invalidate the settled skin; a look-only change
     // (material sliders, opacity, colours while blending, eyes...) just
@@ -765,6 +771,7 @@ export class Creature {
     if (key !== this.skinKey) {
       this.skinKey = key;
       this.invalidateSkin();
+      this.mergeDirty = false; // merging right now anyway
     } else if (this.skinState === 'ready') {
       for (const sk of this.skins) this.dressSkin(sk);
     }
@@ -785,8 +792,11 @@ export class Creature {
       groups.get(key)!.push(b);
     }
 
+    // parts under a finished skin are hidden: fused again once the skin goes
+    const skinned = new Set(this.skinState === 'ready' ? this.skins.flatMap((sk) => sk.members) : []);
     for (const [, members] of groups) {
       for (const b of members) {
+        if (skinned.has(b)) continue;
         const base = b.mesh!.userData.baseGeo as THREE.BufferGeometry;
         const nbrs = on && members.length > 1 ? members.filter((o) => o !== b && this.near(b, o, Math.max(k, kc))) : [];
         if (nbrs.length === 0) {
@@ -807,6 +817,7 @@ export class Creature {
         this.setMeshGeometry(b, g, paint);
       }
     }
+    return true;
   }
 
   markMergeDirty() {
@@ -849,6 +860,8 @@ export class Creature {
     this.lastChange = performance.now();
     this.skinState = 'none';
     if (!this.skins.length) return;
+    // the parts come back into view: they may have skipped merging meanwhile
+    this.mergeDirty = true;
     for (const { mesh, members } of this.skins) {
       mesh.removeFromParent();
       mesh.traverse((o) => {
@@ -983,6 +996,15 @@ export class Creature {
       sk.painted = paintSkin(sk.mesh.geometry, sk.parts, kc, sk.lowPoly);
       sk.colorKey = colorKey;
     }
+
+    // nothing about the look changed (e.g. another part was edited): keep the
+    // current dressing; rebuilding felt fuzz and stray hairs is expensive
+    const lookKey = JSON.stringify([style, part.color, k, part.opacity ?? 1, sk.painted, colorKey, this.eyeSpots]);
+    if (lookKey === sk.lookKey) {
+      for (const b of sk.members) if (b.mesh) b.mesh.visible = false;
+      return;
+    }
+    sk.lookKey = lookKey;
 
     const mesh = sk.mesh;
     for (const c of [...mesh.children]) {
@@ -1163,6 +1185,7 @@ export class Creature {
     const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length, this.state.materialSettings]);
     if (key === this.eyesKey) return;
     this.eyesKey = key;
+    this.mergeDirty = true;
     this.eyes.removeFromParent();
     this.eyes = new THREE.Group();
     // felt: clear fuzz from under the eyes (reset first; refilled below)
