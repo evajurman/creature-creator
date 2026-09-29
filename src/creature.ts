@@ -603,7 +603,8 @@ export class Creature {
     });
 
     const p0 = base.getAttribute('position') as THREE.BufferAttribute;
-    const n0 = base.getAttribute('normal') as THREE.BufferAttribute;
+    // shared-corner normals so split (low-poly) vertices all move the same way
+    const n0 = sharedNormals(base);
     const p1 = out.getAttribute('position') as THREE.BufferAttribute;
     const n1 = out.getAttribute('normal') as THREE.BufferAttribute;
     // low-poly keeps its per-facet shading variation underneath the tint
@@ -878,6 +879,41 @@ export class Creature {
       }
     }
   }
+}
+
+/**
+ * Low-poly meshes are non-indexed: each triangle has its own copy of a corner
+ * with its own flat normal. Anything that moves vertices along their normal
+ * would push those copies apart and tear the seams, so average the normals of
+ * every copy sitting at the same position. Indexed meshes already share them.
+ */
+function sharedNormals(geo: THREE.BufferGeometry): THREE.BufferAttribute {
+  const own = geo.getAttribute('normal') as THREE.BufferAttribute;
+  if (geo.index) return own;
+  const cached = geo.userData.sharedNormals as THREE.BufferAttribute | undefined;
+  if (cached) return cached;
+  const pos = geo.getAttribute('position');
+  const keyOf = (i: number) => `${Math.round(pos.getX(i) * 1e5)},${Math.round(pos.getY(i) * 1e5)},${Math.round(pos.getZ(i) * 1e5)}`;
+  const sums = new Map<string, [number, number, number]>();
+  const keys: string[] = [];
+  for (let i = 0; i < pos.count; i++) {
+    const key = keyOf(i);
+    keys.push(key);
+    const acc = sums.get(key) ?? [0, 0, 0];
+    acc[0] += own.getX(i);
+    acc[1] += own.getY(i);
+    acc[2] += own.getZ(i);
+    sums.set(key, acc);
+  }
+  const out = new Float32Array(pos.count * 3);
+  keys.forEach((key, i) => {
+    const [x, y, z] = sums.get(key)!;
+    const l = Math.hypot(x, y, z) || 1;
+    out.set([x / l, y / l, z / l], i * 3);
+  });
+  const attr = new THREE.BufferAttribute(out, 3);
+  geo.userData.sharedNormals = attr;
+  return attr;
 }
 
 function hashString(s: string): number {
