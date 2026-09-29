@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "delaunator": "^5.1.0",
-    "three": "^0.186.1"
+    "three": "^0.186.1",
+    "three-mesh-bvh": "^0.9.15"
   },
   "devDependencies": {
     "@types/delaunator": "^5.0.3",

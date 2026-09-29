@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { buildInflatedGeometry, defaultOutline, solidDistance, type Solid, type Vec2 } from './inflate';
+import { MeshBVH } from 'three-mesh-bvh';
+import { buildInflatedGeometry, defaultOutline, type Solid, type Vec2 } from './inflate';
 import {
   castsShadow,
   setFuzzMask,
@@ -810,6 +811,9 @@ export class Creature {
       const colorKey = this.state.parts[o.src].color.toLowerCase();
       return {
         solid,
+        geo: g,
+        bvh: bvhFor(g),
+        normals: sharedNormals(g),
         k,
         inv,
         rot: new THREE.Matrix3().setFromMatrix4(o.mesh!.matrixWorld),
@@ -836,6 +840,7 @@ export class Creature {
     const grad = new THREE.Vector3(), gw = new THREE.Vector3(), gsum = new THREE.Vector3();
     const col = new THREE.Color();
 
+
     for (let i = 0; i < p0.count; i++) {
       pw.fromBufferAttribute(p0, i).applyMatrix4(toWorld);
       nw.fromBufferAttribute(n0, i).applyMatrix3(rotW).normalize();
@@ -847,7 +852,8 @@ export class Creature {
       for (const o of others) {
         q.copy(pw).applyMatrix4(o.inv);
         if (!o.box.containsPoint(q)) continue;
-        const f = solidDistance(o.solid, q.x, q.y, q.z, grad);
+        // exact signed distance to the neighbour's real surface, so both sides build the same fillet
+        const f = exactDistance(o.geo, o.bvh, o.normals, q, Math.max(o.k, kc), grad);
         if (o.tints && f < kc) {
           // 50/50 at the seam, fading to our own colour kc away from it
           const t = Math.min(1, Math.max(0, 1 - f / kc));
@@ -1149,6 +1155,65 @@ function sharedNormals(geo: THREE.BufferGeometry): THREE.BufferAttribute {
   const attr = new THREE.BufferAttribute(out, 3);
   geo.userData.sharedNormals = attr;
   return attr;
+}
+
+// ---------------------------------------------------------------------------
+// exact distances for merging
+
+const bvhCache = new WeakMap<THREE.BufferGeometry, MeshBVH>();
+/** A bounding-volume hierarchy over a part's surface, built once per geometry. */
+function bvhFor(geo: THREE.BufferGeometry): MeshBVH {
+  let bvh = bvhCache.get(geo);
+  if (!bvh) {
+    // indirect: leave the geometry's own triangle order untouched
+    bvh = new MeshBVH(geo, { indirect: true });
+    bvhCache.set(geo, bvh);
+  }
+  return bvh;
+}
+
+const hitInfo = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
+const triA = new THREE.Vector3(), triB = new THREE.Vector3(), triC = new THREE.Vector3();
+const bary = new THREE.Vector3(), nrm = new THREE.Vector3(), away = new THREE.Vector3();
+
+/**
+ * Signed distance from local point `q` to a part's actual surface (negative
+ * inside), with the outward direction written into `grad`. Returns Infinity
+ * when the surface is further than `maxD` (nothing to blend there).
+ */
+function exactDistance(
+  geo: THREE.BufferGeometry,
+  bvh: MeshBVH,
+  normals: THREE.BufferAttribute,
+  q: THREE.Vector3,
+  maxD: number,
+  grad: THREE.Vector3,
+): number {
+  const hit = bvh.closestPointToPoint(q, hitInfo, 0, maxD);
+  if (!hit) return Infinity;
+  const tri = hit.faceIndex; // already the real triangle, even in indirect mode
+  const index = geo.index;
+  const i0 = index ? index.getX(tri * 3) : tri * 3;
+  const i1 = index ? index.getX(tri * 3 + 1) : tri * 3 + 1;
+  const i2 = index ? index.getX(tri * 3 + 2) : tri * 3 + 2;
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  triA.fromBufferAttribute(pos, i0);
+  triB.fromBufferAttribute(pos, i1);
+  triC.fromBufferAttribute(pos, i2);
+  // the smooth (interpolated) normal at the closest point decides inside vs outside
+  THREE.Triangle.getBarycoord(hit.point, triA, triB, triC, bary);
+  nrm
+    .set(0, 0, 0)
+    .addScaledVector(triA.fromBufferAttribute(normals, i0), bary.x)
+    .addScaledVector(triB.fromBufferAttribute(normals, i1), bary.y)
+    .addScaledVector(triC.fromBufferAttribute(normals, i2), bary.z)
+    .normalize();
+  away.subVectors(q, hit.point);
+  const dist = away.length();
+  const sign = away.dot(nrm) >= 0 ? 1 : -1;
+  if (dist > 1e-6) grad.copy(away).divideScalar(dist).multiplyScalar(sign);
+  else grad.copy(nrm);
+  return sign * dist;
 }
 
 function hashString(s: string): number {
