@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { buildInflatedGeometry, defaultOutline, solidDistance, type Solid, type Vec2 } from './inflate';
 import {
+  castsShadow,
+  setOpacity,
   makeFuzzShells,
   makeMaterial,
   makeOutlineMaterial,
@@ -17,6 +19,8 @@ export interface PartState {
   thickness: number;
   color: string;
   style?: StyleId;
+  /** 1 = solid, lower = see-through */
+  opacity?: number;
 }
 
 export type EyeStyle = 'googly' | 'flat' | 'bead' | 'dot' | 'button';
@@ -322,7 +326,7 @@ export class Creature {
         lumps: style === 'clay' ? k.lumps : 0,
       };
       const geoKey = JSON.stringify([outline, geoOpts]);
-      const key = geoKey + style + p.color + JSON.stringify(k);
+      const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1);
       if (key === b.meshKey) continue;
       b.meshKey = key;
       if (b.mesh) {
@@ -338,7 +342,8 @@ export class Creature {
       );
       const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
       mesh.userData.baseGeo = geo;
-      mesh.castShadow = true;
+      mesh.userData.opacity = p.opacity ?? 1;
+      mesh.castShadow = castsShadow(style);
       mesh.receiveShadow = true;
       mesh.userData.boneId = b.def.id;
       if (style === 'toon' && k.ink > 0) {
@@ -351,6 +356,7 @@ export class Creature {
         for (const shell of makeFuzzShells(geo, p.color, k)) mesh.add(shell);
         if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, hashString(b.def.id), k.hairs));
       }
+      setOpacity(mesh, p.opacity ?? 1);
       b.pivot.add(mesh);
       b.mesh = mesh;
     }
@@ -801,11 +807,13 @@ export class Creature {
       if (!m) continue;
       const dim = id !== null && b.def.id !== id;
       const self = id !== null && b.def.id === id;
-      m.transparent = dim || self;
-      m.opacity = dim ? 0.18 : self ? 0.45 : 1;
+      const own = (b.mesh!.userData.opacity as number) ?? 1;
+      m.transparent = dim || self || own < 0.999;
+      m.opacity = dim ? 0.18 : self ? 0.45 : own;
       m.depthWrite = !(dim || self);
       m.needsUpdate = true;
-      b.mesh!.castShadow = !dim;
+      const style = this.state.parts[b.src].style ?? this.state.style;
+      b.mesh!.castShadow = !dim && castsShadow(style);
       for (const c of b.mesh!.children) c.visible = !id;
     }
     this.eyes.visible = !id;

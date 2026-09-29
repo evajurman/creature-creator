@@ -137,6 +137,14 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .ball.lowpoly { background: conic-gradient(#8fb8ec 0 25%, #6d98d0 0 45%, #a7c8f1 0 70%, #5a86bf 0); clip-path: polygon(50% 0, 95% 30%, 85% 85%, 25% 95%, 0 40%); border-radius: 0; }
 .ball.plastic { background: radial-gradient(circle at 32% 28%, #fff 0 8%, #f7c873 18%, #d49b2c 80%); }
 .ball.toon { background: linear-gradient(135deg, #b9a3e3 0 55%, #8e76c2 55%); border: 2px solid #2b2024; }
+.ball.glass {
+  background: radial-gradient(circle at 32% 28%, #fff 0 10%, rgba(255,255,255,0) 22%),
+    radial-gradient(circle at 60% 70%, rgba(143,184,236,.55), rgba(190,225,240,.25) 70%);
+  border: 1.5px solid rgba(90,140,190,.55);
+}
+.turned-row { justify-content: flex-start; gap: 14px; margin-top: 0; }
+.turned-row .check { margin: 4px 0; }
+.turned-row[hidden] { display: none; }
 
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin: 10px 0; cursor: pointer; }
 .check input { accent-color: var(--accent); width: 16px; height: 16px; }

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon';
+export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass';
 
 export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'clay', name: 'Clay', desc: 'Hand-moulded, fingerprinted' },
@@ -8,6 +8,7 @@ export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'lowpoly', name: 'Low-poly', desc: 'Chunky flat facets' },
   { id: 'plastic', name: 'Toy', desc: 'Glossy vinyl toy' },
   { id: 'toon', name: 'Toon', desc: 'Cel-shaded with ink lines' },
+  { id: 'glass', name: 'Glass', desc: 'Clear or frosted, refracts' },
 ];
 
 /** A per-material slider. `geometry` ones change the mesh itself, not just the shader. */
@@ -44,6 +45,12 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
     { key: 'coat', label: 'Clear coat', min: 0, max: 1, step: 0.01, value: 1 },
     { key: 'metal', label: 'Metallic', min: 0, max: 1, step: 0.01, value: 0 },
   ],
+  glass: [
+    { key: 'clarity', label: 'Clarity', min: 0, max: 1, step: 0.01, value: 0.97 },
+    { key: 'tint', label: 'Tint strength', min: 0, max: 1, step: 0.01, value: 0.2 },
+    { key: 'thick', label: 'Thickness', min: 0, max: 1, step: 0.01, value: 0.08 },
+    { key: 'ior', label: 'Refraction', min: 1, max: 2.2, step: 0.01, value: 1.45 },
+  ],
   toon: [
     { key: 'ink', label: 'Ink width', min: 0, max: 0.04, step: 0.001, value: 0.012 },
     { key: 'bands', label: 'Shade steps', min: 2, max: 6, step: 1, value: 3 },
@@ -52,6 +59,12 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
 };
 
 export type StyleSettings = Record<string, number>;
+
+let glassEnv: THREE.Texture | null = null;
+/** The reflection environment glass uses (set once by the app). */
+export function setGlassEnvironment(tex: THREE.Texture) {
+  glassEnv = tex;
+}
 
 /** Defaults for a style, with any saved overrides applied. */
 export function styleSettings(style: StyleId, overrides?: StyleSettings): StyleSettings {
@@ -473,6 +486,28 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
         clearcoat: k.coat,
         clearcoatRoughness: 0.04 + (1 - k.shine) * 0.3,
       });
+    case 'glass': {
+      // real transmission: things behind and inside are refracted and tinted
+      const white = new THREE.Color(1, 1, 1);
+      return new THREE.MeshPhysicalMaterial({
+        color: white.clone().lerp(c, k.tint * 0.6),
+        metalness: 0,
+        roughness: (1 - k.clarity) * 0.55,
+        transmission: 1,
+        ior: k.ior,
+        thickness: 0.005 + k.thick * 0.6,
+        attenuationColor: white.clone().lerp(c, 0.3 + k.tint * 0.7),
+        attenuationDistance: 0.1 + (1 - k.tint) * 3,
+        specularIntensity: 0.8,
+        clearcoat: 0.25,
+        clearcoatRoughness: (1 - k.clarity) * 0.3,
+        // the scene's environment is kept dim for the matte materials; glass
+        // gets its own brighter copy so it has crisp reflections. Not too
+        // bright: a hollow jar stacks four reflective walls.
+        envMap: glassEnv,
+        envMapIntensity: 0.75,
+      });
+    }
     case 'toon':
       return new THREE.MeshToonMaterial({ color: c, gradientMap: getToonGradient(Math.round(k.bands), k.shadow) });
   }
@@ -577,6 +612,27 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
   lines.raycast = () => {};
   lines.userData.fx = true;
   return lines;
+}
+
+/**
+ * See-through for any material: applies `opacity` to a part's material and its
+ * fuzz shells / ink. Opaque parts stay on the fast, correctly-sorted path.
+ */
+export function setOpacity(root: THREE.Object3D, opacity: number) {
+  const see = opacity < 0.999;
+  root.traverse((o) => {
+    const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+    if (!m || !(o instanceof THREE.Mesh)) return;
+    const base = (m.userData.baseOpacity as number | undefined) ?? 1;
+    if (m.transparent !== see) m.needsUpdate = true;
+    m.transparent = see;
+    m.opacity = base * opacity;
+  });
+}
+
+/** Glass shouldn't cast a solid black shadow. */
+export function castsShadow(style: StyleId) {
+  return style !== 'glass';
 }
 
 /** Inverted-hull ink outline for the toon style. */

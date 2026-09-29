@@ -26,7 +26,7 @@ import {
   type Piece,
   type Thing,
 } from './stuff';
-import { STYLE_PARAMS, STYLES, styleSettings, type StyleId } from './materials';
+import { STYLE_PARAMS, STYLES, setGlassEnvironment, styleSettings, type StyleId } from './materials';
 import {
   RIGS,
   addLimb,
@@ -66,6 +66,7 @@ renderer.toneMappingExposure = 1.0;
 const scene = new THREE.Scene();
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+setGlassEnvironment(scene.environment);
 scene.environmentIntensity = 0.3;
 
 // Studio lighting: a warm key casting soft shadows, a cool fill, and a rim to
@@ -777,10 +778,10 @@ board.visible = false;
 scene.add(board);
 const boardGrid = new THREE.Group();
 {
-  const grid = new THREE.GridHelper(2.4, 24, 0x9a8f9c, 0xcfc4b8);
+  // opaque lines (pre-faded colours) so glass pieces show the grid through them;
+  // glass only refracts opaque things
+  const grid = new THREE.GridHelper(2.4, 24, 0xc4bcc0, 0xe3dacd);
   grid.rotation.x = Math.PI / 2;
-  (grid.material as THREE.Material).transparent = true;
-  (grid.material as THREE.Material).opacity = 0.45;
   boardGrid.add(grid);
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.035, 0.05, 32),
@@ -962,8 +963,15 @@ function renderStuffPanel() {
     document.querySelectorAll<HTMLButtonElement>('#piece-kind button').forEach((b) => b.classList.toggle('active', b.dataset.kind === p.kind));
     const th = $<HTMLInputElement>('#piece-thickness');
     if (p.kind === 'flat') Object.assign(th, { min: '0.005', max: '0.3', step: '0.001' });
+    else if (p.kind === 'turned') Object.assign(th, { min: '0.003', max: '0.12', step: '0.001' });
     else Object.assign(th, { min: '0.1', max: '3', step: '0.01' });
     th.value = String(p.thickness);
+    $('#piece-thickness-label').textContent = p.kind === 'turned' ? 'Wall' : 'Thickness';
+    $('#piece-turned-row').hidden = p.kind !== 'turned';
+    $<HTMLInputElement>('#piece-hollow').checked = !!p.hollow;
+    $<HTMLInputElement>('#piece-open').checked = !!p.open;
+    $<HTMLInputElement>('#piece-open').disabled = !p.hollow;
+    $<HTMLInputElement>('#piece-opacity').value = String(p.opacity ?? 1);
     $('#piece-round-row').hidden = p.kind !== 'flat';
     $<HTMLInputElement>('#piece-round').value = String(p.round);
     $<HTMLInputElement>('#piece-z').value = String(p.z);
@@ -990,6 +998,7 @@ function renderStuffPanel() {
       b.onclick = () => updatePiece((q) => (q.style = s.id));
       st.append(b);
     }
+    renderStyleParams(p.style, $('#piece-style-params'));
   }
   renderCollection();
 }
@@ -1080,10 +1089,16 @@ document.querySelectorAll<HTMLButtonElement>('#piece-kind button').forEach((b) =
       const kind = b.dataset.kind as Piece['kind'];
       if (kind === p.kind) return;
       p.kind = kind;
-      p.thickness = kind === 'flat' ? 0.04 : 0.6;
+      p.thickness = kind === 'flat' ? 0.04 : kind === 'turned' ? 0.012 : 0.6;
+      if (kind === 'turned' && p.hollow === undefined) {
+        p.hollow = true;
+        p.open = true;
+      }
     });
 });
-for (const [id, key] of [['#piece-thickness', 'thickness'], ['#piece-round', 'round'], ['#piece-z', 'z']] as const) {
+$<HTMLInputElement>('#piece-hollow').onchange = (e) => updatePiece((p) => (p.hollow = (e.target as HTMLInputElement).checked));
+$<HTMLInputElement>('#piece-open').onchange = (e) => updatePiece((p) => (p.open = (e.target as HTMLInputElement).checked));
+for (const [id, key] of [['#piece-thickness', 'thickness'], ['#piece-round', 'round'], ['#piece-z', 'z'], ['#piece-opacity', 'opacity']] as const) {
   const input = $<HTMLInputElement>(id);
   input.oninput = () => updatePiece((p) => (p[key] = parseFloat(input.value)), false);
   input.onchange = () => commit();
@@ -1390,8 +1405,24 @@ function renderPartCard() {
   const p = selPart();
   $('#part-title').textContent = partLabel(creature.bones.get(selected)!.src);
   $<HTMLInputElement>('#thickness').value = String(p.thickness);
+  $<HTMLInputElement>('#opacity').value = String(p.opacity ?? 1);
   $<HTMLButtonElement>('#reset-shape').disabled = !p.outline;
 }
+
+let opacityPending = false;
+$<HTMLInputElement>('#opacity').oninput = (e) => {
+  selPart().opacity = parseFloat((e.target as HTMLInputElement).value);
+  if (opacityPending) return;
+  opacityPending = true;
+  requestAnimationFrame(() => {
+    opacityPending = false;
+    creature.sync();
+  });
+};
+$<HTMLInputElement>('#opacity').onchange = () => {
+  creature.sync();
+  commit();
+};
 
 function renderColors() {
   const p = selPart();
@@ -1423,9 +1454,11 @@ function renderStyles() {
   renderStyleParams(current);
 }
 
-/** Sliders for whichever material is showing; they apply to every part using it. */
-function renderStyleParams(style: StyleId) {
-  const el = $('#style-params');
+/**
+ * Sliders for a material; they apply everywhere that material is used (body
+ * parts and stuff alike). Shown in the Build panel and in the Stuff piece card.
+ */
+function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params')) {
   el.innerHTML = '';
   const values = styleSettings(style, state.materialSettings?.[style]);
   const head = document.createElement('div');
@@ -1437,8 +1470,9 @@ function renderStyleParams(style: StyleId) {
   reset.onclick = () => {
     if (state.materialSettings) delete state.materialSettings[style];
     creature.sync();
+    syncWorkbench();
     commit();
-    renderStyleParams(style);
+    renderStyleParams(style, el);
   };
   head.append(reset);
   el.append(head);
@@ -1462,6 +1496,7 @@ function renderStyleParams(style: StyleId) {
       requestAnimationFrame(() => {
         pending = false;
         creature.sync();
+        syncWorkbench();
       });
     };
     input.onchange = () => commit();

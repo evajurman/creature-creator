@@ -48,6 +48,11 @@
               <input id="thickness" type="range" min="0.1" max="4.5" step="0.01" />
               <span class="ends"><em>flat</em><em>chubby</em></span>
             </label>
+            <label class="slider">
+              <span>Opacity</span>
+              <input id="opacity" type="range" min="0.05" max="1" step="0.01" />
+              <span class="ends"><em>see-through</em><em>solid</em></span>
+            </label>
             <button id="reset-shape" class="ghost">Reset shape</button>
             <div class="attach-sec">
               <div class="sub-title">Stuff on this part</div>
@@ -119,13 +124,20 @@
             <div class="seg" id="piece-kind">
               <button data-kind="flat">▭ Flat cut-out</button>
               <button data-kind="puffy">⬭ Puffy</button>
+              <button data-kind="turned" title="Spin the shape around the dashed centre line: jars, cups, bottles">◎ Turned</button>
             </div>
-            <label class="slider"><span>Thickness</span><input id="piece-thickness" type="range" /></label>
+            <label class="slider"><span id="piece-thickness-label">Thickness</span><input id="piece-thickness" type="range" /></label>
+            <div id="piece-turned-row" class="row turned-row">
+              <label class="check"><input id="piece-hollow" type="checkbox" /> Hollow</label>
+              <label class="check"><input id="piece-open" type="checkbox" /> Open top</label>
+            </div>
             <label class="slider" id="piece-round-row"><span>Rounded</span><input id="piece-round" type="range" min="0" max="1" step="0.01" /></label>
             <label class="slider"><span>Layer</span><input id="piece-z" type="range" min="-0.2" max="0.2" step="0.002" /></label>
+            <label class="slider"><span>Opacity</span><input id="piece-opacity" type="range" min="0.05" max="1" step="0.01" /></label>
             <div class="swatches" id="piece-swatches"></div>
             <label class="color-pick"><input id="piece-color" type="color" /> Custom</label>
             <div class="mini-styles" id="piece-styles"></div>
+            <div class="style-params" id="piece-style-params"></div>
             <div class="row">
               <button id="piece-hole" class="ghost" title="Draw a hole through this piece (flat pieces)">◌ Cut a hole</button>
               <button id="piece-clear-holes" class="ghost">Fill holes</button>
