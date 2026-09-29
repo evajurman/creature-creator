@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # let an in-flight deploy finish instead of leaving the site half-published
+  cancel-in-progress: false
 
 jobs:
   build:
