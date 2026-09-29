@@ -159,7 +159,10 @@
           <p class="muted">Drag the <b class="dot orange"></b> joints to bend limbs. Drag the <b class="dot blue square"></b> handle to move the whole creature. Drag empty space to spin the camera, scroll to zoom.</p>
           <label class="check"><input id="ik" type="checkbox" checked /> Pull whole limbs (IK)</label>
           <label class="check"><input id="skeleton-build" type="checkbox" /> Show skeleton in Build mode</label>
-          <button id="reset-pose" class="ghost">Reset pose</button>
+          <div class="row">
+            <button id="drop-floor" class="ghost" title="Move the whole creature so its lowest point touches the floor">⬇ Drop to floor</button>
+            <button id="reset-pose" class="ghost">Reset pose</button>
+          </div>
         </section>
       </aside>
 
@@ -167,6 +170,13 @@
         <canvas id="gl"></canvas>
         <canvas id="overlay"></canvas>
         <div id="hint" class="hint"></div>
+        <div id="view-bar" class="view-bar" aria-label="Camera views">
+          <button data-view="front" title="View from the front">Front</button>
+          <button data-view="left" title="View from the left">Left</button>
+          <button data-view="right" title="View from the right">Right</button>
+          <button data-view="top" title="View from above">Top</button>
+          <button data-view="quarter" title="Three-quarter view">¾</button>
+        </div>
         <div id="attach-bar" class="draw-bar attach-bar" hidden>
           <span id="attach-name" class="attach-name"></span>
           <button data-gizmo="translate" class="seg-btn" title="Move (W)">✥ Move</button>

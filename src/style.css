@@ -290,3 +290,15 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .dof-slider { grid-template-columns: 44px 1fr; font-size: 12px; }
 #dof-controls .row { margin-top: 4px; }
 #dof-pick.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
+
+.view-bar {
+  position: absolute; right: 12px; bottom: 14px; display: flex; gap: 2px; padding: 3px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.08);
+}
+.view-bar button {
+  border: 0; background: transparent; padding: 5px 9px; border-radius: 9px;
+  font-weight: 700; font-size: 12px; cursor: pointer; color: var(--ink);
+}
+.view-bar button:hover { background: var(--bg); }
+@media (max-width: 760px) { .view-bar { bottom: auto; top: 12px; } }

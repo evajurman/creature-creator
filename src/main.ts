@@ -466,18 +466,76 @@ function flyTo(pos: THREE.Vector3, target: THREE.Vector3, dur = 650) {
   tween = { p0: camera.position.clone(), p1: pos, t0v: controls.target.clone(), t1v: target, start: performance.now(), dur };
 }
 
-function frameCreature(threeQuarter = false) {
-  const box = new THREE.Box3();
+/** Tight bounds of the posed creature: body parts plus any stuff it's wearing. */
+function creatureBox(precise = false): THREE.Box3 {
   creature.group.updateMatrixWorld(true);
-  for (const m of creature.meshes()) box.expandByObject(m);
+  const box = new THREE.Box3();
+  for (const m of [...creature.meshes(), ...creature.attachmentMeshes()]) if (m.visible) box.expandByObject(m, precise);
+  return box;
+}
+
+const THREE_QUARTER = new THREE.Vector3(0.62, 0.32, 0.72).normalize();
+
+/** Fly to frame the creature, keeping the current angle unless a view direction is given. */
+function frameCreature(view: boolean | THREE.Vector3 = false) {
+  const box = creatureBox();
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = box.getSize(new THREE.Vector3()).length() / 2;
-  const dir = threeQuarter
-    ? new THREE.Vector3(0.62, 0.32, 0.72).normalize()
-    : camera.position.clone().sub(controls.target).normalize();
+  const dir =
+    view instanceof THREE.Vector3
+      ? view.clone().normalize()
+      : view
+        ? THREE_QUARTER.clone()
+        : camera.position.clone().sub(controls.target).normalize();
   const dist = (radius * 0.95) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   flyTo(center.clone().addScaledVector(dir, Math.max(dist, 2)), center);
+}
+
+// The creature faces +Z; "left"/"right" are as seen by someone facing it.
+// Top is nudged off the pole so the orbit camera keeps a sensible "up".
+const VIEWS: Record<string, THREE.Vector3> = {
+  front: new THREE.Vector3(0, 0, 1),
+  left: new THREE.Vector3(-1, 0, 0),
+  right: new THREE.Vector3(1, 0, 0),
+  top: new THREE.Vector3(0, 1, 0.002),
+  quarter: THREE_QUARTER,
+};
+
+function viewFrom(name: string) {
+  const dir = VIEWS[name];
+  if (!dir) return;
+  controls.autoRotate = false;
+  $('#spin').classList.remove('on');
+  if (mode === 'stuff') {
+    const c = board.getWorldPosition(new THREE.Vector3());
+    let r = 0.7;
+    if (bench) {
+      const box = new THREE.Box3().setFromObject(bench);
+      if (!box.isEmpty()) {
+        box.getCenter(c);
+        r = Math.max(0.5, box.getSize(new THREE.Vector3()).length() * 0.7);
+      }
+    }
+    const dist = Math.max(1.4, r / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    flyTo(c.clone().addScaledVector(dir.clone().normalize(), dist), c);
+    return;
+  }
+  frameCreature(dir);
+}
+
+/** Pose mode: lower (or raise) the whole creature so its lowest point rests on the floor. */
+function dropToFloor() {
+  const box = creatureBox(true);
+  if (box.isEmpty()) return;
+  if (Math.abs(box.min.y) < 1e-4) {
+    hint('Already on the floor', 1500);
+    return;
+  }
+  creature.group.position.y -= box.min.y;
+  creature.capturePose();
+  commit();
+  hint('Dropped to the floor', 1500);
 }
 
 function focusOnBone(b: BoneRT) {
@@ -2005,6 +2063,8 @@ $('#reset-pose').onclick = () => {
   creature.resetPose();
   commit();
 };
+$('#drop-floor').onclick = () => dropToFloor();
+document.querySelectorAll<HTMLButtonElement>('#view-bar [data-view]').forEach((b) => (b.onclick = () => viewFrom(b.dataset.view!)));
 
 $('#undo').onclick = undo;
 $('#redo').onclick = redo;
