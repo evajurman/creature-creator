@@ -302,3 +302,9 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 }
 .view-bar button:hover { background: var(--bg); }
 @media (max-width: 760px) { .view-bar { bottom: auto; top: 12px; } }
+
+.pop-sub { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 12px 0 6px; }
+#floor-mode button { font-size: 11px; padding: 5px 2px; }
+.popover .floor-swatches { grid-template-columns: repeat(8, 1fr); margin: 4px 0 6px; }
+.popover .floor-swatches button { aspect-ratio: 1; border-radius: 50%; }
+#floor-mirror-opts[hidden], #floor-material-opts[hidden] { display: none; }

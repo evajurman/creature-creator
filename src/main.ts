@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
@@ -26,7 +27,7 @@ import {
   type Piece,
   type Thing,
 } from './stuff';
-import { STYLE_PARAMS, STYLES, setGlassEnvironment, styleSettings, type StyleId } from './materials';
+import { STYLE_PARAMS, STYLES, makeMaterial, setGlassEnvironment, styleSettings, type StyleId } from './materials';
 import {
   RIGS,
   addLimb,
@@ -99,7 +100,111 @@ const shadowMat = new THREE.ShadowMaterial({ opacity: 0.55 });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), shadowMat);
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
+ground.renderOrder = 2; // shadows draw over the mirror veil
 scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// floor options: none / backdrop (shadow catcher) / mirror / material
+
+type FloorMode = 'none' | 'shadow' | 'mirror' | 'material';
+const FLOOR_KEY = 'creature-creator/floor';
+const floorPrefs: { mode: FloorMode; style: StyleId; color: string; reflect: number } = (() => {
+  const defaults = { mode: 'shadow' as FloorMode, style: 'clay' as StyleId, color: '#d6c7b3', reflect: 0.55 };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(FLOOR_KEY) ?? '{}') };
+  } catch {
+    return defaults;
+  }
+})();
+let mirror: Reflector | null = null;
+// A backdrop-coloured veil over the mirror: reflection strength fades the
+// reflection toward the backdrop, so the floor stays seamless at the horizon.
+const veil = new THREE.Mesh(
+  new THREE.CircleGeometry(40, 96),
+  new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }),
+);
+veil.rotation.x = -Math.PI / 2;
+veil.position.y = -0.0005;
+veil.renderOrder = 1;
+veil.visible = false;
+scene.add(veil);
+let floorMesh: THREE.Mesh | null = null;
+let floorKey = '';
+
+function saveFloor() {
+  try {
+    localStorage.setItem(FLOOR_KEY, JSON.stringify(floorPrefs));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Veil and fog both match the (tone-compensated) backdrop exactly. */
+function refreshFloorColors() {
+  const bg = scene.background as THREE.Color | null;
+  if (!bg) return;
+  (veil.material as THREE.MeshBasicMaterial).color.copy(bg);
+  if (scene.fog) (scene.fog as THREE.Fog).color.copy(bg);
+}
+
+function sizeMirror() {
+  if (!mirror) return;
+  const dpr = Math.min(devicePixelRatio, 2);
+  mirror.getRenderTarget().setSize(Math.round(viewport.clientWidth * dpr), Math.round(viewport.clientHeight * dpr));
+}
+
+/** A real floor surface in one of the creature materials. */
+function buildFloorMesh() {
+  const settings = styleSettings(floorPrefs.style, state.materialSettings?.[floorPrefs.style]);
+  const key = JSON.stringify([floorPrefs.style, floorPrefs.color, settings]);
+  if (floorMesh && key === floorKey) return;
+  floorKey = key;
+  if (floorMesh) {
+    scene.remove(floorMesh);
+    (floorMesh.material as THREE.Material).dispose();
+    floorMesh.geometry.dispose();
+  }
+  let geo: THREE.BufferGeometry = new THREE.PlaneGeometry(50, 50, 100, 100);
+  geo.rotateX(-Math.PI / 2);
+  if (floorPrefs.style === 'lowpoly') {
+    // a gently faceted ground with per-facet shade variation
+    const pos = geo.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) pos.setY(i, (Math.sin(i * 12.9898) * 43758.5453 % 1) * 0.02);
+    geo = geo.toNonIndexed();
+    geo.computeVertexNormals();
+    const n = geo.getAttribute('position').count;
+    const colors = new Float32Array(n * 3);
+    for (let f = 0; f < n; f += 3) {
+      const k = 0.9 + ((Math.sin(f * 78.233) * 43758.5453) % 1 + 1) % 1 * 0.12;
+      for (let j = 0; j < 3; j++) colors.set([k, k, k], (f + j) * 3);
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+  floorMesh = new THREE.Mesh(geo, makeMaterial(floorPrefs.style, floorPrefs.color, settings));
+  floorMesh.position.y = -0.002;
+  floorMesh.receiveShadow = true;
+  scene.add(floorMesh);
+}
+
+function applyFloor() {
+  const m = floorPrefs.mode;
+  ground.visible = m === 'shadow' || m === 'mirror';
+  if (m === 'mirror' && !mirror) {
+    mirror = new Reflector(new THREE.CircleGeometry(40, 96), { clipBias: 0.003, color: 0xffffff, textureWidth: 1024, textureHeight: 1024 });
+    mirror.rotation.x = -Math.PI / 2;
+    mirror.position.y = -0.001;
+    scene.add(mirror);
+    sizeMirror();
+  }
+  if (mirror) mirror.visible = m === 'mirror';
+  veil.visible = m === 'mirror';
+  (veil.material as THREE.MeshBasicMaterial).opacity = 1 - floorPrefs.reflect;
+  if (m === 'material') buildFloorMesh();
+  if (floorMesh) floorMesh.visible = m === 'material';
+  // a real floor fades into the backdrop instead of ending at a hard edge
+  scene.fog = m === 'material' ? new THREE.Fog(0xffffff, 5, 20) : null;
+  refreshFloorColors();
+}
 
 const BG_KEY = 'creature-creator/bg';
 const BACKDROPS = ['#f5efe4', '#fbe3e1', '#e3efe0', '#dfe9f5', '#ebe3f5', '#fff4c7', '#3a3340', '#1d2433'];
@@ -140,6 +245,7 @@ function setBackdrop(hex: string) {
   c.getHSL(hsl);
   shadowMat.color.setHSL((hsl.h + 0.02) % 1, Math.min(1, hsl.s * 0.8 + 0.1), hsl.l * 0.25);
   hemi.groundColor.copy(c).multiplyScalar(0.8);
+  refreshFloorColors();
   try {
     localStorage.setItem(BG_KEY, hex);
   } catch {
@@ -1555,6 +1661,7 @@ function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params'))
         pending = false;
         creature.sync();
         syncWorkbench();
+        if (floorPrefs.mode === 'material' && floorPrefs.style === style) buildFloorMesh();
       });
     };
     input.onchange = () => commit();
@@ -1892,11 +1999,65 @@ $('#backdrop-btn').onclick = () => {
   pop.hidden = !pop.hidden;
   $('#backdrop-btn').classList.toggle('on', !pop.hidden);
   renderBackdrops();
+  renderFloorUI();
 };
 $<HTMLInputElement>('#backdrop-color').oninput = (e) => {
   setBackdrop((e.target as HTMLInputElement).value);
   renderBackdrops();
 };
+
+const FLOOR_SWATCHES = ['#d6c7b3', '#b9a58a', '#8d6e63', '#ece6da', '#a9c2a4', '#a3b3cf', '#4a4350', '#2b2f3a'];
+
+function renderFloorUI() {
+  document.querySelectorAll<HTMLButtonElement>('#floor-mode button').forEach((b) => b.classList.toggle('active', b.dataset.floor === floorPrefs.mode));
+  $('#floor-mirror-opts').hidden = floorPrefs.mode !== 'mirror';
+  $('#floor-material-opts').hidden = floorPrefs.mode !== 'material';
+  $<HTMLInputElement>('#floor-reflect').value = String(floorPrefs.reflect);
+  $<HTMLInputElement>('#floor-color').value = floorPrefs.color;
+  const styles = $('#floor-styles');
+  styles.innerHTML = '';
+  for (const s of STYLES) {
+    if (s.id === 'glass') continue;
+    const b = document.createElement('button');
+    b.innerHTML = `<span class="ball ${s.id}"></span>`;
+    b.append(s.name);
+    b.classList.toggle('active', s.id === floorPrefs.style);
+    b.onclick = () => updateFloor(() => (floorPrefs.style = s.id));
+    styles.append(b);
+  }
+  const sw = $('#floor-swatches');
+  sw.innerHTML = '';
+  for (const c of FLOOR_SWATCHES) {
+    const b = document.createElement('button');
+    b.style.background = c;
+    b.title = c;
+    b.classList.toggle('active', c === floorPrefs.color);
+    b.onclick = () => updateFloor(() => (floorPrefs.color = c));
+    sw.append(b);
+  }
+}
+
+function updateFloor(fn: () => void) {
+  fn();
+  saveFloor();
+  applyFloor();
+  renderFloorUI();
+}
+
+document.querySelectorAll<HTMLButtonElement>('#floor-mode button').forEach((b) => {
+  b.onclick = () => updateFloor(() => (floorPrefs.mode = b.dataset.floor as FloorMode));
+});
+$<HTMLInputElement>('#floor-reflect').oninput = (e) => {
+  floorPrefs.reflect = parseFloat((e.target as HTMLInputElement).value);
+  saveFloor();
+  applyFloor();
+};
+$<HTMLInputElement>('#floor-color').oninput = (e) => {
+  floorPrefs.color = (e.target as HTMLInputElement).value;
+  saveFloor();
+  applyFloor();
+};
+$<HTMLInputElement>('#floor-color').onchange = () => renderFloorUI();
 $<HTMLInputElement>('#ao').onchange = (e) => {
   gtao.enabled = (e.target as HTMLInputElement).checked;
 };
@@ -2181,6 +2342,7 @@ function resize() {
   const dpr = Math.min(devicePixelRatio, 2);
   overlay.width = w * dpr;
   overlay.height = h * dpr;
+  sizeMirror();
   renderOverlay();
 }
 new ResizeObserver(resize).observe(viewport);
@@ -2210,6 +2372,7 @@ function loop(now: number) {
 buildCreature();
 commit();
 renderUI();
+applyFloor();
 resize();
 requestAnimationFrame(loop);
 

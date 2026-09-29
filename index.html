@@ -205,6 +205,21 @@
           <div class="pop-title">Backdrop</div>
           <div id="backdrops" class="swatches"></div>
           <label class="color-pick"><input id="backdrop-color" type="color" /> Custom colour</label>
+          <div class="pop-sub">Floor</div>
+          <div class="seg" id="floor-mode">
+            <button data-floor="none" title="No floor: the creature floats">None</button>
+            <button data-floor="shadow" title="Invisible floor that only shows shadows">Backdrop</button>
+            <button data-floor="mirror" title="Reflective floor">Mirror</button>
+            <button data-floor="material" title="A real floor in one of the materials">Material</button>
+          </div>
+          <div id="floor-mirror-opts" hidden>
+            <label class="slider dof-slider"><span>Reflect</span><input id="floor-reflect" type="range" min="0.05" max="1" step="0.01" /></label>
+          </div>
+          <div id="floor-material-opts" hidden>
+            <div class="mini-styles" id="floor-styles"></div>
+            <div class="swatches floor-swatches" id="floor-swatches"></div>
+            <label class="color-pick"><input id="floor-color" type="color" /> Floor colour</label>
+          </div>
           <label class="check"><input id="ao" type="checkbox" checked /> Ambient occlusion</label>
           <label class="check"><input id="dof" type="checkbox" /> Depth of field (photo look)</label>
           <div id="dof-controls">
