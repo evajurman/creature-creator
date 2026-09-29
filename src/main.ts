@@ -1145,7 +1145,7 @@ function piece(): Piece | undefined {
 
 function syncWorkbench() {
   const wb = workbench();
-  const key = JSON.stringify([wb.pieces, state.materialSettings]);
+  const key = JSON.stringify([wb.pieces, wb.ownMaterial, wb.materialSettings, state.materialSettings]);
   if (key === benchKey) return;
   benchKey = key;
   if (bench) {
@@ -1328,7 +1328,7 @@ function renderStuffPanel() {
       b.onclick = () => updatePiece((q) => (q.style = s.id));
       st.append(b);
     }
-    renderStyleParams(p.style, $('#piece-style-params'));
+    renderThingMaterial(wb, [p.style], $('#piece-style-params'));
   }
   renderCollection();
 }
@@ -1496,7 +1496,11 @@ gizmo.addEventListener('objectChange', () => {
   a.scale = obj.scale.toArray() as V3;
   creature.updateTwin(a.id);
 });
-gizmo.addEventListener('mouseUp', () => commit());
+gizmo.addEventListener('mouseUp', () => {
+  // a rescaled felt attachment regrows its fuzz at the new size
+  if (selectedAttachment) creature.syncAttachments();
+  commit();
+});
 
 let selectedAttachment = '';
 
@@ -1519,6 +1523,7 @@ function deselectAttachment() {
   selectedAttachment = '';
   if (!placing) gizmo.detach();
   $('#attach-bar').hidden = true;
+  $('#attach-mat-pop').hidden = true;
   renderAttachList();
 }
 
@@ -1586,6 +1591,13 @@ function renderCreatureBar() {
     el.append(btn);
   });
   $<HTMLButtonElement>('#cr-del').disabled = world.creatures.length < 2;
+  // per-creature: only meaningful while merging is on
+  $<HTMLInputElement>('#seamless').checked = state.seamless ?? true;
+  $<HTMLInputElement>('#seamless').disabled = !(state.merge ?? true);
+  $('#seamless-row').style.opacity = (state.merge ?? true) ? '1' : '.45';
+  $('#seamless-row').title = (state.merge ?? true)
+    ? 'For this creature: after you stop changing its shape, merged parts are rebuilt as one continuous skin with no seams'
+    : 'Turn on "Merge touching parts" (under Material) to use seamless joins';
 }
 
 /** A free spot on the floor to the right of everyone else. */
@@ -1655,6 +1667,13 @@ function syncAttachBar() {
   $<HTMLInputElement>('#attach-mirror').checked = a.mirror;
   $('#attach-mirror-label').classList.toggle('on', a.mirror);
   $('#attach-name').textContent = a.thing.name;
+  if (!$('#attach-mat-pop').hidden) renderAttachMaterial();
+}
+
+function renderAttachMaterial() {
+  const a = currentAttachment();
+  if (!a) return;
+  renderThingMaterial(a.thing, [...new Set(a.thing.pieces.map((p) => p.style))], $('#attach-mat-body'));
 }
 
 function attachThing(t: Thing) {
@@ -1705,6 +1724,12 @@ $('#attach-add').onclick = () => {
   renderCollection();
 };
 $('#attach-pop-close').onclick = () => ($('#attach-pop').hidden = true);
+$('#attach-mat').onclick = () => {
+  const pop = $('#attach-mat-pop');
+  pop.hidden = !pop.hidden;
+  if (!pop.hidden) renderAttachMaterial();
+};
+$('#attach-mat-close').onclick = () => ($('#attach-mat-pop').hidden = true);
 document.querySelectorAll<HTMLButtonElement>('#attach-bar [data-gizmo]').forEach((b) => {
   b.onclick = () => {
     gizmo.setMode(b.dataset.gizmo as 'translate' | 'rotate' | 'scale');
@@ -1988,13 +2013,66 @@ function renderStyles() {
   renderStyleParams(current);
 }
 
+type SettingsOwner = { materialSettings?: CreatureState['materialSettings'] };
+
 /**
- * Sliders for a material; they apply everywhere that material is used (body
- * parts and stuff alike). Shown in the Build panel and in the Stuff piece card.
+ * A stuff item's material controls: an "Inherits material" box (use the
+ * creature's settings) and, when it's off, sliders that only affect this item.
  */
-function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params')) {
+function renderThingMaterial(thing: Thing, styles: StyleId[], el: HTMLElement) {
   el.innerHTML = '';
-  const values = styleSettings(style, state.materialSettings?.[style]);
+  const row = document.createElement('label');
+  row.className = 'check';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = !thing.ownMaterial;
+  box.onchange = () => {
+    thing.ownMaterial = !box.checked;
+    if (thing.ownMaterial) {
+      // start from what it looks like now
+      thing.materialSettings ??= {};
+      for (const st of styles) thing.materialSettings[st] ??= { ...creature.settingsFor(st) };
+    }
+    creature.sync();
+    syncWorkbench();
+    commit();
+    renderThingMaterial(thing, styles, el);
+  };
+  row.append(box, ' Inherits material ');
+  const note = document.createElement('span');
+  note.className = 'muted small';
+  note.textContent = thing.ownMaterial ? '(own settings, just for this item)' : "(shares the creature's settings)";
+  row.append(note);
+  el.append(row);
+  const scaleRow = document.createElement('label');
+  scaleRow.className = 'check';
+  scaleRow.title = 'On: fuzz keeps the same real length when the item is scaled. Off: it grows and shrinks with the item.';
+  const scaleBox = document.createElement('input');
+  scaleBox.type = 'checkbox';
+  scaleBox.checked = thing.scaleMaterial !== false;
+  scaleBox.onchange = () => {
+    thing.scaleMaterial = scaleBox.checked;
+    creature.sync();
+    commit();
+  };
+  scaleRow.append(scaleBox, ' Re-adjust material on scale');
+  el.append(scaleRow);
+  for (const st of styles) {
+    const sub = document.createElement('div');
+    sub.className = 'style-params';
+    el.append(sub);
+    renderStyleParams(st, sub, thing.ownMaterial ? thing : state);
+  }
+}
+
+/**
+ * Sliders for a material. With the default owner (the creature) they apply
+ * everywhere that material is used, stuff included unless the item has its
+ * own settings. The number boxes take any value, past either end of the slider.
+ */
+function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params'), owner: SettingsOwner = state) {
+  el.innerHTML = '';
+  const values = styleSettings(style, owner.materialSettings?.[style]);
   const head = document.createElement('div');
   head.className = 'style-params-head';
   head.innerHTML = `<span>${STYLES.find((s) => s.id === style)!.name} settings</span>`;
@@ -2002,11 +2080,11 @@ function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params'))
   reset.className = 'link';
   reset.textContent = 'Reset';
   reset.onclick = () => {
-    if (state.materialSettings) delete state.materialSettings[style];
+    if (owner.materialSettings) delete owner.materialSettings[style];
     creature.sync();
     syncWorkbench();
     commit();
-    renderStyleParams(style, el);
+    renderStyleParams(style, el, owner);
   };
   head.append(reset);
   el.append(head);
@@ -2022,20 +2100,36 @@ function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params'))
     input.max = String(p.max);
     input.step = String(p.step);
     input.value = String(values[p.key]);
-    input.oninput = () => {
-      state.materialSettings ??= {};
-      (state.materialSettings[style] ??= {})[p.key] = parseFloat(input.value);
+    const num = document.createElement('input');
+    num.type = 'number';
+    num.className = 'num';
+    num.step = String(p.step);
+    num.value = String(values[p.key]);
+    const apply = (v: number) => {
+      owner.materialSettings ??= {};
+      (owner.materialSettings[style] ??= {})[p.key] = v;
       if (pending) return;
       pending = true;
       requestAnimationFrame(() => {
         pending = false;
         creature.sync();
         syncWorkbench();
-        if (floorPrefs.mode === 'material' && floorPrefs.style === style) buildFloorMesh();
+        if (owner === state && floorPrefs.mode === 'material' && floorPrefs.style === style) buildFloorMesh();
       });
     };
+    input.oninput = () => {
+      num.value = input.value;
+      apply(parseFloat(input.value));
+    };
     input.onchange = () => commit();
-    row.append(name, input);
+    num.oninput = () => {
+      const v = parseFloat(num.value);
+      if (!Number.isFinite(v)) return;
+      input.value = String(v); // the slider just pins at its end
+      apply(v);
+    };
+    num.onchange = () => commit();
+    row.append(name, input, num);
     el.append(row);
   }
 }
@@ -2672,6 +2766,7 @@ applyDof();
 
 $<HTMLInputElement>('#merge').onchange = (e) => {
   state.merge = (e.target as HTMLInputElement).checked;
+  renderCreatureBar();
   creature.markMergeDirty();
   commit();
   renderMerge();
@@ -2702,6 +2797,13 @@ function renderMerge() {
   $('#merge-colors-row').style.opacity = (state.merge ?? true) ? '1' : '.4';
   $('#color-blend-slider').hidden = !state.mergeColors;
 }
+
+$<HTMLInputElement>('#seamless').onchange = (e) => {
+  state.seamless = (e.target as HTMLInputElement).checked;
+  creature.invalidateSkin();
+  commit();
+  renderCreatureBar();
+};
 
 for (const k of ['size', 'spacing', 'height'] as const) {
   const input = $<HTMLInputElement>(`#eye-${k}`);
@@ -2870,6 +2972,26 @@ function resize() {
 }
 new ResizeObserver(resize).observe(viewport);
 
+/**
+ * Once nothing has changed for a moment, rebuild merged joins as seamless
+ * skins (in small chunks, so the page stays responsive). Not while you're
+ * mid-drag, drawing, editing the rig or on the Stuff workbench.
+ */
+const SETTLE_AFTER_MS = 600;
+function settleWhenIdle(now: number) {
+  const busy = !!drawState || !!drag || gizmo.dragging || mode === 'rig' || mode === 'stuff';
+  let building = false;
+  for (const c of creatures) {
+    if (c.skinState === 'building') building = true;
+    else if (!busy && c.skinState === 'none' && now - c.lastChange > SETTLE_AFTER_MS) {
+      void c.settle();
+      // settle() flips the state synchronously before its first await
+      building ||= (c.skinState as string) === 'building';
+    }
+  }
+  $('#settle-badge').hidden = !building;
+}
+
 function loop(now: number) {
   requestAnimationFrame(loop);
   if (tween) {
@@ -2884,6 +3006,7 @@ function loop(now: number) {
   if (mode === 'stuff') flashPiece(drawState ? 0 : Math.max(0, f));
   else creature.flash(drawState ? null : selected, Math.max(0, f));
   for (const c of creatures) c.updateMerge();
+  settleWhenIdle(now);
   if (drawState && !drawState.active) renderOverlay();
   updateFocus(now);
   composer.render();
@@ -2901,4 +3024,4 @@ resize();
 requestAnimationFrame(loop);
 
 // handy for poking at the scene from the dev-tools console
-if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, controls, flyTo, screenToLocal, localToOverlay, partPlane, get creature() { return creature; } } });
+if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, openFile, selectAttachment } });

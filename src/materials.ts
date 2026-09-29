@@ -519,9 +519,10 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
 }
 
 /** Concentric fuzz shells for felt: a halo of curly fibres standing off the surface. */
-export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, settings: StyleSettings, layers = 12): THREE.Mesh[] {
+export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, settings: StyleSettings, layers = 12, unit = 1): THREE.Mesh[] {
   const f = getFelt();
-  const height = settings.fuzz;
+  // unit = how much the mesh is scaled up in the world; fuzz keeps its world length
+  const height = settings.fuzz / unit;
   if (height <= 0) return [];
   // denser fuzz keeps more fibres alive in each shell
   const floor = 0.42 - 0.4 * settings.density;
@@ -532,9 +533,9 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, setting
     const m = triplanar(
       new THREE.MeshStandardMaterial({ color: base, roughness: 1, metalness: 0 }),
       {
-        tiling: 1,
+        tiling: unit,
         rim: settings.glow * 1.6,
-        shell: { offset: height * Math.pow(level, 1.3), level: floor + level * 0.74, hair: f.hair, hairTiling: 2.4 },
+        shell: { offset: height * Math.pow(level, 1.3), level: floor + level * 0.74, hair: f.hair, hairTiling: 2.4 * unit },
       },
     );
     // bare spots (under eyes), filled by setFuzzMask before or after the shader compiles
@@ -550,10 +551,13 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, setting
 }
 
 /** Loose curly wisps sticking out of felt. */
-export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: number, amount = 1): THREE.LineSegments {
+export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: number, amount = 1, tintFromGeometry = false, unit = 1): THREE.LineSegments {
   const r = rng(seed);
   const pos = geo.getAttribute('position');
   const nor = geo.getAttribute('normal');
+  // blended skins carry per-vertex colours: each wisp takes the colour where it grows
+  const vcol = tintFromGeometry ? (geo.getAttribute('color') as THREE.BufferAttribute | undefined) : undefined;
+  const rootCol = new THREE.Color();
   const index = geo.getIndex();
   const triCount = index ? index.count / 3 : pos.count / 3;
   const vi = (t: number, k: number) => (index ? index.getX(t * 3 + k) : t * 3 + k);
@@ -569,7 +573,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
     total += b.sub(a).cross(c.sub(a)).length() / 2;
     cdf.push(total);
   }
-  const count = Math.round(Math.min(1400, Math.max(60, total * 900)) * amount);
+  const count = Math.round(Math.min(1400, Math.max(60, total * unit * unit * 900)) * amount);
   const verts: number[] = [];
   const roots: number[] = [];
   const cols: number[] = [];
@@ -597,15 +601,23 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
       .addScaledVector(tmp.fromBufferAttribute(nor, vi(lo, 2)), v).normalize();
     tangent.set(r() - 0.5, r() - 0.5, r() - 0.5).cross(n).normalize();
     // most wisps lie close to the surface; a few spring out
-    const len = 0.015 + Math.pow(r(), 2) * 0.055;
+    const len = (0.015 + Math.pow(r(), 2) * 0.055) / unit;
     const lift = 0.25 + r() * 0.7;
     dir.copy(tangent).addScaledVector(n, lift).normalize();
     axis.set(r() - 0.5, r() - 0.5, r() - 0.5).addScaledVector(n, 0.8).normalize();
     const turn = (0.35 + r() * 0.8) * (r() < 0.5 ? -1 : 1);
     const steps = 9;
     roots.push(p.x, p.y, p.z);
-    col.copy(baseCol).multiply(r() < 0.5 ? warm : cool).multiplyScalar(0.9 + r() * 0.25);
-    const cur = p.clone().addScaledVector(n, -0.001);
+    if (vcol) {
+      rootCol.setRGB(0, 0, 0);
+      for (const [vtx, wt] of [[vi(lo, 0), w], [vi(lo, 1), u], [vi(lo, 2), v]] as const) {
+        rootCol.r += vcol.getX(vtx) * wt;
+        rootCol.g += vcol.getY(vtx) * wt;
+        rootCol.b += vcol.getZ(vtx) * wt;
+      }
+    } else rootCol.copy(baseCol);
+    col.copy(rootCol).multiply(r() < 0.5 ? warm : cool).multiplyScalar(0.9 + r() * 0.25);
+    const cur = p.clone().addScaledVector(n, -0.001 / unit);
     for (let s = 0; s < steps; s++) {
       const next = cur.clone().addScaledVector(dir, len / steps);
       verts.push(cur.x, cur.y, cur.z, next.x, next.y, next.z);

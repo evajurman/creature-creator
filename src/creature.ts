@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { MeshBVH } from 'three-mesh-bvh';
+import { bvhFor, exactDistance, sharedNormals } from './distance';
+import { buildSkin, paintSkin, type SkinPart } from './skin';
 import { buildInflatedGeometry, defaultOutline, type Solid, type Vec2 } from './inflate';
 import {
   castsShadow,
@@ -88,6 +89,8 @@ export interface CreatureState {
   mergeColors?: boolean;
   /** width of the colour fade at blended joins, in world units */
   colorBlend?: number;
+  /** rebuild merged groups as one seamless skin when left idle (default on) */
+  seamless?: boolean;
   /** per-material slider values (missing keys use the defaults) */
   materialSettings?: Partial<Record<StyleId, StyleSettings>>;
   attachments?: Attachment[];
@@ -102,6 +105,18 @@ export interface Placement {
   z: number;
   /** rotation about the vertical axis, radians */
   yaw: number;
+}
+
+/** A settled seamless skin and what it was built from. */
+interface SkinEntry {
+  mesh: THREE.Mesh;
+  members: BoneRT[];
+  parts: SkinPart[];
+  lowPoly: boolean;
+  /** colours were baked into the geometry */
+  painted: boolean;
+  /** colours the paint was made with */
+  colorKey: string;
 }
 
 export interface BoneRT {
@@ -343,9 +358,19 @@ export class Creature {
   selected: string | null = null;
   private drawFocus: string | null = null;
   private mergeDirty = true;
+  // seamless skins: built when idle, thrown away on any change
+  private skins: SkinEntry[] = [];
+  /** shape the current (or pending) skin was built for; see skinShapeKey */
+  private skinKey = '';
+  private skinVersion = 0;
+  skinState: 'none' | 'building' | 'ready' = 'none';
+  /** when the shape or pose last changed (performance.now) */
+  lastChange = performance.now();
+  /** eye spots in head-local space, for keeping felt fuzz off them */
+  private eyeSpots: FuzzSpot[] = [];
   /** rig editing shows the rest pose and joint handles */
   private rigMode = false;
-  private attached = new Map<string, { key: string; main: THREE.Group; twin: THREE.Group | null; twinBone: BoneRT | null }>();
+  private attached = new Map<string, { key: string; main: THREE.Group; twin: THREE.Group | null; bone: BoneRT; twinBone: BoneRT | null }>();
 
   constructor(state: CreatureState) {
     this.state = state;
@@ -474,6 +499,7 @@ export class Creature {
 
   setRigMode(on: boolean) {
     this.rigMode = on;
+    if (on) this.invalidateSkin();
     this.applyPose();
   }
 
@@ -555,6 +581,16 @@ export class Creature {
         : straight;
       const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
       mesh.userData.baseGeo = geo;
+      // the seamless skin is built from the smooth (un-lumped) shape: lumps can
+      // fold thin parts over themselves, which confuses inside/outside
+      if (geoOpts.lumps) {
+        const smoothOpts = { ...geoOpts, lumps: 0 };
+        const smoothKey = JSON.stringify([outline, smoothOpts]);
+        mesh.userData.skinGeo = () => {
+          const st = cachedGeometry(smoothKey, () => buildInflatedGeometry(outline, { ...smoothOpts, seed: hashString(b.src) }));
+          return bd.theta ? cachedGeometry(smoothKey + bendKey(bd), () => bendGeometry(st, bd)) : st;
+        };
+      }
       mesh.userData.opacity = p.opacity ?? 1;
       mesh.castShadow = castsShadow(style);
       mesh.receiveShadow = true;
@@ -595,24 +631,41 @@ export class Creature {
       if (!bone) continue;
       alive.add(a.id);
       const twinBone = a.mirror ? this.twinOf(bone) : null;
-      const key = JSON.stringify([a.thing.pieces, a.bone, twinBone?.def.id, this.state.materialSettings]);
+      // felt fuzz is sized for the attachment's scale, so a big rescale rebuilds it
+      // (unless the item opts out, and lets its fuzz scale along with it)
+      const felt = a.thing.scaleMaterial !== false && a.thing.pieces.some((p) => p.style === 'felt');
+      const unit = felt ? Math.round(Math.cbrt(Math.abs(a.scale[0] * a.scale[1] * a.scale[2])) * 20) / 20 || 1 : 1;
+      const key = JSON.stringify([a.thing.pieces, a.thing.ownMaterial, a.thing.materialSettings, a.bone, twinBone?.def.id, this.state.materialSettings, unit]);
       let rec = this.attached.get(a.id);
       if (!rec || rec.key !== key) {
-        if (rec) this.dropAttachment(rec);
         const settings = (st: StyleId) => this.settingsFor(st);
-        const main = new THREE.Group();
-        main.add(buildThing(a.thing, settings));
-        bone.pivot.add(main);
-        let twin: THREE.Group | null = null;
-        if (twinBone) {
-          twin = new THREE.Group();
-          twin.add(buildThing(a.thing, settings));
-          twin.matrixAutoUpdate = false;
-          twinBone.pivot.add(twin);
+        if (rec && rec.bone === bone && rec.twinBone === twinBone) {
+          // same place: swap the contents but keep the groups (the gizmo may hold one)
+          for (const g of [rec.main, rec.twin]) {
+            if (!g) continue;
+            for (const c of [...g.children]) {
+              c.removeFromParent();
+              disposeThing(c);
+            }
+            g.add(buildThing(a.thing, settings, unit));
+          }
+          rec.key = key;
+        } else {
+          if (rec) this.dropAttachment(rec);
+          const main = new THREE.Group();
+          main.add(buildThing(a.thing, settings, unit));
+          bone.pivot.add(main);
+          let twin: THREE.Group | null = null;
+          if (twinBone) {
+            twin = new THREE.Group();
+            twin.add(buildThing(a.thing, settings, unit));
+            twin.matrixAutoUpdate = false;
+            twinBone.pivot.add(twin);
+          }
+          rec = { key, main, twin, bone, twinBone };
+          this.attached.set(a.id, rec);
         }
-        for (const g of [main, twin]) g?.traverse((o) => (o.userData.attachmentId = a.id));
-        rec = { key, main, twin, twinBone };
-        this.attached.set(a.id, rec);
+        for (const g of [rec.main, rec.twin]) g?.traverse((o) => (o.userData.attachmentId = a.id));
       }
       rec.main.position.set(...a.position);
       rec.main.quaternion.set(...a.quaternion);
@@ -705,6 +758,16 @@ export class Creature {
   updateMerge() {
     if (!this.mergeDirty) return;
     this.mergeDirty = false;
+    // Only shape changes invalidate the settled skin; a look-only change
+    // (material sliders, opacity, colours while blending, eyes...) just
+    // re-dresses it.
+    const key = this.skinShapeKey();
+    if (key !== this.skinKey) {
+      this.skinKey = key;
+      this.invalidateSkin();
+    } else if (this.skinState === 'ready') {
+      for (const sk of this.skins) this.dressSkin(sk);
+    }
     const s = this.state;
     const on = s.merge ?? true;
     const k = s.mergeRadius ?? 0.1;
@@ -772,6 +835,201 @@ export class Creature {
         m.needsUpdate = true;
       }
       m.color.copy(tint);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // seamless skin: when the creature is left alone, merged groups are rebuilt
+  // as one continuous surface (see skin.ts); any change drops back to the fast
+  // per-part merge above.
+
+  /** Drop the settled skin and show the individual parts again. */
+  invalidateSkin() {
+    this.skinVersion++;
+    this.lastChange = performance.now();
+    this.skinState = 'none';
+    if (!this.skins.length) return;
+    for (const { mesh, members } of this.skins) {
+      mesh.removeFromParent();
+      mesh.traverse((o) => {
+        ((o as THREE.Mesh).material as THREE.Material | undefined)?.dispose();
+        if (o instanceof THREE.LineSegments) o.geometry.dispose();
+      });
+      mesh.geometry.dispose();
+      for (const b of members) if (b.mesh) b.mesh.visible = true;
+    }
+    this.skins = [];
+  }
+
+  /** Build seamless skins for every merged group. Resolves false if interrupted. */
+  async settle(): Promise<boolean> {
+    const s = this.state;
+    if (this.skinState !== 'none' || !(s.merge ?? true) || !(s.seamless ?? true) || this.rigMode || this.drawFocus) return false;
+    const version = this.skinVersion;
+    this.skinState = 'building';
+    this.root.updateMatrixWorld(true);
+    const toGroup = this.group.matrixWorld.clone().invert();
+    const kMax = s.mergeRadius ?? 0.1;
+    const blend = !!s.mergeColors;
+    const kc = blend ? (s.colorBlend ?? 0.12) : 0;
+
+    // same groups as the fast merge: one material (and one colour unless blending)
+    const groups = new Map<string, BoneRT[]>();
+    for (const b of this.list) {
+      if (!b.mesh) continue;
+      const p = s.parts[b.src];
+      const key = (p.style ?? s.style) + (blend ? '' : p.color.toLowerCase());
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(b);
+    }
+    const radius = (b: BoneRT) => {
+      const sol = (b.mesh!.userData.baseGeo as THREE.BufferGeometry).userData.solid as Solid | undefined;
+      let m = 0;
+      if (sol) for (let i = 2; i < sol.spheres.length; i += 3) m = Math.max(m, sol.spheres[i]);
+      return Math.max(0.01, m * Math.min(1, sol?.thickness ?? 1));
+    };
+
+    const built: SkinEntry[] = [];
+    for (const [, members] of groups) {
+      // only parts that actually touch another part in the group
+      const joined = members.filter((b) => members.some((o) => o !== b && this.near(b, o, kMax)));
+      if (joined.length < 2) continue;
+      const part = s.parts[joined[0].src];
+      const style = part.style ?? s.style;
+      const k = this.settingsFor(style);
+      const minR = Math.min(...joined.map(radius));
+      const lowPoly = style === 'lowpoly';
+      const h = lowPoly
+        ? Math.min(0.08, Math.max(0.02, (minR / 2) * (k.facets ?? 1)))
+        : Math.min(0.02, Math.max(0.006, minR / 5));
+      const parts: SkinPart[] = joined.map((b) => ({
+        geo: ((b.mesh!.userData.skinGeo as (() => THREE.BufferGeometry) | undefined)?.() ?? b.mesh!.userData.baseGeo) as THREE.BufferGeometry,
+        toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
+        color: new THREE.Color(s.parts[b.src].color),
+        k: Math.max(0.005, Math.min(kMax, 0.6 * radius(b))),
+      }));
+      // clay lumps go back on after the skin is built
+      const lumps = style === 'clay' ? (k.lumps ?? 0) * Math.min(0.012, Math.max(0.004, minR * 0.08)) : 0;
+      const geo = await buildSkin(parts, { h, colorBlend: kc, lowPoly, lumps, shouldStop: () => version !== this.skinVersion });
+      if (!geo || version !== this.skinVersion) {
+        geo?.dispose();
+        for (const bm of built) bm.mesh.geometry.dispose();
+        if (version === this.skinVersion) this.skinState = 'none';
+        return false;
+      }
+      const mesh = new THREE.Mesh(geo);
+      mesh.receiveShadow = true;
+      mesh.raycast = () => {}; // picking still goes to the (hidden) parts
+      mesh.userData.skin = true;
+      built.push({
+        mesh,
+        members: joined,
+        parts,
+        lowPoly,
+        painted: !!geo.userData.painted,
+        colorKey: JSON.stringify([parts.map((p) => p.color.getHex()), kc]),
+      });
+    }
+    if (version !== this.skinVersion) return false;
+
+    // swap: skins in (dressed in the current look), their parts out
+    for (const sk of built) {
+      this.group.add(sk.mesh);
+      this.dressSkin(sk);
+    }
+    this.skins = built;
+    this.skinState = 'ready';
+    return true;
+  }
+
+  /**
+   * What a skin's shape depends on. Anything else (material sliders that
+   * don't reshape, opacity, eyes, stuff, colours while blending) only needs
+   * the existing skin re-dressed, not rebuilt.
+   */
+  private skinShapeKey(): string {
+    const s = this.state;
+    const blend = !!s.mergeColors;
+    const r4 = (v: number) => Math.round(v * 1e4);
+    return JSON.stringify([
+      s.merge ?? true,
+      s.seamless ?? true,
+      s.mergeRadius,
+      blend,
+      s.rig,
+      this.group.position.toArray().map(r4),
+      this.list.map((b) => b.pivot.quaternion.toArray().map(r4)),
+      Object.entries(s.parts).map(([id, p]) => {
+        const style = p.style ?? s.style;
+        const k = this.settingsFor(style);
+        // clay lumps and low-poly facet size change the shape; with blending off, colour changes the groups
+        return [id, p.outline, p.thickness, style, style === 'clay' ? k.lumps : 0, style === 'lowpoly' ? k.facets : 0, blend ? '' : p.color.toLowerCase()];
+      }),
+    ]);
+  }
+
+  /** Give a skin the current look: colours, material, felt fuzz, toon ink, opacity. */
+  private dressSkin(sk: SkinEntry) {
+    const s = this.state;
+    const part = s.parts[sk.members[0].src];
+    const style = part.style ?? s.style;
+    const k = this.settingsFor(style);
+    const kc = s.mergeColors ? (s.colorBlend ?? 0.12) : 0;
+
+    // repaint only if the colours (or the fade width) changed
+    sk.parts.forEach((p, i) => p.color.set(s.parts[sk.members[i].src].color));
+    const colorKey = JSON.stringify([sk.parts.map((p) => p.color.getHex()), kc]);
+    if (colorKey !== sk.colorKey) {
+      sk.painted = paintSkin(sk.mesh.geometry, sk.parts, kc, sk.lowPoly);
+      sk.colorKey = colorKey;
+    }
+
+    const mesh = sk.mesh;
+    for (const c of [...mesh.children]) {
+      mesh.remove(c);
+      c.traverse((o) => {
+        ((o as THREE.Mesh).material as THREE.Material | undefined)?.dispose();
+        if (o instanceof THREE.LineSegments) o.geometry.dispose();
+      });
+    }
+    (mesh.material as THREE.Material | undefined)?.dispose();
+    const geo = mesh.geometry;
+    const mat = makeMaterial(style, part.color, k) as THREE.MeshStandardMaterial;
+    if (geo.getAttribute('color')) {
+      mat.vertexColors = true;
+      if (sk.painted) mat.color.setRGB(1, 1, 1);
+    }
+    mesh.material = mat;
+    mesh.castShadow = castsShadow(style);
+    if (style === 'toon' && k.ink > 0) {
+      const ink = new THREE.Mesh(geo, makeOutlineMaterial(k.ink));
+      ink.raycast = () => {};
+      mesh.add(ink);
+    }
+    if (style === 'felt') {
+      for (const shell of makeFuzzShells(geo, part.color, k)) {
+        if (sk.painted) {
+          // fuzz takes the skin's blended colours, not the first part's
+          const sm = shell.material as THREE.MeshStandardMaterial;
+          sm.vertexColors = true;
+          sm.color.setRGB(1, 1, 1);
+        }
+        mesh.add(shell);
+      }
+      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, part.color, 11, k.hairs, sk.painted));
+    }
+    setOpacity(mesh, part.opacity ?? 1);
+
+    // parts may have been rebuilt (new meshes) by the look change: keep them hidden
+    for (const b of sk.members) if (b.mesh) b.mesh.visible = false;
+
+    // keep felt fuzz off the eyes on the skin too
+    const head = this.bones.get(this.rig.headId);
+    if (head?.mesh && sk.members.includes(head) && this.eyeSpots.length) {
+      this.group.updateMatrixWorld(true);
+      const toSkin = this.group.matrixWorld.clone().invert().multiply(head.mesh.matrixWorld);
+      const v = new THREE.Vector3();
+      setFuzzMask(mesh, this.eyeSpots.map((sp) => (v.set(sp.x, sp.y, sp.z).applyMatrix4(toSkin), { x: v.x, y: v.y, z: v.z, r: sp.r })));
     }
   }
 
@@ -977,6 +1235,7 @@ export class Creature {
     }
     }
     setFuzzMask(head.mesh, spots);
+    this.eyeSpots = spots;
   }
 
   // -------------------------------------------------------------------------
@@ -1028,6 +1287,7 @@ export class Creature {
 
   setDrawFocus(id: string | null) {
     this.drawFocus = id;
+    if (id) this.invalidateSkin();
     for (const b of this.list) {
       const m = b.mesh?.material as THREE.Material | undefined;
       if (!m) continue;
@@ -1120,100 +1380,6 @@ export class Creature {
       }
     }
   }
-}
-
-/**
- * Low-poly meshes are non-indexed: each triangle has its own copy of a corner
- * with its own flat normal. Anything that moves vertices along their normal
- * would push those copies apart and tear the seams, so average the normals of
- * every copy sitting at the same position. Indexed meshes already share them.
- */
-function sharedNormals(geo: THREE.BufferGeometry): THREE.BufferAttribute {
-  const own = geo.getAttribute('normal') as THREE.BufferAttribute;
-  if (geo.index) return own;
-  const cached = geo.userData.sharedNormals as THREE.BufferAttribute | undefined;
-  if (cached) return cached;
-  const pos = geo.getAttribute('position');
-  const keyOf = (i: number) => `${Math.round(pos.getX(i) * 1e5)},${Math.round(pos.getY(i) * 1e5)},${Math.round(pos.getZ(i) * 1e5)}`;
-  const sums = new Map<string, [number, number, number]>();
-  const keys: string[] = [];
-  for (let i = 0; i < pos.count; i++) {
-    const key = keyOf(i);
-    keys.push(key);
-    const acc = sums.get(key) ?? [0, 0, 0];
-    acc[0] += own.getX(i);
-    acc[1] += own.getY(i);
-    acc[2] += own.getZ(i);
-    sums.set(key, acc);
-  }
-  const out = new Float32Array(pos.count * 3);
-  keys.forEach((key, i) => {
-    const [x, y, z] = sums.get(key)!;
-    const l = Math.hypot(x, y, z) || 1;
-    out.set([x / l, y / l, z / l], i * 3);
-  });
-  const attr = new THREE.BufferAttribute(out, 3);
-  geo.userData.sharedNormals = attr;
-  return attr;
-}
-
-// ---------------------------------------------------------------------------
-// exact distances for merging
-
-const bvhCache = new WeakMap<THREE.BufferGeometry, MeshBVH>();
-/** A bounding-volume hierarchy over a part's surface, built once per geometry. */
-function bvhFor(geo: THREE.BufferGeometry): MeshBVH {
-  let bvh = bvhCache.get(geo);
-  if (!bvh) {
-    // indirect: leave the geometry's own triangle order untouched
-    bvh = new MeshBVH(geo, { indirect: true });
-    bvhCache.set(geo, bvh);
-  }
-  return bvh;
-}
-
-const hitInfo = { point: new THREE.Vector3(), distance: 0, faceIndex: 0 };
-const triA = new THREE.Vector3(), triB = new THREE.Vector3(), triC = new THREE.Vector3();
-const bary = new THREE.Vector3(), nrm = new THREE.Vector3(), away = new THREE.Vector3();
-
-/**
- * Signed distance from local point `q` to a part's actual surface (negative
- * inside), with the outward direction written into `grad`. Returns Infinity
- * when the surface is further than `maxD` (nothing to blend there).
- */
-function exactDistance(
-  geo: THREE.BufferGeometry,
-  bvh: MeshBVH,
-  normals: THREE.BufferAttribute,
-  q: THREE.Vector3,
-  maxD: number,
-  grad: THREE.Vector3,
-): number {
-  const hit = bvh.closestPointToPoint(q, hitInfo, 0, maxD);
-  if (!hit) return Infinity;
-  const tri = hit.faceIndex; // already the real triangle, even in indirect mode
-  const index = geo.index;
-  const i0 = index ? index.getX(tri * 3) : tri * 3;
-  const i1 = index ? index.getX(tri * 3 + 1) : tri * 3 + 1;
-  const i2 = index ? index.getX(tri * 3 + 2) : tri * 3 + 2;
-  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
-  triA.fromBufferAttribute(pos, i0);
-  triB.fromBufferAttribute(pos, i1);
-  triC.fromBufferAttribute(pos, i2);
-  // the smooth (interpolated) normal at the closest point decides inside vs outside
-  THREE.Triangle.getBarycoord(hit.point, triA, triB, triC, bary);
-  nrm
-    .set(0, 0, 0)
-    .addScaledVector(triA.fromBufferAttribute(normals, i0), bary.x)
-    .addScaledVector(triB.fromBufferAttribute(normals, i1), bary.y)
-    .addScaledVector(triC.fromBufferAttribute(normals, i2), bary.z)
-    .normalize();
-  away.subVectors(q, hit.point);
-  const dist = away.length();
-  const sign = away.dot(nrm) >= 0 ? 1 : -1;
-  if (dist > 1e-6) grad.copy(away).divideScalar(dist).multiplyScalar(sign);
-  else grad.copy(nrm);
-  return sign * dist;
 }
 
 function hashString(s: string): number {

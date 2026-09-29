@@ -8,6 +8,7 @@ import {
   makeOutlineMaterial,
   makeStrayHairs,
   setOpacity,
+  styleSettings,
   type StyleId,
   type StyleSettings,
 } from './materials';
@@ -49,6 +50,11 @@ export interface Thing {
   pieces: Piece[];
   /** small preview image (data URL) for the collection */
   thumb?: string;
+  /** true = uses its own material settings below instead of the creature's */
+  ownMaterial?: boolean;
+  /** false = felt fuzz grows and shrinks with the item's scale (default: it keeps its real length) */
+  scaleMaterial?: boolean;
+  materialSettings?: Partial<Record<StyleId, StyleSettings>>;
 }
 
 export function uid(): string {
@@ -130,12 +136,15 @@ export function pieceGeometry(p: Piece): THREE.BufferGeometry {
   return g;
 }
 
-/** Build the meshes for a thing. Pieces are tagged with userData.pieceId. */
-export function buildThing(thing: Thing, settingsFor: (s: StyleId) => StyleSettings): THREE.Group {
+/**
+ * Build the meshes for a thing. Pieces are tagged with userData.pieceId.
+ * `unit` is how much the thing will be scaled up, so felt fuzz keeps its real length.
+ */
+export function buildThing(thing: Thing, settingsFor: (s: StyleId) => StyleSettings, unit = 1): THREE.Group {
   const group = new THREE.Group();
   for (const p of thing.pieces) {
     const geo = pieceGeometry(p);
-    const k = settingsFor(p.style);
+    const k = thing.ownMaterial ? styleSettings(p.style, thing.materialSettings?.[p.style]) : settingsFor(p.style);
     const mesh = new THREE.Mesh(geo, makeMaterial(p.style, p.color, k));
     mesh.castShadow = castsShadow(p.style);
     mesh.receiveShadow = true;
@@ -146,8 +155,8 @@ export function buildThing(thing: Thing, settingsFor: (s: StyleId) => StyleSetti
       mesh.add(ink);
     }
     if (p.style === 'felt') {
-      for (const shell of makeFuzzShells(geo, p.color, k, 8)) mesh.add(shell);
-      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, 7, k.hairs * 0.6));
+      for (const shell of makeFuzzShells(geo, p.color, k, 8, unit)) mesh.add(shell);
+      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, 7, k.hairs * 0.6, false, unit));
     }
     setOpacity(mesh, p.opacity ?? 1);
     group.add(mesh);

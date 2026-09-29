@@ -342,18 +342,7 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   geo.setIndex(index);
   geo.computeVertexNormals();
 
-  if (opts.lumps) {
-    const pos = geo.getAttribute('position') as THREE.BufferAttribute;
-    const nor = geo.getAttribute('normal') as THREE.BufferAttribute;
-    const amp = Math.min(size * 0.012, 0.012) * opts.lumps;
-    const freq = 9;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-      const n = valueNoise3(x * freq, y * freq, z * freq) + 0.5 * valueNoise3(x * freq * 2.3, y * freq * 2.3, z * freq * 2.3);
-      pos.setXYZ(i, x + nor.getX(i) * n * amp, y + nor.getY(i) * n * amp, z + nor.getZ(i) * n * amp);
-    }
-    geo.computeVertexNormals();
-  }
+  if (opts.lumps) applyLumps(geo, Math.min(size * 0.012, 0.012) * opts.lumps);
 
   if (opts.lowPoly) {
     geo = geo.toNonIndexed();
@@ -421,6 +410,19 @@ export function solidDistance(solid: Solid, x: number, y: number, z: number, gra
   }
   grad.set(x - sp[bi], y - sp[bi + 1], bz / t).divideScalar(bl || 1).normalize();
   return best * Math.min(1, t);
+}
+
+/** Hand-moulded clay lumps: push each vertex in or out along its normal by smooth noise. */
+export function applyLumps(geo: THREE.BufferGeometry, amp: number) {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  const nor = geo.getAttribute('normal') as THREE.BufferAttribute;
+  const freq = 9;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const n = valueNoise3(x * freq, y * freq, z * freq) + 0.5 * valueNoise3(x * freq * 2.3, y * freq * 2.3, z * freq * 2.3);
+    pos.setXYZ(i, x + nor.getX(i) * n * amp, y + nor.getY(i) * n * amp, z + nor.getZ(i) * n * amp);
+  }
+  geo.computeVertexNormals();
 }
 
 /** Default capsule-ish outline running along +Y from 0 to length. */

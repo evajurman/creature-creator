@@ -40,6 +40,9 @@
             <button id="cr-place" class="ghost" title="Slide or turn this creature on the floor">✥ Place</button>
             <button id="cr-del" class="ghost" title="Remove this creature from the scene">🗑</button>
           </div>
+          <label class="check seamless-row" id="seamless-row" title="For this creature: after you stop changing its shape, merged parts are rebuilt as one continuous skin with no seams">
+            <input id="seamless" type="checkbox" checked /> ✨ Seamless joins <span class="muted">(smooths merged parts when idle)</span>
+          </label>
         </div>
         <section id="build-panel">
           <h3>Body plan</h3>
@@ -176,7 +179,7 @@
             <div class="swatches" id="piece-swatches"></div>
             <label class="color-pick"><input id="piece-color" type="color" /> Custom</label>
             <div class="mini-styles" id="piece-styles"></div>
-            <div class="style-params" id="piece-style-params"></div>
+            <div class="thing-material" id="piece-style-params"></div>
             <div class="row">
               <button id="piece-hole" class="ghost" title="Draw a hole through this piece (flat pieces)">◌ Cut a hole</button>
               <button id="piece-clear-holes" class="ghost">Fill holes</button>
@@ -209,6 +212,7 @@
         <canvas id="gl"></canvas>
         <canvas id="overlay"></canvas>
         <div id="hint" class="hint"></div>
+        <div id="settle-badge" class="settle-badge" hidden>Smoothing joins…</div>
         <div id="view-bar" class="view-bar" aria-label="Camera views">
           <button data-view="front" title="View from the front">Front</button>
           <button data-view="left" title="View from the left">Left</button>
@@ -231,8 +235,13 @@
           <label id="attach-mirror-label" class="pill-toggle" title="Show a mirrored copy on the other side">
             <input id="attach-mirror" type="checkbox" /> ⟷ Both sides
           </label>
+          <button id="attach-mat" class="seg-btn" title="Material settings for this item">🎨 Material</button>
           <button id="attach-remove" class="seg-btn" title="Remove">🗑</button>
           <button id="attach-done">Done</button>
+        </div>
+        <div id="attach-mat-pop" class="popover attach-mat-pop" hidden>
+          <div class="pop-title">Item material <button id="attach-mat-close" class="link">close</button></div>
+          <div id="attach-mat-body"></div>
         </div>
         <div id="attach-pop" class="popover attach-pop" hidden>
           <div class="pop-title">Attach from your collection <button id="attach-pop-close" class="link">close</button></div>

@@ -246,7 +246,11 @@ input.text {
 .eye-pairs button.remove { background: #fff; color: #c2410c; }
 
 .style-params { margin-top: 10px; padding: 8px 10px 2px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
-.style-params .slider { grid-template-columns: 96px 1fr; }
+.style-params .slider { grid-template-columns: 96px 1fr 58px; }
+.slider input.num {
+  width: 100%; min-width: 0; padding: 3px 4px; font: inherit; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit;
+}
 .style-params-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13px; }
 button.link { border: 0; background: none; color: var(--accent); font-weight: 700; font-size: 12px; cursor: pointer; padding: 0; }
 
@@ -285,7 +289,9 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 }
 .attach-bar .seg-btn.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
 .attach-name { padding: 0 6px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
-.attach-bar[hidden], .attach-pop[hidden] { display: none; }
+.attach-bar[hidden], .attach-pop[hidden], .attach-mat-pop[hidden] { display: none; }
+.attach-mat-pop { width: 300px; max-height: 70%; overflow-y: auto; top: 64px; }
+.thing-material { margin-top: 10px; }
 
 .dof-slider { grid-template-columns: 44px 1fr; font-size: 12px; }
 #dof-controls .row { margin-top: 4px; }
@@ -336,3 +342,12 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 #eye-look[hidden] { display: none; }
 #eye-look { margin-top: 8px; }
 .eye-swatches { grid-template-columns: repeat(8, 1fr); margin: 6px 0; }
+
+.settle-badge {
+  position: absolute; left: 12px; bottom: 14px; padding: 5px 10px; border-radius: 999px;
+  background: rgba(47, 40, 51, .72); color: #fff; font-size: 12px; font-weight: 700; pointer-events: none;
+}
+.settle-badge[hidden] { display: none; }
+
+.seamless-row { margin: 8px 0 0; font-size: 12px; }
+.seamless-row .muted { font-weight: 600; }
