@@ -308,3 +308,19 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .popover .floor-swatches { grid-template-columns: repeat(8, 1fr); margin: 4px 0 6px; }
 .popover .floor-swatches button { aspect-ratio: 1; border-radius: 50%; }
 #floor-mirror-opts[hidden], #floor-material-opts[hidden] { display: none; }
+
+.creature-bar {
+  position: sticky; top: 0; z-index: 2; margin: 0 -16px 4px; padding: 10px 16px 8px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.creature-bar[hidden], #place-bar[hidden] { display: none; }
+.creature-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.creature-chips button {
+  display: flex; align-items: center; gap: 6px; border: 1.5px solid var(--line); background: #fff;
+  border-radius: 10px; padding: 4px 10px; font-weight: 800; font-size: 13px; cursor: pointer;
+}
+.creature-chips button i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
+.creature-chips button.active { border-color: var(--accent); background: var(--accent-soft); }
+.creature-actions { display: flex; gap: 6px; }
+.creature-actions button { padding: 4px 8px; font-size: 12px; }
+.creature-actions button.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }

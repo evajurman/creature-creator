@@ -80,8 +80,17 @@ export interface CreatureState {
   /** per-material slider values (missing keys use the defaults) */
   materialSettings?: Partial<Record<StyleId, StyleSettings>>;
   attachments?: Attachment[];
-  /** the thing currently on the Stuff workbench (kept here so undo/autosave cover it) */
+  /** legacy: the workbench used to live on the creature; it now belongs to the world */
   workbench?: Thing;
+  /** where the creature stands in a multi-creature scene: floor position and facing */
+  placement?: Placement;
+}
+
+export interface Placement {
+  x: number;
+  z: number;
+  /** rotation about the vertical axis, radians */
+  yaw: number;
 }
 
 export interface BoneRT {
@@ -147,6 +156,8 @@ const lineMat = new THREE.LineBasicMaterial({ color: 0x3a3340, depthTest: false,
 const outlineLineMat = new THREE.LineBasicMaterial({ color: 0xff6b4a, depthTest: false, transparent: true, opacity: 0.9 });
 const planeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
 const startMat = new THREE.MeshBasicMaterial({ color: 0x8b5cf6, depthTest: false, transparent: true });
+// handle/guide materials are shared by every creature: never dispose them with one
+for (const m of [tipMat, tipHoverMat, rootMat, lineMat, outlineLineMat, planeMat, startMat]) m.userData.shared = true;
 const tipGeo = new THREE.SphereGeometry(0.032, 16, 12);
 const startGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
 
@@ -167,6 +178,9 @@ function restFrame(def: ExpandedBone) {
 const rootGeo = new THREE.BoxGeometry(0.07, 0.07, 0.07);
 
 export class Creature {
+  /** placement in the scene (floor position + facing); holds `group` */
+  readonly root = new THREE.Group();
+  /** the creature itself; its position is the pose's root offset */
   readonly group = new THREE.Group();
   rig: ExpandedRig;
   readonly bones = new Map<string, BoneRT>();
@@ -184,6 +198,7 @@ export class Creature {
 
   constructor(state: CreatureState) {
     this.state = state;
+    this.root.add(this.group);
     this.rig = expandRig(state.rig);
     this.ensureParts();
     this.buildSkeleton();
@@ -311,8 +326,35 @@ export class Creature {
   // -------------------------------------------------------------------------
   // sync state -> scene
 
+  applyPlacement() {
+    const p = this.state.placement ?? { x: 0, z: 0, yaw: 0 };
+    this.root.position.set(p.x, 0, p.z);
+    this.root.rotation.set(0, p.yaw, 0);
+  }
+
+  /** Read the placement back from the root (after a gizmo drag). */
+  capturePlacement() {
+    this.state.placement = {
+      x: Math.round(this.root.position.x * 1000) / 1000,
+      z: Math.round(this.root.position.z * 1000) / 1000,
+      yaw: Math.round(this.root.rotation.y * 10000) / 10000,
+    };
+  }
+
+  /** Remove from the scene and free per-creature GPU resources. */
+  dispose() {
+    this.root.removeFromParent();
+    this.root.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(m)) m.forEach((x) => x.dispose());
+      else if (m && !m.userData.shared) m.dispose();
+    });
+    for (const b of this.list) (b.mesh?.userData.mergeGeo as THREE.BufferGeometry | undefined)?.dispose();
+  }
+
   sync() {
     const s = this.state;
+    this.applyPlacement();
     for (const b of this.list) {
       const p = s.parts[b.src];
       const style = p.style ?? s.style;

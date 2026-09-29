@@ -32,6 +32,15 @@
       </header>
 
       <aside class="panel">
+        <div id="creature-bar" class="creature-bar">
+          <div id="creature-chips" class="creature-chips"></div>
+          <div class="creature-actions">
+            <button id="cr-add" class="ghost" title="Add a new creature to the scene">＋ New</button>
+            <button id="cr-dup" class="ghost" title="Copy this creature">⧉ Copy</button>
+            <button id="cr-place" class="ghost" title="Slide or turn this creature on the floor">✥ Place</button>
+            <button id="cr-del" class="ghost" title="Remove this creature from the scene">🗑</button>
+          </div>
+        </div>
         <section id="build-panel">
           <h3>Body plan</h3>
           <div id="rigs" class="rigs"></div>
@@ -176,6 +185,13 @@
           <button data-view="right" title="View from the right">Right</button>
           <button data-view="top" title="View from above">Top</button>
           <button data-view="quarter" title="Three-quarter view">¾</button>
+          <button data-view="all" title="Frame everyone (Shift+A)">All</button>
+        </div>
+        <div id="place-bar" class="draw-bar attach-bar" hidden>
+          <span id="place-name" class="attach-name"></span>
+          <button data-place="translate" class="seg-btn" title="Slide along the floor">✥ Move</button>
+          <button data-place="rotate" class="seg-btn" title="Turn to face another way">⟳ Turn</button>
+          <button id="place-done">Done</button>
         </div>
         <div id="attach-bar" class="draw-bar attach-bar" hidden>
           <span id="attach-name" class="attach-name"></span>
@@ -195,11 +211,14 @@
         <div id="file-pop" class="popover" hidden>
           <div class="pop-title">Files</div>
           <input id="creature-name" class="text wide" type="text" placeholder="Creature name" maxlength="60" />
-          <button id="file-save-creature" class="ghost wide">💾 Save creature (.creature)</button>
+          <button id="file-save-creature" class="ghost wide">💾 Save this creature (.creature)</button>
+          <input id="scene-name" class="text wide" type="text" placeholder="Scene name" maxlength="60" />
+          <button id="file-save-scene" class="ghost wide">🎬 Save whole scene (.scene)</button>
           <button id="file-save-collection" class="ghost wide">📦 Export collection (.collection)</button>
-          <button id="file-open" class="ghost wide">📂 Open a file…</button>
-          <p class="muted small">Creature files include any stuff the creature is wearing. Collections hold your saved stuff and rigs.</p>
-          <input id="file-input" type="file" accept=".creature,.stuff,.collection,.json" multiple hidden />
+          <button id="file-open" class="ghost wide" title="A .creature replaces the current creature; a .scene replaces the scene">📂 Open…</button>
+          <button id="file-add" class="ghost wide" title="Bring the creatures from a .creature or .scene file into this scene">➕ Add creatures from file…</button>
+          <p class="muted small">Creature and scene files include any stuff being worn. Collections hold your saved stuff and rigs.</p>
+          <input id="file-input" type="file" accept=".creature,.scene,.stuff,.collection,.json" multiple hidden />
         </div>
         <div id="backdrop" class="popover" hidden>
           <div class="pop-title">Backdrop</div>

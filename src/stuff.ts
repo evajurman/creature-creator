@@ -301,7 +301,7 @@ export function removeThing(id: string) {
 export const FILE_FORMAT = 'creature-creator';
 export const FILE_VERSION = 1;
 
-export type FileKind = 'creature' | 'stuff' | 'collection';
+export type FileKind = 'creature' | 'scene' | 'stuff' | 'collection';
 
 export interface FileEnvelope<T = unknown> {
   format: typeof FILE_FORMAT;

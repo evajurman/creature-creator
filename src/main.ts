@@ -9,7 +9,7 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { Creature, defaultState, EYE_STYLES, type Attachment, type BoneRT, type CreatureState, type EyeStyle } from './creature';
+import { Creature, defaultState, EYE_STYLES, type Attachment, type BoneRT, type CreatureState, type EyeStyle, type Placement } from './creature';
 import { bounds, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import {
   buildThing,
@@ -275,21 +275,51 @@ composer.addPass(new OutputPass());
 // ---------------------------------------------------------------------------
 // state + history
 
-const STORAGE_KEY = 'creature-creator/v1';
-let state: CreatureState = load() ?? defaultState(rigFromTemplate(RIGS[0]));
+/**
+ * The whole scene: several creatures, one of which is active. `state` and
+ * `creature` always point at the active one, so every panel and tool works on
+ * whichever creature is selected.
+ */
+interface World {
+  creatures: CreatureState[];
+  active: number;
+  /** the thing on the Stuff workbench (shared by the whole scene) */
+  workbench?: Thing;
+  /** scene name, used for .scene files */
+  name?: string;
+}
+
+const WORLD_KEY = 'creature-creator/world';
+const OLD_KEY = 'creature-creator/v1';
+let world: World = loadWorld() ?? { creatures: [defaultState(rigFromTemplate(RIGS[0]))], active: 0 };
+let state: CreatureState = world.creatures[world.active];
+const creatures: Creature[] = [];
 let creature: Creature;
 let selected = '';
 type Mode = 'build' | 'rig' | 'pose' | 'stuff';
 let mode: Mode = 'build';
 let eyePair = 0;
 
-function load(): CreatureState | null {
+function loadWorld(): World | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? migrate(JSON.parse(raw)) : null;
+    const raw = localStorage.getItem(WORLD_KEY);
+    if (raw) {
+      const w = JSON.parse(raw) as World;
+      const list = (w.creatures ?? []).map(migrate).filter((s): s is CreatureState => !!s);
+      if (list.length) return { creatures: list, active: Math.min(Math.max(0, w.active ?? 0), list.length - 1), workbench: w.workbench };
+    }
+    // the single-creature autosave from before scenes existed
+    const old = localStorage.getItem(OLD_KEY);
+    const s = old ? migrate(JSON.parse(old)) : null;
+    if (s) {
+      const workbench = s.workbench;
+      delete s.workbench;
+      return { creatures: [s], active: 0, workbench };
+    }
   } catch {
-    return null;
+    /* fall through to a fresh scene */
   }
+  return null;
 }
 
 /** Bring a saved creature (autosave or file) up to the current format. */
@@ -321,7 +351,7 @@ function migrate(data: unknown): CreatureState | null {
 
 function save() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(WORLD_KEY, JSON.stringify(world));
   } catch {
     /* storage full or blocked; nothing to do */
   }
@@ -331,7 +361,8 @@ const history: string[] = [];
 let hIndex = -1;
 
 function commit() {
-  const snap = JSON.stringify(state);
+  world.creatures[world.active] = state;
+  const snap = JSON.stringify(world);
   if (snap === history[hIndex]) return;
   history.splice(hIndex + 1);
   history.push(snap);
@@ -339,21 +370,31 @@ function commit() {
   hIndex = history.length - 1;
   save();
   updateUndo();
+  fitShadows();
 }
 
 function restore(snap: string) {
-  const s = JSON.parse(snap) as CreatureState;
-  if (JSON.stringify(s.rig) !== JSON.stringify(state.rig)) {
-    state = s;
-    buildCreature();
-  } else {
-    state = s;
-    creature.state = s;
-    creature.sync();
+  const next = JSON.parse(snap) as World;
+  // Rebuild only creatures whose skeleton changed (or that are new); the rest
+  // just take their restored state.
+  for (let i = 0; i < next.creatures.length; i++) {
+    const s = next.creatures[i];
+    const c = creatures[i];
+    if (c && JSON.stringify(c.state.rig) === JSON.stringify(s.rig)) {
+      c.state = s;
+      c.sync();
+    } else {
+      c?.dispose();
+      creatures[i] = makeCreature(s);
+    }
   }
+  while (creatures.length > next.creatures.length) creatures.pop()!.dispose();
+  world = next;
+  activate(world.active);
   syncWorkbench();
   if (selectedAttachment) selectAttachment(selectedAttachment);
   save();
+  fitShadows();
   renderUI();
 }
 
@@ -374,17 +415,70 @@ function updateUndo() {
   $<HTMLButtonElement>('#redo').disabled = hIndex >= history.length - 1;
 }
 
-function buildCreature() {
-  if (creature) scene.remove(creature.group);
-  creature = new Creature(state);
+function makeCreature(s: CreatureState): Creature {
+  const c = new Creature(s);
+  scene.add(c.root);
+  c.root.visible = mode !== 'stuff';
+  c.setSkeletonVisible(false);
+  return c;
+}
+
+/** Make creature `i` the one every panel and tool works on. */
+function activate(i: number) {
+  const next = creatures[i];
+  const switching = creature !== next;
+  if (creature && switching) {
+    creature.setRigMode(false);
+    creature.setSkeletonVisible(false);
+    creature.flash(null, 0);
+  }
+  // gizmos belong to the previous creature
+  if (switching) stopPlacing();
+  world.active = i;
+  state = world.creatures[i];
+  creature = next;
+  if (switching) deselectAttachment();
   creature.setRigMode(mode === 'rig');
-  scene.add(creature.group);
   if (!creature.bones.has(selected)) selected = creature.list[0].def.id;
   creature.select(selected);
-  creature.group.visible = mode !== 'stuff';
   updateSkeletonVisibility();
-  // the gizmo pointed at the old creature's objects
+}
+
+/** Rebuild the active creature from `state` (after skeleton changes, new files...). */
+function buildCreature() {
+  const i = world.active;
+  const wasPlacing = placing;
+  creatures[i]?.dispose();
+  world.creatures[i] = state;
+  creatures[i] = makeCreature(state);
+  creature = creatures[i];
+  creature.setRigMode(mode === 'rig');
+  if (!creature.bones.has(selected)) selected = creature.list[0].def.id;
+  creature.select(selected);
+  updateSkeletonVisibility();
+  // gizmos pointed at the old creature's objects
   if (selectedAttachment) selectAttachment(selectedAttachment);
+  if (wasPlacing) startPlacing();
+}
+
+/** Keep the key light's shadow area covering every creature. */
+function fitShadows() {
+  const box = new THREE.Box3();
+  for (const c of creatures) {
+    c.root.updateMatrixWorld(true);
+    for (const m of c.meshes()) box.expandByObject(m);
+  }
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const half = Math.max(3, box.getSize(new THREE.Vector3()).length() / 2 + 1);
+  const cam = key.shadow.camera;
+  cam.left = cam.bottom = -half;
+  cam.right = cam.top = half;
+  cam.far = 14 + half;
+  cam.updateProjectionMatrix();
+  key.target.position.set(center.x, 0, center.z);
+  key.position.set(center.x + 2.2, 4.6 + half * 0.3, center.z + 3.0);
+  key.target.updateMatrixWorld();
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +511,8 @@ canvas.addEventListener('pointerdown', (e) => {
   const normal =
     id === 'root' ? new THREE.Vector3(0, 1, 0) : camera.getWorldDirection(new THREE.Vector3()).negate();
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pos);
-  const offset = id === 'root' ? creature.group.position.clone().sub(pos) : new THREE.Vector3();
+  // the root offset lives inside the creature's placement, so work in its local space
+  const offset = id === 'root' ? creature.group.position.clone().sub(creature.root.worldToLocal(pos.clone())) : new THREE.Vector3();
   const kind = id === 'root' ? 'root' : (h.userData.kind as 'start' | 'end');
   drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: mode === 'rig' ? JSON.stringify(state.rig) : undefined };
   $('#viewport').style.cursor = 'grabbing';
@@ -432,12 +527,13 @@ canvas.addEventListener('pointermove', (e) => {
     drag.moved = drag.moved || pointer.moved;
     if (drag.rigBase && drag.kind !== 'root') {
       if (!drag.moved) return;
-      const d = hit.clone().sub(drag.startHit);
+      // skeleton coordinates are relative to the creature's placement (it may be turned)
+      const d = hit.clone().sub(drag.startHit).applyQuaternion(creature.root.quaternion.clone().invert());
       state.rig = JSON.parse(drag.rigBase) as RigState;
       moveJoint(state.rig, drag.id, drag.kind, d.toArray() as V3);
       creature.relayout(state.rig);
     } else if (drag.id === 'root') {
-      creature.group.position.copy(hit.add(drag.offset));
+      creature.group.position.copy(creature.root.worldToLocal(hit).add(drag.offset));
       creature.group.position.y = Math.max(creature.group.position.y, -1);
     } else {
       creature.dragTip(drag.id, hit, $<HTMLInputElement>('#ik').checked);
@@ -485,6 +581,18 @@ canvas.addEventListener('pointerup', (e) => {
     }
     return;
   }
+  // clicking a different creature makes it the one being edited
+  const other = pickOtherCreature(e.clientX, e.clientY);
+  if (other) {
+    activate(other.index);
+    if (other.boneId && creature.bones.has(other.boneId)) selected = other.boneId;
+    creature.select(selected);
+    flashPart();
+    save();
+    renderUI();
+    hint(`Now editing ${creatureLabel(other.index)}`, 1600);
+    return;
+  }
   if (mode === 'build') {
     const att = pickAttachment(e.clientX, e.clientY);
     if (att) {
@@ -503,6 +611,8 @@ canvas.addEventListener('pointerup', (e) => {
 
 canvas.addEventListener('dblclick', (e) => {
   if (mode === 'stuff') return;
+  const other = pickOtherCreature(e.clientX, e.clientY);
+  if (other) activate(other.index);
   const id = pickPart(e.clientX, e.clientY);
   if (!id) return;
   selectPart(id);
@@ -526,6 +636,24 @@ function setRay(clientX: number, clientY: number) {
     new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1),
     camera,
   );
+}
+
+/** If the pointer is over a creature other than the active one, which one (and which part). */
+function pickOtherCreature(x: number, y: number): { index: number; boneId?: string } | null {
+  if (creatures.length < 2) return null;
+  setRay(x, y);
+  const targets = creatures.flatMap((c) => [...c.meshes(), ...c.attachmentMeshes()]);
+  const hit = raycaster.intersectObjects(targets, false)[0];
+  if (!hit) return null;
+  let o: THREE.Object3D | null = hit.object;
+  while (o && !creatures.some((c) => c.root === o)) o = o.parent;
+  const index = creatures.findIndex((c) => c.root === o);
+  if (index < 0 || index === world.active) return null;
+  return { index, boneId: hit.object.userData.boneId as string | undefined };
+}
+
+function creatureLabel(i: number): string {
+  return world.creatures[i]?.name?.trim() || `Creature ${i + 1}`;
 }
 
 function pickPart(x: number, y: number): string | null {
@@ -574,13 +702,28 @@ function flyTo(pos: THREE.Vector3, target: THREE.Vector3, dur = 650) {
 
 /** Tight bounds of the posed creature: body parts plus any stuff it's wearing. */
 function creatureBox(precise = false): THREE.Box3 {
-  creature.group.updateMatrixWorld(true);
+  creature.root.updateMatrixWorld(true);
   const box = new THREE.Box3();
   for (const m of [...creature.meshes(), ...creature.attachmentMeshes()]) if (m.visible) box.expandByObject(m, precise);
   return box;
 }
 
 const THREE_QUARTER = new THREE.Vector3(0.62, 0.32, 0.72).normalize();
+
+/** Frame every creature in the scene, keeping the current viewing angle. */
+function frameAll() {
+  const box = new THREE.Box3();
+  for (const c of creatures) {
+    c.root.updateMatrixWorld(true);
+    for (const m of c.meshes()) box.expandByObject(m);
+  }
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = box.getSize(new THREE.Vector3()).length() / 2;
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  const dist = (radius * 0.95) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  flyTo(center.clone().addScaledVector(dir, Math.max(dist, 2)), center);
+}
 
 /** Fly to frame the creature, keeping the current angle unless a view direction is given. */
 function frameCreature(view: boolean | THREE.Vector3 = false) {
@@ -609,6 +752,11 @@ const VIEWS: Record<string, THREE.Vector3> = {
 };
 
 function viewFrom(name: string) {
+  if (name === 'all') {
+    if (mode === 'stuff') focusOnBoard();
+    else frameAll();
+    return;
+  }
   const dir = VIEWS[name];
   if (!dir) return;
   controls.autoRotate = false;
@@ -727,6 +875,8 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
       active: false,
     };
     creature.setDrawFocus(target.boneId);
+    // other creatures step aside while you draw on this one
+    for (const c of creatures) if (c !== creature) c.root.visible = false;
     focusOnBone(b);
   } else {
     drawState = { target, frame: board, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false };
@@ -744,6 +894,7 @@ function exitDraw() {
   overlay.classList.remove('active');
   $('#draw-bar').hidden = true;
   creature.setDrawFocus(null);
+  for (const c of creatures) c.root.visible = mode !== 'stuff';
   updateSkeletonVisibility();
   octx.clearRect(0, 0, overlay.width, overlay.height);
   hint('');
@@ -969,8 +1120,8 @@ let benchKey = '';
 let selectedPiece = '';
 
 function workbench(): Thing {
-  state.workbench ??= newThing();
-  return state.workbench;
+  world.workbench ??= newThing();
+  return world.workbench;
 }
 
 function piece(): Piece | undefined {
@@ -1214,7 +1365,7 @@ function renderCollection() {
           actions.append(b);
         };
         mk('Edit', 'Open on the workbench', () => {
-          state.workbench = structuredClone(t);
+          world.workbench = structuredClone(t);
           selectedPiece = '';
           syncWorkbench();
           commit();
@@ -1277,7 +1428,7 @@ $<HTMLInputElement>('#thing-name').oninput = (e) => {
 };
 $<HTMLInputElement>('#thing-name').onchange = () => commit();
 $('#thing-new').onclick = () => {
-  state.workbench = newThing();
+  world.workbench = newThing();
   selectedPiece = '';
   syncWorkbench();
   commit();
@@ -1314,6 +1465,14 @@ gizmo.addEventListener('dragging-changed', (e) => {
   controls.enabled = !(e as unknown as { value: boolean }).value;
 });
 gizmo.addEventListener('objectChange', () => {
+  if (placing) {
+    // keep creatures standing on the floor, turning only about the vertical
+    creature.root.position.y = 0;
+    creature.root.rotation.set(0, creature.root.rotation.y, 0);
+    creature.capturePlacement();
+    fitShadows();
+    return;
+  }
   const a = currentAttachment();
   const obj = gizmo.object;
   if (!a || !obj) return;
@@ -1333,6 +1492,7 @@ function currentAttachment(): Attachment | undefined {
 function selectAttachment(id: string) {
   const obj = creature.attachmentObject(id);
   if (!obj) return deselectAttachment();
+  stopPlacing();
   selectedAttachment = id;
   gizmo.attach(obj);
   $('#attach-bar').hidden = false;
@@ -1342,10 +1502,133 @@ function selectAttachment(id: string) {
 
 function deselectAttachment() {
   selectedAttachment = '';
-  gizmo.detach();
+  if (!placing) gizmo.detach();
   $('#attach-bar').hidden = true;
   renderAttachList();
 }
+
+// ---------------------------------------------------------------------------
+// placing creatures: the same gizmo, limited to sliding on the floor and turning
+
+let placing = false;
+
+function setPlaceMode(m: 'translate' | 'rotate') {
+  gizmo.setMode(m);
+  gizmo.setSpace('world');
+  gizmo.showX = gizmo.showZ = m === 'translate';
+  gizmo.showY = m === 'rotate';
+  document.querySelectorAll<HTMLButtonElement>('#place-bar [data-place]').forEach((b) => b.classList.toggle('on', b.dataset.place === m));
+}
+
+function startPlacing() {
+  if (mode === 'stuff') return;
+  if (selectedAttachment) deselectAttachment();
+  placing = true;
+  gizmo.attach(creature.root);
+  setPlaceMode('translate');
+  $('#place-bar').hidden = false;
+  $('#place-name').textContent = creatureLabel(world.active);
+  $('#cr-place').classList.add('on');
+}
+
+function stopPlacing() {
+  if (!placing) return;
+  placing = false;
+  gizmo.detach();
+  gizmo.showX = gizmo.showY = gizmo.showZ = true;
+  gizmo.setSpace('local');
+  $('#place-bar').hidden = true;
+  $('#cr-place').classList.remove('on');
+}
+
+document.querySelectorAll<HTMLButtonElement>('#place-bar [data-place]').forEach((b) => {
+  b.onclick = () => setPlaceMode(b.dataset.place as 'translate' | 'rotate');
+});
+$('#place-done').onclick = () => {
+  stopPlacing();
+  commit(); // records the move if anything changed (no-op otherwise)
+};
+
+// ---------------------------------------------------------------------------
+// the creature switcher
+
+function renderCreatureBar() {
+  const el = $('#creature-chips');
+  el.innerHTML = '';
+  world.creatures.forEach((s, i) => {
+    const btn = document.createElement('button');
+    const color = Object.values(s.parts)[0]?.color ?? '#ccc';
+    btn.innerHTML = `<i style="background:${color}"></i>`;
+    btn.append(creatureLabel(i));
+    btn.classList.toggle('active', i === world.active);
+    btn.onclick = () => {
+      if (i === world.active) return;
+      activate(i);
+      flashPart();
+      save();
+      renderUI();
+    };
+    el.append(btn);
+  });
+  $<HTMLButtonElement>('#cr-del').disabled = world.creatures.length < 2;
+}
+
+/** A free spot on the floor to the right of everyone else. */
+function freeSpot(): Placement {
+  let maxX = -Infinity;
+  for (const c of creatures) {
+    const box = new THREE.Box3();
+    c.root.updateMatrixWorld(true);
+    for (const m of c.meshes()) box.expandByObject(m);
+    if (!box.isEmpty()) maxX = Math.max(maxX, box.max.x);
+  }
+  return { x: Number.isFinite(maxX) ? Math.round((maxX + 0.9) * 100) / 100 : 0, z: 0, yaw: 0 };
+}
+
+function addCreature(s: CreatureState) {
+  exitDraw();
+  world.creatures.push(s);
+  creatures.push(makeCreature(s));
+  activate(world.creatures.length - 1);
+  commit();
+  renderUI();
+  frameAll();
+}
+
+$('#cr-add').onclick = () => {
+  const s = defaultState(structuredClone(state.rig));
+  s.style = state.style;
+  s.materialSettings = structuredClone(state.materialSettings);
+  s.placement = freeSpot();
+  addCreature(s);
+  hint('Added a new creature: click any creature to switch between them', 2600);
+};
+$('#cr-dup').onclick = () => {
+  const s = structuredClone(state);
+  delete s.workbench;
+  s.name = state.name?.trim() ? `${state.name.trim()} copy` : undefined;
+  s.placement = freeSpot();
+  addCreature(s);
+};
+$('#cr-del').onclick = () => {
+  if (world.creatures.length < 2) return;
+  if (!confirm(`Remove ${creatureLabel(world.active)} from the scene? (You can undo this.)`)) return;
+  exitDraw();
+  stopPlacing();
+  const i = world.active;
+  creatures[i].dispose();
+  creatures.splice(i, 1);
+  world.creatures.splice(i, 1);
+  creature = undefined as unknown as Creature; // the old one is gone; don't try to reset it
+  activate(Math.max(0, i - 1));
+  commit();
+  renderUI();
+};
+$('#cr-place').onclick = () => {
+  if (!placing) return startPlacing();
+  stopPlacing();
+  commit();
+};
 
 function syncAttachBar() {
   const a = currentAttachment();
@@ -1438,25 +1721,52 @@ $('#file-btn').onclick = () => {
   pop.hidden = !pop.hidden;
   $('#file-btn').classList.toggle('on', !pop.hidden);
   $<HTMLInputElement>('#creature-name').value = state.name ?? '';
+  $<HTMLInputElement>('#scene-name').value = world.name ?? '';
 };
 $<HTMLInputElement>('#creature-name').oninput = (e) => {
   state.name = (e.target as HTMLInputElement).value;
+  renderCreatureBar();
 };
 $<HTMLInputElement>('#creature-name').onchange = () => commit();
+$<HTMLInputElement>('#scene-name').oninput = (e) => {
+  world.name = (e.target as HTMLInputElement).value;
+};
+$<HTMLInputElement>('#scene-name').onchange = () => commit();
+
+/** A creature as it goes into a file (the workbench isn't part of it). */
+function forFile(s: CreatureState): CreatureState {
+  const { workbench: _wb, ...data } = s;
+  return data;
+}
+
 $('#file-save-creature').onclick = () => {
-  const { workbench: _wb, ...data } = state;
-  downloadText(`${safeFileName(state.name ?? '', 'creature')}.creature`, JSON.stringify(envelope('creature', data)));
+  downloadText(`${safeFileName(state.name ?? '', 'creature')}.creature`, JSON.stringify(envelope('creature', forFile(state))));
+};
+$('#file-save-scene').onclick = () => {
+  const data = { name: world.name, active: world.active, creatures: world.creatures.map(forFile) };
+  downloadText(`${safeFileName(world.name ?? '', 'scene')}.scene`, JSON.stringify(envelope('scene', data)));
 };
 $('#file-save-collection').onclick = () => {
   const data = { things: collection(), rigs: savedRigs() };
   downloadText('my-collection.collection', JSON.stringify(envelope('collection', data)));
 };
-$('#file-open').onclick = () => $<HTMLInputElement>('#file-input').click();
+
+// "open" replaces (a creature file replaces the current creature, a scene file
+// the whole scene); "add" brings the file's creatures into the current scene.
+let fileMode: 'open' | 'add' = 'open';
+$('#file-open').onclick = () => {
+  fileMode = 'open';
+  $<HTMLInputElement>('#file-input').click();
+};
+$('#file-add').onclick = () => {
+  fileMode = 'add';
+  $<HTMLInputElement>('#file-input').click();
+};
 $<HTMLInputElement>('#file-input').onchange = async (e) => {
   const input = e.target as HTMLInputElement;
   for (const file of Array.from(input.files ?? [])) {
     try {
-      openFile(await file.text());
+      openFile(await file.text(), fileMode);
     } catch (err) {
       hint(`${file.name}: ${(err as Error).message}`, 3500, true);
     }
@@ -1464,24 +1774,69 @@ $<HTMLInputElement>('#file-input').onchange = async (e) => {
   input.value = '';
 };
 
-function openFile(text: string) {
+/** Read creatures out of a file, up to the current format, with worn stuff added to the collection. */
+function creaturesFrom(data: unknown, many: boolean): CreatureState[] {
+  const raw = many ? ((data as { creatures?: unknown[] }).creatures ?? []) : [data];
+  const list = raw.map(migrate).filter((s): s is CreatureState => !!s);
+  if (!list.length) throw new Error(many ? 'No creatures in this scene could be read.' : 'The creature in this file could not be read.');
+  const have = new Set(collection().map((t) => t.id));
+  for (const s of list) {
+    delete s.workbench; // the workbench belongs to the scene, not the file
+    for (const a of s.attachments ?? []) {
+      if (have.has(a.thing.id)) continue;
+      putThing(a.thing);
+      have.add(a.thing.id);
+    }
+  }
+  return list;
+}
+
+function openFile(text: string, how: 'open' | 'add') {
   const env = parseEnvelope(text);
-  if (env.kind === 'creature') {
-    const s = migrate(env.data);
-    if (!s) throw new Error('The creature in this file could not be read.');
-    s.workbench = state.workbench;
-    // stuff the creature is wearing joins the collection too
-    const have = new Set(collection().map((t) => t.id));
-    for (const a of s.attachments ?? []) if (!have.has(a.thing.id)) putThing(a.thing);
+  if (env.kind === 'creature' || env.kind === 'scene') {
+    const incoming = creaturesFrom(env.data, env.kind === 'scene');
     exitDraw();
     deselectAttachment();
-    state = s;
-    selected = '';
-    buildCreature();
-    commit();
-    renderUI();
-    if (mode !== 'stuff') frameCreature(true);
-    hint(`Opened ${s.name || 'creature'}`, 2000);
+    stopPlacing();
+    if (how === 'add') {
+      // keep the file's own arrangement, shifted to free floor on the right
+      const spot = freeSpot();
+      const minX = Math.min(...incoming.map((s) => s.placement?.x ?? 0));
+      for (const s of incoming) {
+        s.placement = { x: spot.x + ((s.placement?.x ?? 0) - minX), z: s.placement?.z ?? 0, yaw: s.placement?.yaw ?? 0 };
+        world.creatures.push(s);
+        creatures.push(makeCreature(s));
+      }
+      activate(world.creatures.length - 1);
+      commit();
+      renderUI();
+      frameAll();
+      hint(incoming.length > 1 ? `Added ${incoming.length} creatures to the scene` : `Added ${incoming[0].name || 'a creature'} to the scene`, 2200);
+    } else if (env.kind === 'scene') {
+      const data = env.data as { name?: string; active?: number };
+      for (const c of creatures) c.dispose();
+      creatures.length = 0;
+      creature = undefined as unknown as Creature; // replaced wholesale
+      world = { creatures: incoming, active: Math.min(Math.max(0, data.active ?? 0), incoming.length - 1), workbench: world.workbench, name: data.name };
+      incoming.forEach((s, i) => (creatures[i] = makeCreature(s)));
+      selected = '';
+      activate(world.active);
+      commit();
+      renderUI();
+      if (mode !== 'stuff') frameAll();
+      hint(`Opened ${data.name || 'scene'} (${incoming.length} creature${incoming.length > 1 ? 's' : ''})`, 2200);
+    } else {
+      // a creature file replaces the current creature, keeping its spot in the scene
+      const s = incoming[0];
+      s.placement = state.placement;
+      state = s;
+      selected = '';
+      buildCreature();
+      commit();
+      renderUI();
+      if (mode !== 'stuff') frameCreature(true);
+      hint(`Opened ${s.name || 'creature'}`, 2000);
+    }
   } else if (env.kind === 'stuff') {
     const t = env.data as Thing;
     if (!Array.isArray(t.pieces)) throw new Error('The stuff in this file could not be read.');
@@ -1750,6 +2105,7 @@ function renderUI() {
   renderRigPanel();
   renderAttachList();
   renderStuffPanel();
+  renderCreatureBar();
 }
 
 function setColor(c: string, doCommit: boolean) {
@@ -1784,6 +2140,9 @@ function switchRig(base: string) {
   if (dirty && !confirm('Switch body plan? Your drawn shapes and pose will be cleared (colours and material stay).')) return;
   const body = state.parts[creature.list[0].src].color;
   const next = defaultState(rig, body);
+  // same spot in the scene, same name
+  next.placement = state.placement;
+  next.name = state.name;
   next.style = state.style;
   next.eyes = state.eyes;
   exitDraw();
@@ -1803,13 +2162,15 @@ function setMode(m: Mode) {
   $('#rig-panel').hidden = m !== 'rig';
   $('#pose-panel').hidden = m !== 'pose';
   $('#stuff-panel').hidden = m !== 'stuff';
+  $('#creature-bar').hidden = m === 'stuff';
+  if (m === 'stuff') stopPlacing();
   if (m !== 'build') {
     deselectAttachment();
     $('#attach-pop').hidden = true;
   }
   const wasStuff = board.visible;
   board.visible = m === 'stuff';
-  creature.group.visible = m !== 'stuff';
+  for (const c of creatures) c.root.visible = m !== 'stuff';
   if (m === 'stuff') {
     syncWorkbench();
     renderStuffPanel();
@@ -2131,7 +2492,7 @@ function updateFocus(now: number) {
 /** Click-to-focus: put the focus plane on whatever is under the pointer. */
 function focusAt(x: number, y: number) {
   setRay(x, y);
-  const targets = [mode === 'stuff' ? board : creature.group];
+  const targets = mode === 'stuff' ? [board] : creatures.map((c) => c.root);
   const hit = raycaster.intersectObjects(targets, true).find((h) => h.object instanceof THREE.Mesh && h.object.visible);
   const point = hit?.point ?? raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
   if (!point) return;
@@ -2236,7 +2597,7 @@ $('#spin').onclick = () => {
 $('#new').onclick = () => {
   if (!confirm('Start a new creature? (You can undo this.)')) return;
   exitDraw();
-  state = defaultState(state.rig);
+  state = { ...defaultState(state.rig), placement: state.placement, name: state.name };
   buildCreature();
   commit();
   renderUI();
@@ -2265,15 +2626,19 @@ $('#shot').onclick = () => {
 
 $('#export').onclick = () => {
   const inks: THREE.Object3D[] = [];
-  creature.group.traverse((o) => {
-    // ink hulls and felt fuzz are render-only effects; they don't belong in the model file
-    const ink = o instanceof THREE.Mesh && (o.material as THREE.Material).userData?.ink;
-    if ((ink || o.userData.fx) && o.visible) inks.push(o);
-  });
+  const roots = creatures.map((c) => c.root);
+  for (const root of roots) {
+    root.traverse((o) => {
+      // ink hulls and felt fuzz are render-only effects; they don't belong in the model file
+      const ink = o instanceof THREE.Mesh && (o.material as THREE.Material).userData?.ink;
+      if ((ink || o.userData.fx) && o.visible) inks.push(o);
+    });
+  }
   withCleanScene(() => {
     inks.forEach((o) => (o.visible = false));
     new GLTFExporter().parse(
-      creature.group,
+      // every creature in the scene, each at its placement
+      roots,
       (result) => {
         inks.forEach((o) => (o.visible = true));
         const blob = new Blob([result as ArrayBuffer], { type: 'model/gltf-binary' });
@@ -2325,6 +2690,7 @@ window.addEventListener('keydown', (e) => {
     else if (k === '2') setMode('rig');
     else if (k === '3') setMode('pose');
     else if (k === 'f') frameCreature();
+    else if (k === 'a' && e.shiftKey) frameAll();
   }
 });
 
@@ -2360,7 +2726,7 @@ function loop(now: number) {
   const f = 1 - (now - flashStart) / 700;
   if (mode === 'stuff') flashPiece(drawState ? 0 : Math.max(0, f));
   else creature.flash(drawState ? null : selected, Math.max(0, f));
-  creature.updateMerge();
+  for (const c of creatures) c.updateMerge();
   if (drawState && !drawState.active) renderOverlay();
   updateFocus(now);
   composer.render();
@@ -2369,7 +2735,8 @@ function loop(now: number) {
 // ---------------------------------------------------------------------------
 // boot
 
-buildCreature();
+world.creatures.forEach((s, i) => (creatures[i] = makeCreature(s)));
+activate(world.active);
 commit();
 renderUI();
 applyFloor();
