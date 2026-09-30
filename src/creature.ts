@@ -41,6 +41,8 @@ export interface EyePair {
   size: number;
   spacing: number;
   height: number;
+  /** how far this pair stands off the face, 0..1 (falls back to the old shared `lift`) */
+  lift?: number;
 }
 
 export type EyeFinish = 'body' | 'gloss' | 'matte' | 'glass';
@@ -54,7 +56,7 @@ export interface EyesState {
   finish?: EyeFinish;
   /** bead / dot / button colour */
   color?: string;
-  /** how far the eyes stand off the face, 0..1 */
+  /** legacy: one stand-off for every pair (now per pair) */
   lift?: number;
 }
 
@@ -89,7 +91,7 @@ export interface CreatureState {
   mergeColors?: boolean;
   /** width of the colour fade at blended joins, in world units */
   colorBlend?: number;
-  /** rebuild merged groups as one seamless skin when left idle (default on) */
+  /** rebuild merged groups as one seamless skin when left idle (default on; see setSeamlessMode) */
   seamless?: boolean;
   /** per-material slider values (missing keys use the defaults) */
   materialSettings?: Partial<Record<StyleId, StyleSettings>>;
@@ -160,8 +162,18 @@ export function defaultState(rig: RigState, color?: string): CreatureState {
     rootOffset: [0, 0, 0],
     merge: true,
     mergeRadius: 0.1,
-    eyes: { enabled: true, style: 'googly', pairs: [{ size: 0.5, spacing: 0.5, height: 0.55 }] },
+    eyes: { enabled: true, style: 'bead', pairs: [{ size: 0.5, spacing: 0.5, height: 0.55 }] },
   };
+}
+
+/** App-wide seamless joins: always, never, or each creature's own choice. */
+export type SeamlessMode = 'on' | 'off' | 'creature';
+let seamlessMode: SeamlessMode = 'creature';
+export function setSeamlessMode(m: SeamlessMode) {
+  seamlessMode = m;
+}
+function seamlessOn(s: CreatureState): boolean {
+  return seamlessMode === 'creature' ? (s.seamless ?? true) : seamlessMode === 'on';
 }
 
 const geoCache = new Map<string, THREE.BufferGeometry>();
@@ -340,8 +352,40 @@ function restFrame(def: ExpandedBone) {
   if (side.lengthSq() < 1e-6) side.set(1, 0, 0).addScaledVector(dir, -dir.x);
   if (side.lengthSq() < 1e-6) side.set(0, 0, 1);
   side.normalize();
+  // roll: turn the drawing about the bone. A right twin is its left twin's
+  // mirror image, so it turns the other way
+  if (def.roll) side.applyAxisAngle(dir, def.roll * (def.sideSign === -1 ? -1 : 1));
   const normal = new THREE.Vector3().crossVectors(side, dir).normalize();
   return { length, world: new THREE.Matrix4().makeBasis(side, dir, normal).setPosition(start) };
+}
+
+/** Where a bone's (possibly curved) tip sits in the rest pose. */
+export function bentTip(def: ExpandedBone): THREE.Vector3 {
+  const { length, world } = restFrame(def);
+  const [x, y, z] = bendPoint(bendOf(def, length), 0, length, 0);
+  return new THREE.Vector3(x, y, z).applyMatrix4(world);
+}
+
+/**
+ * The end point that puts a bendy bone's curved tip at `target`, keeping its
+ * bend. The tip lies off the straight line from start to end, so moving the
+ * end by the pointer's motion would send the tip somewhere else.
+ */
+export function endForTip(def: ExpandedBone, target: THREE.Vector3): THREE.Vector3 {
+  const start = new THREE.Vector3(...def.start);
+  const want = target.clone().sub(start);
+  let end = new THREE.Vector3(...def.end);
+  if (want.lengthSq() < 1e-8) return end;
+  // the tip's chord scales with the bone and turns with it; the drawing side
+  // re-squares against each new direction, so settle it in a few passes
+  for (let i = 0; i < 8; i++) {
+    const tip = bentTip({ ...def, end: end.toArray() as V3 }).sub(start);
+    if (tip.lengthSq() < 1e-10) break;
+    const q = new THREE.Quaternion().setFromUnitVectors(tip.clone().normalize(), want.clone().normalize());
+    const len = end.distanceTo(start) * (want.length() / tip.length());
+    end = end.sub(start).applyQuaternion(q).setLength(len).add(start);
+  }
+  return end;
 }
 const rootGeo = new THREE.BoxGeometry(0.07, 0.07, 0.07);
 
@@ -638,7 +682,7 @@ export class Creature {
       // (unless the item opts out, and lets its fuzz scale along with it)
       const felt = a.thing.scaleMaterial !== false && a.thing.pieces.some((p) => p.style === 'felt');
       const unit = felt ? Math.round(Math.cbrt(Math.abs(a.scale[0] * a.scale[1] * a.scale[2])) * 20) / 20 || 1 : 1;
-      const key = JSON.stringify([a.thing.pieces, a.thing.ownMaterial, a.thing.materialSettings, a.bone, twinBone?.def.id, this.state.materialSettings, unit]);
+      const key = JSON.stringify([a.thing.pieces, a.thing.ownMaterial, a.thing.materialSettings, a.thing.bend, a.thing.bendMode, a.bone, twinBone?.def.id, this.state.materialSettings, unit]);
       let rec = this.attached.get(a.id);
       if (!rec || rec.key !== key) {
         const settings = (st: StyleId) => this.settingsFor(st);
@@ -877,7 +921,7 @@ export class Creature {
   /** Build seamless skins for every merged group. Resolves false if interrupted. */
   async settle(): Promise<boolean> {
     const s = this.state;
-    if (this.skinState !== 'none' || !(s.merge ?? true) || !(s.seamless ?? true) || this.rigMode || this.drawFocus) return false;
+    if (this.skinState !== 'none' || !(s.merge ?? true) || !seamlessOn(s) || this.rigMode || this.drawFocus) return false;
     const version = this.skinVersion;
     this.skinState = 'building';
     this.root.updateMatrixWorld(true);
@@ -914,7 +958,7 @@ export class Creature {
       const lowPoly = style === 'lowpoly';
       const h = lowPoly
         ? Math.min(0.08, Math.max(0.02, (minR / 2) * (k.facets ?? 1)))
-        : Math.min(0.02, Math.max(0.006, minR / 5));
+        : Math.min(0.02, Math.max(0.006, minR / 2.5));
       const parts: SkinPart[] = joined.map((b) => ({
         geo: ((b.mesh!.userData.skinGeo as (() => THREE.BufferGeometry) | undefined)?.() ?? b.mesh!.userData.baseGeo) as THREE.BufferGeometry,
         toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
@@ -924,12 +968,15 @@ export class Creature {
       // clay lumps go back on after the skin is built
       const lumps = style === 'clay' ? (k.lumps ?? 0) * Math.min(0.012, Math.max(0.004, minR * 0.08)) : 0;
       const geo = await buildSkin(parts, { h, colorBlend: kc, lowPoly, lumps, shouldStop: () => version !== this.skinVersion });
-      if (!geo || version !== this.skinVersion) {
+      if (version !== this.skinVersion) {
+        // something changed meanwhile: it'll be retried once things settle again
         geo?.dispose();
         for (const bm of built) bm.mesh.geometry.dispose();
-        if (version === this.skinVersion) this.skinState = 'none';
         return false;
       }
+      // this group couldn't be skinned: its parts just stay fast-merged (never retry
+      // in a loop; the skin is only attempted again after the next change)
+      if (!geo) continue;
       const mesh = new THREE.Mesh(geo);
       mesh.receiveShadow = true;
       mesh.raycast = () => {}; // picking still goes to the (hidden) parts
@@ -966,7 +1013,7 @@ export class Creature {
     const r4 = (v: number) => Math.round(v * 1e4);
     return JSON.stringify([
       s.merge ?? true,
-      s.seamless ?? true,
+      seamlessOn(s),
       s.mergeRadius,
       blend,
       s.rig,
@@ -1245,7 +1292,7 @@ export class Creature {
       const eye = new THREE.Group();
       eye.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
       // stand-off: lift the eye out along its facing direction
-      eye.position.copy(hit.point).addScaledVector(z, (e.lift ?? 0) * r * 1.2);
+      eye.position.copy(hit.point).addScaledVector(z, (pair.lift ?? e.lift ?? 0) * r * 1.2);
       const style = EYE_STYLES.some((o) => o.id === e.style) ? e.style : 'googly';
       eye.add(buildEye(style, r, sgn, headStyle, this.settingsFor(headStyle), e));
       eye.traverse((m) => {

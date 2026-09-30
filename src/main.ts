@@ -9,8 +9,24 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { bendFromMid, Creature, defaultState, EYE_STYLES, type Attachment, type BoneRT, type CreatureState, type EyeFinish, type EyeStyle, type PartState, type Placement } from './creature';
-import { bounds, clipLoop, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
+import {
+  bendFromMid,
+  bentTip,
+  Creature,
+  defaultState,
+  endForTip,
+  EYE_STYLES,
+  setSeamlessMode,
+  type Attachment,
+  type BoneRT,
+  type CreatureState,
+  type EyeFinish,
+  type EyeStyle,
+  type PartState,
+  type Placement,
+  type SeamlessMode,
+} from './creature';
+import { bounds, clipLoop, combineLoops, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import {
   buildThing,
   collection,
@@ -24,6 +40,7 @@ import {
   removeThing,
   safeFileName,
   uid,
+  type BendMode,
   type Piece,
   type Thing,
 } from './stuff';
@@ -34,6 +51,7 @@ import {
   deleteLimb,
   deleteSavedRig,
   duplicateLimb,
+  expandRig,
   extendBone,
   getRig,
   moveJoint,
@@ -102,11 +120,32 @@ key.shadow.radius = 9;
 key.shadow.blurSamples = 16;
 scene.add(key);
 const fill = new THREE.DirectionalLight(0xdce6ff, 0.55);
-fill.position.set(-4, 1.8, 2.5);
 scene.add(fill);
 const rim = new THREE.DirectionalLight(0xfff4f8, 1.4);
-rim.position.set(-1.5, 3, -4.5);
 scene.add(rim);
+
+// The whole rig of lights can be turned around the scene (Backdrop > Lighting).
+// Where each light sits at a turn of 0; the key's is relative to the creatures.
+const KEY_AT = new THREE.Vector3(2.2, 0, 3.0);
+const FILL_AT = new THREE.Vector3(-4, 1.8, 2.5);
+const RIM_AT = new THREE.Vector3(-1.5, 3, -4.5);
+const LIGHT_KEY = 'creature-creator/light';
+let lightTurn = (() => {
+  try {
+    return Number(JSON.parse(localStorage.getItem(LIGHT_KEY) ?? '{}').turn) || 0;
+  } catch {
+    return 0;
+  }
+})();
+function lightSpin(): THREE.Quaternion {
+  return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(lightTurn));
+}
+function applyLighting() {
+  const q = lightSpin();
+  fill.position.copy(FILL_AT).applyQuaternion(q);
+  rim.position.copy(RIM_AT).applyQuaternion(q);
+  fitShadows();
+}
 
 // Invisible floor that only shows shadows and contact occlusion, so the
 // backdrop colour is seamless in every direction.
@@ -434,12 +473,14 @@ function restore(snap: string) {
 
 function undo() {
   if (hIndex <= 0) return;
+  if (drawState) exitDraw(); // a shape waiting for Done isn't in the history yet
   restore(history[--hIndex]);
   updateUndo();
 }
 
 function redo() {
   if (hIndex >= history.length - 1) return;
+  if (drawState) exitDraw();
   restore(history[++hIndex]);
   updateUndo();
 }
@@ -502,16 +543,16 @@ function fitShadows() {
     c.root.updateMatrixWorld(true);
     for (const m of c.meshes()) box.expandByObject(m);
   }
-  if (box.isEmpty()) return;
-  const center = box.getCenter(new THREE.Vector3());
-  const half = Math.max(3, box.getSize(new THREE.Vector3()).length() / 2 + 1);
+  const center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3());
+  const half = box.isEmpty() ? 3 : Math.max(3, box.getSize(new THREE.Vector3()).length() / 2 + 1);
   const cam = key.shadow.camera;
   cam.left = cam.bottom = -half;
   cam.right = cam.top = half;
   cam.far = 14 + half;
   cam.updateProjectionMatrix();
   key.target.position.set(center.x, 0, center.z);
-  key.position.set(center.x + 2.2, 4.6 + half * 0.3, center.z + 3.0);
+  const off = KEY_AT.clone().applyQuaternion(lightSpin());
+  key.position.set(center.x + off.x, 4.6 + half * 0.3, center.z + off.z);
   key.target.updateMatrixWorld();
 }
 
@@ -528,6 +569,12 @@ let drag: {
   startHit: THREE.Vector3;
   /** rig mode: skeleton at the start of the drag, so each move re-applies from scratch */
   rigBase?: string;
+  /**
+   * rig mode: turns a world-space move into the bone's own skeleton space. A
+   * bone hanging off a bendy one is shown turned along the curve, so the
+   * pointer's motion has to be turned back before it's applied.
+   */
+  toDef?: THREE.Quaternion;
   moved: boolean;
 } | null = null;
 
@@ -548,7 +595,13 @@ canvas.addEventListener('pointerdown', (e) => {
   // the root offset lives inside the creature's placement, so work in its local space
   const offset = id === 'root' ? creature.group.position.clone().sub(creature.root.worldToLocal(pos.clone())) : new THREE.Vector3();
   const kind = id === 'root' ? 'root' : (h.userData.kind as 'start' | 'end' | 'bend');
-  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: mode === 'rig' ? JSON.stringify(state.rig) : undefined };
+  let toDef: THREE.Quaternion | undefined;
+  const b = creature.bones.get(id);
+  if (mode === 'rig' && b) {
+    b.pivot.updateMatrixWorld(true);
+    toDef = new THREE.Quaternion().setFromRotationMatrix(b.restWorld.clone().multiply(b.pivot.matrixWorld.clone().invert()));
+  }
+  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: mode === 'rig' ? JSON.stringify(state.rig) : undefined, toDef };
   $('#viewport').style.cursor = 'grabbing';
 });
 
@@ -574,9 +627,14 @@ canvas.addEventListener('pointermove', (e) => {
       creature.sync();
     } else if (drag.rigBase && drag.kind !== 'root' && drag.kind !== 'bend') {
       if (!drag.moved) return;
-      // skeleton coordinates are relative to the creature's placement (it may be turned)
-      const d = hit.clone().sub(drag.startHit).applyQuaternion(creature.root.quaternion.clone().invert());
+      // the move in skeleton coordinates (the creature may be turned, the bone may ride a curve)
+      const d = hit.clone().sub(drag.startHit).applyQuaternion(drag.toDef ?? creature.root.quaternion.clone().invert());
       state.rig = JSON.parse(drag.rigBase) as RigState;
+      const ex = drag.kind === 'end' ? expandRig(state.rig).bones.find((x) => x.id === drag!.id) : undefined;
+      if (ex?.bendy && ex.bend) {
+        // a bendy bone's tip sits off its straight line: move the end so the tip follows the pointer
+        d.copy(endForTip(ex, bentTip(ex).add(d))).sub(new THREE.Vector3(...ex.end));
+      }
       moveJoint(state.rig, drag.id, drag.kind, d.toArray() as V3, rigLocked());
       creature.relayout(state.rig);
     } else if (drag.id === 'root') {
@@ -751,7 +809,10 @@ function flyTo(pos: THREE.Vector3, target: THREE.Vector3, dur = 650) {
 function creatureBox(precise = false): THREE.Box3 {
   creature.root.updateMatrixWorld(true);
   const box = new THREE.Box3();
-  for (const m of [...creature.meshes(), ...creature.attachmentMeshes()]) if (m.visible) box.expandByObject(m, precise);
+  // parts count even while hidden: a settled seamless skin hides the parts it
+  // replaced, which used to leave an empty box (and camera views did nothing)
+  for (const m of creature.meshes()) box.expandByObject(m, precise);
+  for (const m of creature.attachmentMeshes()) if (m.visible) box.expandByObject(m, precise);
   return box;
 }
 
@@ -857,6 +918,9 @@ function focusOnBone(b: BoneRT) {
 
 /** What a stroke is for: a body part's outline, or a piece (or hole) on the stuff workbench. */
 type DrawTarget = { kind: 'bone'; boneId: string } | { kind: 'piece'; hole: boolean };
+/** What dragging on the drawing does once there's a shape: add to it, cut from it, or move, resize or turn it. */
+type DrawTool = 'draw' | 'erase' | 'move' | 'scale' | 'rotate';
+type ShapeKind = 'square' | 'triangle' | 'circle';
 
 interface DrawState {
   target: DrawTarget;
@@ -872,6 +936,22 @@ interface DrawState {
   /** stabiliser position */
   pen: Vec2 | null;
   active: boolean;
+  /**
+   * The finished shape, waiting for Done: one loop, or a mirrored pair of
+   * pieces. In the drawing plane.
+   */
+  pending: Vec2[][] | null;
+  /** cut-outs in the pending shape (from erasing inside it), in the same space */
+  holes: Vec2[][];
+  tool: DrawTool;
+  /** Move / Scale / Rotate: the shape and pointer as the drag began, in the drawing plane */
+  grab: { start: Vec2; outers: Vec2[][]; holes: Vec2[][]; centre: Vec2 } | null;
+  /** a basic shape waiting to be placed: click to put it down, drag to size it */
+  stamp: ShapeKind | null;
+  /** the stamp being dragged out: centre and size in the drawing plane, and where the press was on screen */
+  stampDrag: { centre: Vec2; r: number; x: number; y: number } | null;
+  /** a bone's outline from before drawing: the shape previews live on the part, and this goes back on cancel */
+  original?: Vec2[] | null;
 }
 let drawState: DrawState | null = null;
 
@@ -894,6 +974,22 @@ function saveDrawPrefs() {
 function drawHint() {
   if (!drawState) return;
   const { label, target } = drawState;
+  if (drawState.stamp) {
+    const what = drawState.tool === 'erase' && drawState.pending ? 'cut out' : 'put down';
+    hint(`Click to ${what} a ${drawState.stamp}, or drag to size it`, 0);
+    return;
+  }
+  if (drawState.pending) {
+    const msg = {
+      draw: 'Draw more to add to the shape. Press Done (Enter) to keep it',
+      erase: 'Draw over the parts to cut away. Press Done (Enter) to keep it',
+      move: 'Drag the shape to move it. Press Done (Enter) to keep it',
+      scale: 'Drag away from the middle to make it bigger (Shift keeps its proportions)',
+      rotate: 'Drag around the middle to turn the shape',
+    }[drawState.tool];
+    hint(msg, 0);
+    return;
+  }
   if (target.kind === 'piece') {
     const what = target.hole ? 'a hole inside the selected piece' : 'a piece';
     hint(drawPrefs.symmetry ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`, 0);
@@ -920,13 +1016,22 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
       local: [],
       pen: null,
       active: false,
+      pending: null,
+      holes: [],
+      tool: 'draw',
+      grab: null,
+      stamp: null,
+      stampDrag: null,
+      original: state.parts[b.src].outline,
     };
     creature.setDrawFocus(target.boneId);
     // other creatures step aside while you draw on this one
     for (const c of creatures) if (c !== creature) c.root.visible = false;
     focusOnBone(b);
   } else {
-    drawState = { target, frame: board, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false };
+    drawState = { target, frame: board, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null };
+    // pieces are drawn flat: show the thing unbent meanwhile
+    syncWorkbench();
     focusOnBoard();
   }
   overlay.classList.add('active');
@@ -936,11 +1041,19 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
   drawHint();
 }
 
-function exitDraw() {
+/** Leave drawing. Unless the shape is being kept (Done), a bone's previewed outline goes back. */
+function exitDraw(keep = false) {
+  const ds = drawState;
   drawState = null;
   overlay.classList.remove('active');
   $('#draw-bar').hidden = true;
+  if (ds?.target.kind === 'bone' && ds.pending && !keep) {
+    const b = creature.bones.get(ds.target.boneId);
+    if (b) state.parts[b.src].outline = ds.original ?? null;
+    creature.sync();
+  }
   creature.setDrawFocus(null);
+  if (ds?.target.kind === 'piece') syncWorkbench();
   for (const c of creatures) c.root.visible = mode !== 'stuff';
   updateSkeletonVisibility();
   octx.clearRect(0, 0, overlay.width, overlay.height);
@@ -951,6 +1064,19 @@ function syncDrawBar() {
   $<HTMLInputElement>('#sym').checked = drawPrefs.symmetry;
   $<HTMLInputElement>('#smooth').value = String(drawPrefs.smoothing);
   $('#sym-label').classList.toggle('on', drawPrefs.symmetry);
+  const has = !!drawState?.pending;
+  $<HTMLButtonElement>('#done-draw').disabled = !has;
+  $<HTMLButtonElement>('#reset-draw').disabled = !has;
+  const tool = drawState?.tool ?? 'draw';
+  document.querySelectorAll<HTMLButtonElement>('#draw-tools [data-tool]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.tool === tool);
+    // everything but drawing needs something to work on
+    b.disabled = b.dataset.tool !== 'draw' && !has;
+  });
+  document.querySelectorAll<HTMLButtonElement>('#draw-bar [data-shape]').forEach((b) => b.classList.toggle('on', b.dataset.shape === drawState?.stamp));
+  const stamping = !!drawState?.stamp;
+  overlay.classList.toggle('erasing', tool === 'erase' && !stamping);
+  overlay.classList.toggle('moving', !stamping && (tool === 'move' || tool === 'scale' || tool === 'rotate'));
 }
 
 function toggleSymmetry() {
@@ -998,29 +1124,328 @@ function tooSmall(loop: Vec2[], minArea: number, minSize: number) {
   return !bb || loop.length < 6 || Math.abs(signedArea(loop)) < minArea || Math.max(bb.w, bb.h) < minSize;
 }
 
-function finishStroke() {
-  if (!drawState) return;
-  const ds = drawState;
-  let local = strokeToLocal(ds.frame, ds.pts);
-  ds.pts = [];
-  ds.local = [];
-  ds.active = false;
-  if (ds.target.kind === 'piece') {
-    finishPieceStroke(local, ds.target.hole);
-    return;
-  }
-  const b = creature.bones.get(ds.target.boneId)!;
+/** A body part stroke: mirrored across the centre line (if on), then smoothed. */
+function boneLoops(raw: Vec2[]): Vec2[][] {
+  let local = raw;
   if (local.length >= 6) {
     if (drawPrefs.symmetry) local = symmetrize(local);
     local = smoothLoop(local, drawPrefs.smoothing);
   }
-  if (tooSmall(local, 0.0015, 0.05)) {
+  return [local];
+}
+
+/** A workbench stroke: across the centre line = one symmetric piece, off to one side = a mirrored pair. */
+function pieceLoops(raw: Vec2[]): Vec2[][] {
+  let loops: Vec2[][] = [raw];
+  if (raw.length >= 6 && drawPrefs.symmetry) {
+    const crosses = raw.some((p) => p[0] > 0.01) && raw.some((p) => p[0] < -0.01);
+    // a half-outline that starts and ends on the axis also means "one symmetric shape"
+    const tol = Math.max(0.03, bounds(raw).w * 0.15);
+    const half = Math.abs(raw[0][0]) < tol && Math.abs(raw[raw.length - 1][0]) < tol;
+    loops = crosses || half ? [symmetrize(raw)] : [raw, raw.map(([x, y]) => [-x, y] as Vec2).reverse()];
+  }
+  return loops.map((l) => (l.length >= 6 ? smoothLoop(l, drawPrefs.smoothing) : l));
+}
+
+function finishStroke() {
+  if (!drawState) return;
+  const ds = drawState;
+  const raw = strokeToLocal(ds.frame, ds.pts);
+  ds.pts = [];
+  ds.local = [];
+  ds.active = false;
+  if (ds.pending) {
+    combineStroke(ds, raw);
+    return;
+  }
+  const isPiece = ds.target.kind === 'piece';
+  const loops = isPiece ? pieceLoops(raw) : boneLoops(raw);
+  if (loops.some((l) => (isPiece ? tooSmall(l, 0.0002, 0.02) : tooSmall(l, 0.0015, 0.05)))) {
     renderOverlay();
     hint('Too small or too thin: try a bigger loop', 1800, true);
     return;
   }
-  state.parts[b.src].outline = local;
-  exitDraw();
+  // wait for Done: a new stroke replaces this one
+  setPending(loops);
+}
+
+/** Half the size of a basic shape put down with a click (no drag): fits the part, or a handy size on the workbench. */
+function stampSize(ds: DrawState): number {
+  if (ds.target.kind !== 'bone') return 0.25;
+  const b = creature.bones.get(ds.target.boneId)!;
+  return Math.max(b.length * 0.9, b.def.width, 0.12) / 2;
+}
+
+/** A basic shape centred on (cx, cy), r = half its size. Dense, so its corners stay crisp. */
+function shapeLoop(kind: ShapeKind, cx: number, cy: number, r: number): Vec2[] {
+  const size = r * 2;
+  if (kind === 'circle') {
+    return Array.from({ length: 96 }, (_, i) => {
+      const a = (i / 96) * Math.PI * 2 - Math.PI / 2;
+      return [cx + r * Math.cos(a), cy + r * Math.sin(a)] as Vec2;
+    });
+  }
+  const h = kind === 'triangle' ? (size * Math.sqrt(3)) / 2 : size;
+  const corners: Vec2[] =
+    kind === 'triangle'
+      ? [[cx - r, cy - h / 2], [cx + r, cy - h / 2], [cx, cy + h / 2]]
+      : [[cx - r, cy - r], [cx + r, cy - r], [cx + r, cy + r], [cx - r, cy + r]];
+  // counter-clockwise, 24 points per side
+  const out: Vec2[] = [];
+  corners.forEach((a, i) => {
+    const b = corners[(i + 1) % corners.length];
+    for (let k = 0; k < 24; k++) out.push([a[0] + ((b[0] - a[0]) * k) / 24, a[1] + ((b[1] - a[1]) * k) / 24]);
+  });
+  return out;
+}
+
+/**
+ * The stamp as it would land: with symmetry on it's mirrored across the centre
+ * line (one placed right by the line snaps onto it instead).
+ */
+function stampLoops(ds: DrawState): Vec2[][] {
+  const sd = ds.stampDrag;
+  if (!ds.stamp || !sd) return [];
+  let [cx, cy] = sd.centre;
+  // right by the centre line: one symmetric shape on it, not a pair
+  if (drawPrefs.symmetry && Math.abs(cx) < sd.r * 0.3) cx = 0;
+  const loop = shapeLoop(ds.stamp, cx, cy, sd.r);
+  return drawPrefs.symmetry && cx !== 0 ? [loop, mirrorLoop(loop)] : [loop];
+}
+
+function placeStamp(ds: DrawState) {
+  const loops = stampLoops(ds);
+  const cut = ds.tool === 'erase' && !!ds.pending;
+  ds.stamp = null;
+  ds.stampDrag = null;
+  applyLoops(ds, loops, cut);
+  syncDrawBar();
+  drawHint();
+  renderOverlay();
+}
+
+function setPending(loops: Vec2[][] | null) {
+  if (!drawState) return;
+  drawState.pending = loops;
+  drawState.holes = [];
+  drawState.tool = 'draw';
+  previewPending();
+  drawHint();
+}
+
+/**
+ * A stroke once there's a shape: add it on (Draw) or cut it away (Erase).
+ * With symmetry on, the stroke is mirrored across the centre line too.
+ */
+function combineStroke(ds: DrawState, raw: Vec2[]) {
+  const loop = raw.length >= 6 ? smoothLoop(raw, drawPrefs.smoothing) : raw;
+  if (tooSmall(loop, 0.0001, 0.01)) {
+    renderOverlay();
+    return;
+  }
+  applyLoops(ds, drawPrefs.symmetry ? [loop, mirrorLoop(loop)] : [loop], ds.tool === 'erase');
+}
+
+const mirrorLoop = (l: Vec2[]) => l.map(([x, y]) => [-x, y] as Vec2).reverse();
+
+/** Add loops to the shape (or cut them out of it); the first ones simply become the shape. */
+function applyLoops(ds: DrawState, loops: Vec2[][], cut: boolean) {
+  if (!ds.pending) {
+    if (cut) return;
+    // overlapping mirror images merge into one
+    const first = loops.length > 1 ? unite(ds, [], [], loops, false).outers : loops;
+    setPending(ds.target.kind === 'bone' ? first.slice(0, 1) : first);
+    return;
+  }
+  const res = unite(ds, ds.pending, ds.holes, loops, cut);
+  if (!res.outers.length) {
+    setPending(null);
+    hint('Erased it all: draw a new shape', 2000);
+    return;
+  }
+  let outers = res.outers;
+  let holes = res.holes;
+  if (ds.target.kind === 'bone' || ds.target.hole) {
+    // a body part (or a hole) is one solid loop: keep the biggest piece
+    if (outers.length > 1 || holes.length) hint(ds.target.kind === 'bone' ? 'A body part is one solid shape: kept the biggest piece' : 'Kept the biggest piece of the hole', 2200);
+    outers = outers.slice(0, 1);
+    holes = [];
+  }
+  ds.pending = outers;
+  ds.holes = holes;
+  previewPending();
+  drawHint();
+}
+
+/**
+ * combineLoops, but a body part has to stay one piece: with symmetry on, a
+ * shape (and its mirror image) that doesn't reach the rest is stretched
+ * sideways to the centre line, the way a half-drawing becomes a whole part.
+ */
+function unite(ds: DrawState, outers: Vec2[][], holes: Vec2[][], loops: Vec2[][], cut: boolean) {
+  const res = combineLoops(outers, holes, loops, cut);
+  if (ds.target.kind !== 'bone' || cut || !drawPrefs.symmetry || res.outers.length < 2) return res;
+  const widened = loops.map(toAxis);
+  const joined = combineLoops(outers, holes, widened, false);
+  if (joined.outers.length < 2) return joined;
+  // still apart (above or below the rest): necks along the centre line join
+  // each piece to the next, middle to middle, so they can't poke out past either end
+  const mids = joined.outers.map((l) => bounds(l)).sort((a, b) => a.minY + a.maxY - (b.minY + b.maxY));
+  const w = 0.3 * Math.min(...mids.map((b) => b.w));
+  const necks = mids.slice(1).map((b, i): Vec2[] => {
+    const y0 = (mids[i].minY + mids[i].maxY) / 2, y1 = (b.minY + b.maxY) / 2;
+    return [[-w / 2, y0], [w / 2, y0], [w / 2, y1], [-w / 2, y1]];
+  });
+  return combineLoops(outers, holes, [...widened, ...necks], false);
+}
+
+/** A loop widened, row by row, all the way to the centre line (x = 0) on its own side. */
+function toAxis(loop: Vec2[]): Vec2[] {
+  const bb = bounds(loop);
+  const side = bb.minX + bb.maxX >= 0 ? 1 : -1;
+  const out: Vec2[] = [];
+  const n = 64;
+  for (let i = 0; i <= n; i++) {
+    const y = bb.minY + (bb.maxY - bb.minY) * (0.001 + (0.998 * i) / n);
+    let far = 0;
+    for (let a = 0, b = loop.length - 1; a < loop.length; b = a++) {
+      const [xa, ya] = loop[a], [xb, yb] = loop[b];
+      if (ya > y !== yb > y) far = Math.max(far, side * (xa + ((y - ya) / (yb - ya)) * (xb - xa)));
+    }
+    out.push([side * far, y]);
+  }
+  // back down the centre line to close it
+  out.push([0, bb.maxY], [0, bb.minY]);
+  return out;
+}
+
+/**
+ * After moving, scaling or turning: pieces pushed into each other (a mirrored
+ * pair slid across the centre line, say) fuse into one instead of overlapping.
+ */
+function mergeOverlaps(ds: DrawState) {
+  const loops = ds.pending;
+  if (!loops || loops.length < 2) return;
+  const bbs = loops.map(bounds);
+  const near = bbs.some((a, i) => bbs.some((b, j) => j > i && a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY));
+  if (!near) return;
+  const res = combineLoops(loops, ds.holes, [], false);
+  // boxes can overlap without the shapes touching: then leave them be
+  if (res.outers.length >= loops.length) return;
+  ds.pending = res.outers;
+  ds.holes = ds.target.kind === 'piece' && !ds.target.hole ? res.holes : [];
+  previewPending();
+}
+
+function pendingShape(ds: DrawState): { outers: Vec2[][]; holes: Vec2[][] } {
+  return { outers: ds.pending ?? [], holes: ds.holes };
+}
+function pendingLoops(ds: DrawState): Vec2[][] {
+  return pendingShape(ds).outers;
+}
+
+/** The pending shape as workbench pieces: each outer loop with the holes that fall inside it. */
+function pendingPieces(ds: DrawState): { outline: Vec2[]; holes: Vec2[][] }[] {
+  const { outers, holes } = pendingShape(ds);
+  return outers.map((outline) => ({ outline, holes: holesInside({ outline } as Piece, holes) }));
+}
+
+/**
+ * Move / Scale / Rotate: reshape the shape from how it was when the drag began.
+ * With symmetry on, the two sides stay mirror images: loops either side of
+ * the centre line move (and turn) in opposite ways, a loop across it only moves
+ * up and down, and scaling is about the centre line.
+ */
+function transformShape(ds: DrawState, p: Vec2, keepProportions: boolean) {
+  const g = ds.grab;
+  if (!g) return;
+  const [cx, cy] = g.centre;
+  const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+  // which side of the centre line a loop is on: 1, -1, or 0 if it's across it
+  const side = (l: Vec2[]) => {
+    if (!drawPrefs.symmetry) return 1;
+    const bb = bounds(l);
+    return bb.minX < -1e-3 && bb.maxX > 1e-3 ? 0 : (bb.minX + bb.maxX) / 2 >= 0 ? 1 : -1;
+  };
+  const grabSide = drawPrefs.symmetry && g.start[0] < 0 ? -1 : 1;
+  let fn: (l: Vec2[]) => Vec2[];
+  if (ds.tool === 'move') {
+    const dx = p[0] - g.start[0], dy = p[1] - g.start[1];
+    fn = (l) => {
+      const sd = side(l);
+      const mx = drawPrefs.symmetry ? dx * sd * grabSide : dx;
+      return l.map(([x, y]) => [r4(x + mx), r4(y + dy)] as Vec2);
+    };
+  } else if (ds.tool === 'scale') {
+    // the grabbed point follows the pointer; near the middle on one axis, that axis stays put
+    const ax = g.start[0] - cx, ay = g.start[1] - cy;
+    const bx = p[0] - cx, by = p[1] - cy;
+    const bb = bounds(g.outers.flat());
+    const ratio = (a: number, b: number, span: number) => (Math.abs(a) > span * 0.12 ? Math.max(0.05, Math.abs(b) / Math.abs(a)) : 1);
+    let sx = ratio(ax, bx, bb.w), sy = ratio(ay, by, bb.h);
+    if (keepProportions) sx = sy = Math.max(0.05, Math.hypot(bx, by) / Math.max(1e-6, Math.hypot(ax, ay)));
+    fn = (l) => l.map(([x, y]) => [r4(cx + (x - cx) * sx), r4(cy + (y - cy) * sy)] as Vec2);
+  } else {
+    const a = Math.atan2(p[1] - cy, p[0] - cx) - Math.atan2(g.start[1] - cy, g.start[0] - cx);
+    fn = (l) => {
+      const sd = side(l);
+      // a pair turns each loop about its own middle, in mirror image
+      let ox = cx, oy = cy, ang = a;
+      if (drawPrefs.symmetry && sd !== 0) {
+        const bb = bounds(l);
+        ox = (bb.minX + bb.maxX) / 2;
+        oy = (bb.minY + bb.maxY) / 2;
+        ang = a * sd * grabSide;
+      }
+      const c = Math.cos(ang), s = Math.sin(ang);
+      return l.map(([x, y]) => [r4(ox + (x - ox) * c - (y - oy) * s), r4(oy + (x - ox) * s + (y - oy) * c)] as Vec2);
+    };
+  }
+  ds.pending = g.outers.map(fn);
+  ds.holes = g.holes.map(fn);
+}
+
+/** Show the pending shape: inflated live on the part being drawn, or on the workbench. */
+function previewPending() {
+  const ds = drawState;
+  if (!ds) return;
+  if (ds.target.kind === 'bone') {
+    const b = creature.bones.get(ds.target.boneId);
+    if (b) {
+      state.parts[b.src].outline = ds.pending ? pendingLoops(ds)[0] : (ds.original ?? null);
+      creature.sync();
+      // the rebuilt part keeps the see-through drawing look
+      creature.setDrawFocus(ds.target.boneId);
+    }
+  } else {
+    syncWorkbench();
+  }
+  syncDrawBar();
+  renderOverlay();
+}
+
+let previewQueued = false;
+function schedulePreview() {
+  if (previewQueued) return;
+  previewQueued = true;
+  requestAnimationFrame(() => {
+    previewQueued = false;
+    previewPending();
+  });
+}
+
+/** Done: keep the pending shape. */
+function finishDraw() {
+  const ds = drawState;
+  if (!ds?.pending) return;
+  const loops = pendingLoops(ds);
+  if (ds.target.kind === 'piece') {
+    addPieces(ds.target.hole ? loops : pendingPieces(ds), ds.target.hole);
+    return;
+  }
+  const b = creature.bones.get(ds.target.boneId)!;
+  state.parts[b.src].outline = loops[0];
+  exitDraw(true);
   creature.sync();
   commit();
   renderParts();
@@ -1038,6 +1463,21 @@ function addStrokePoint(p: Vec2) {
 overlay.addEventListener('pointerdown', (e) => {
   if (!drawState || e.button !== 0) return;
   overlay.setPointerCapture(e.pointerId);
+  const at = screenToLocal(drawState.frame, partPlane(drawState.frame), e.clientX, e.clientY);
+  if (drawState.stamp) {
+    if (at) drawState.stampDrag = { centre: at, r: stampSize(drawState), x: e.clientX, y: e.clientY };
+    renderOverlay();
+    return;
+  }
+  if ((drawState.tool === 'move' || drawState.tool === 'scale' || drawState.tool === 'rotate') && drawState.pending) {
+    if (!at) return;
+    const bb = bounds(drawState.pending.flat());
+    // with symmetry on, everything stays centred on the centre line
+    const centre: Vec2 = [drawPrefs.symmetry ? 0 : (bb.minX + bb.maxX) / 2, (bb.minY + bb.maxY) / 2];
+    drawState.grab = { start: at, outers: drawState.pending, holes: drawState.holes, centre };
+    hint('');
+    return;
+  }
   drawState.active = true;
   drawState.pts = [];
   drawState.local = [];
@@ -1046,6 +1486,21 @@ overlay.addEventListener('pointerdown', (e) => {
   hint('');
 });
 overlay.addEventListener('pointermove', (e) => {
+  const sd = drawState?.stampDrag;
+  if (sd) {
+    // dragging out from where it was pressed sizes it; a click keeps the handy size
+    const p = screenToLocal(drawState!.frame, partPlane(drawState!.frame), e.clientX, e.clientY);
+    if (p && Math.hypot(e.clientX - sd.x, e.clientY - sd.y) > 6) sd.r = Math.max(0.01, Math.hypot(p[0] - sd.centre[0], p[1] - sd.centre[1]));
+    renderOverlay();
+    return;
+  }
+  if (drawState?.grab) {
+    const p = screenToLocal(drawState.frame, partPlane(drawState.frame), e.clientX, e.clientY);
+    if (!p) return;
+    transformShape(drawState, p, e.shiftKey);
+    schedulePreview();
+    return;
+  }
   if (!drawState?.active || !drawState.pen) return;
   // Stabiliser: the pen trails the pointer, ironing out touchpad wobble.
   const follow = 1 - 0.88 * drawPrefs.smoothing;
@@ -1060,7 +1515,13 @@ overlay.addEventListener('pointermove', (e) => {
   renderOverlay();
 });
 overlay.addEventListener('pointerup', () => {
-  if (drawState?.active) finishStroke();
+  if (drawState?.stampDrag) {
+    placeStamp(drawState);
+  } else if (drawState?.grab) {
+    drawState.grab = null;
+    mergeOverlaps(drawState);
+    drawHint();
+  } else if (drawState?.active) finishStroke();
 });
 overlay.addEventListener('wheel', (e) => {
   canvas.dispatchEvent(new WheelEvent('wheel', e));
@@ -1088,13 +1549,59 @@ function renderOverlay() {
     octx.setLineDash([]);
   }
 
+  // the shape waiting for Done (faded while a replacement is being drawn)
+  if (drawState.pending) {
+    octx.globalAlpha = drawState.active ? 0.35 : 1;
+    octx.fillStyle = 'rgba(255,107,74,.12)';
+    octx.strokeStyle = '#ff6b4a';
+    octx.lineWidth = 3;
+    const { outers, holes } = pendingShape(drawState);
+    octx.beginPath();
+    for (const loop of [...outers, ...holes]) {
+      loop.forEach((p, i) => {
+        const [sx, sy] = localToOverlay(frame, p);
+        if (i) octx.lineTo(sx, sy);
+        else octx.moveTo(sx, sy);
+      });
+      octx.closePath();
+    }
+    octx.fill('evenodd');
+    octx.stroke();
+    octx.globalAlpha = 1;
+  }
+
+  // a basic shape being dragged out
+  if (drawState.stampDrag) {
+    const cutting = drawState.tool === 'erase' && !!drawState.pending;
+    octx.fillStyle = cutting ? 'rgba(58,51,64,.12)' : 'rgba(255,107,74,.12)';
+    octx.strokeStyle = cutting ? '#3a3340' : '#ff6b4a';
+    octx.lineWidth = 3;
+    if (cutting) octx.setLineDash([8, 6]);
+    for (const loop of stampLoops(drawState)) {
+      octx.beginPath();
+      loop.forEach((q, i) => {
+        const [sx, sy] = localToOverlay(frame, q);
+        if (i) octx.lineTo(sx, sy);
+        else octx.moveTo(sx, sy);
+      });
+      octx.closePath();
+      octx.fill();
+      octx.stroke();
+    }
+    octx.setLineDash([]);
+  }
+
   if (drawState.pts.length < 2) return;
   const r = overlay.getBoundingClientRect();
   const pts = drawState.pts.map(([x, y]) => [x - r.left, y - r.top]);
+  // erasing draws in ink, dashed, so it reads as cutting away
+  const erasing = drawState.tool === 'erase' && !!drawState.pending;
+  const ink = erasing ? '#3a3340' : '#ff6b4a';
+  const inkSoft = erasing ? 'rgba(58,51,64,' : 'rgba(255,107,74,';
 
   if (drawPrefs.symmetry && drawState.local.length > 1) {
     // live preview of the mirrored half
-    octx.strokeStyle = 'rgba(255,107,74,.45)';
+    octx.strokeStyle = inkSoft + '.45)';
     octx.lineWidth = 3;
     octx.beginPath();
     drawState.local.forEach(([x, y], i) => {
@@ -1106,7 +1613,7 @@ function renderOverlay() {
   } else {
     // closing segment preview
     octx.setLineDash([6, 8]);
-    octx.strokeStyle = 'rgba(255,107,74,.6)';
+    octx.strokeStyle = inkSoft + '.6)';
     octx.lineWidth = 2;
     octx.beginPath();
     octx.moveTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
@@ -1114,13 +1621,15 @@ function renderOverlay() {
     octx.stroke();
     octx.setLineDash([]);
   }
-  octx.fillStyle = drawPrefs.symmetry ? 'transparent' : 'rgba(255,107,74,.12)';
-  octx.strokeStyle = '#ff6b4a';
+  octx.fillStyle = drawPrefs.symmetry ? 'transparent' : inkSoft + '.12)';
+  octx.strokeStyle = ink;
   octx.lineWidth = 4;
+  if (erasing) octx.setLineDash([8, 6]);
   octx.beginPath();
   pts.forEach(([x, y], i) => (i ? octx.lineTo(x, y) : octx.moveTo(x, y)));
   if (!drawPrefs.symmetry) octx.fill();
   octx.stroke();
+  octx.setLineDash([]);
 }
 
 $<HTMLInputElement>('#sym').onchange = () => toggleSymmetry();
@@ -1128,6 +1637,32 @@ $<HTMLInputElement>('#smooth').oninput = (e) => {
   drawPrefs.smoothing = parseFloat((e.target as HTMLInputElement).value);
   saveDrawPrefs();
 };
+document.querySelectorAll<HTMLButtonElement>('#draw-bar [data-shape]').forEach((b) => {
+  b.onclick = () => {
+    if (!drawState) return;
+    // arm the shape (again to put it away); it's placed by clicking in the drawing
+    const kind = b.dataset.shape as ShapeKind;
+    drawState.stamp = drawState.stamp === kind ? null : kind;
+    // shapes add (or cut, while erasing)
+    if (drawState.tool !== 'erase') drawState.tool = 'draw';
+    syncDrawBar();
+    drawHint();
+  };
+});
+$('#reset-draw').onclick = () => setPending(null);
+function setDrawTool(tool: DrawTool) {
+  if (!drawState || (tool !== 'draw' && !drawState.pending)) return;
+  // tapping the active tool again goes back to drawing
+  drawState.tool = drawState.tool === tool ? 'draw' : tool;
+  // moving, scaling or turning puts any armed shape away
+  if (drawState.tool !== 'draw' && drawState.tool !== 'erase') drawState.stamp = null;
+  syncDrawBar();
+  drawHint();
+}
+document.querySelectorAll<HTMLButtonElement>('#draw-tools [data-tool]').forEach((b) => {
+  b.onclick = () => setDrawTool(b.dataset.tool as DrawTool);
+});
+$('#done-draw').onclick = () => finishDraw();
 
 // ---------------------------------------------------------------------------
 // stuff workbench
@@ -1175,16 +1710,44 @@ function piece(): Piece | undefined {
   return workbench().pieces.find((p) => p.id === selectedPiece);
 }
 
-function syncWorkbench() {
+/** Holes from `loops` that actually sit inside piece `p`. */
+function holesInside(p: Piece, loops: Vec2[][]): Vec2[][] {
+  return loops.filter((l) => {
+    const [cx, cy] = l.reduce((a, q) => [a[0] + q[0] / l.length, a[1] + q[1] / l.length], [0, 0]);
+    return pointInPolygon(cx, cy, p.outline);
+  });
+}
+
+/**
+ * The workbench as shown: while drawing on it, flat (strokes are drawn flat)
+ * and with any shape that's waiting for Done.
+ */
+function benchThing(): Thing {
   const wb = workbench();
-  const key = JSON.stringify([wb.pieces, wb.ownMaterial, wb.materialSettings, state.materialSettings]);
+  const ds = drawState;
+  if (!ds || ds.target.kind !== 'piece') return wb;
+  const shown: Thing = { ...wb, bend: 0 };
+  if (!ds.pending) return shown;
+  const target = piece();
+  if (!ds.target.hole) {
+    shown.pieces = [...wb.pieces, ...pendingPieces(ds).map((pp, i) => ({ ...newPiece(pp.outline, target), holes: pp.holes, id: `preview${i}` }))];
+  } else if (target?.kind === 'flat') {
+    const loops = pendingLoops(ds);
+    shown.pieces = wb.pieces.map((p) => (p === target ? { ...p, holes: [...p.holes, ...holesInside(p, loops)] } : p));
+  }
+  return shown;
+}
+
+function syncWorkbench() {
+  const thing = benchThing();
+  const key = JSON.stringify([thing.pieces, thing.ownMaterial, thing.materialSettings, thing.bend, thing.bendMode, state.materialSettings]);
   if (key === benchKey) return;
   benchKey = key;
   if (bench) {
     board.remove(bench);
     disposeThing(bench);
   }
-  bench = buildThing(wb, (s) => creature.settingsFor(s));
+  bench = buildThing(thing, (s) => creature.settingsFor(s));
   board.add(bench);
 }
 
@@ -1199,23 +1762,9 @@ function focusOnBoard() {
   flyTo(c.clone().add(new THREE.Vector3(0, 0, Math.max(1.4, dist))), c);
 }
 
-function finishPieceStroke(raw: Vec2[], hole: boolean) {
+/** Done on the workbench: add the drawn pieces (with any holes erased in them), or cut the holes into the selected piece. */
+function addPieces(shapes: Vec2[][] | { outline: Vec2[]; holes: Vec2[][] }[], hole: boolean) {
   const wb = workbench();
-  let loops: Vec2[][] = [raw];
-  if (raw.length >= 6 && drawPrefs.symmetry) {
-    const crosses = raw.some((p) => p[0] > 0.01) && raw.some((p) => p[0] < -0.01);
-    // a half-outline that starts and ends on the axis also means "one symmetric shape"
-    const tol = Math.max(0.03, bounds(raw).w * 0.15);
-    const half = Math.abs(raw[0][0]) < tol && Math.abs(raw[raw.length - 1][0]) < tol;
-    // across the axis: one symmetric shape; off to one side: the shape plus its mirror image
-    loops = crosses || half ? [symmetrize(raw)] : [raw, raw.map(([x, y]) => [-x, y] as Vec2).reverse()];
-  }
-  loops = loops.map((l) => (l.length >= 6 ? smoothLoop(l, drawPrefs.smoothing) : l));
-  if (loops.some((l) => tooSmall(l, 0.0002, 0.02))) {
-    renderOverlay();
-    hint('Too small or too thin: try a bigger loop', 1800, true);
-    return;
-  }
   if (hole) {
     const target = piece();
     if (!target || target.kind !== 'flat') {
@@ -1223,24 +1772,19 @@ function finishPieceStroke(raw: Vec2[], hole: boolean) {
       hint('Holes can only be cut in a flat piece', 2200, true);
       return;
     }
-    let cut = 0;
-    for (const l of loops) {
-      const [cx, cy] = l.reduce((a, p) => [a[0] + p[0] / l.length, a[1] + p[1] / l.length], [0, 0]);
-      if (!pointInPolygon(cx, cy, target.outline)) continue;
-      target.holes.push(l);
-      cut++;
-    }
-    exitDraw();
-    if (!cut) {
+    const cut = holesInside(target, shapes as Vec2[][]);
+    if (!cut.length) {
+      // stay in drawing so it can be redrawn in the right place
       hint('Draw the hole inside the selected piece', 2200, true);
       return;
     }
+    target.holes.push(...cut);
   } else {
-    const made = loops.map((l) => newPiece(l, piece()));
+    const made = (shapes as { outline: Vec2[]; holes: Vec2[][] }[]).map((sh) => ({ ...newPiece(sh.outline, piece()), holes: sh.holes }));
     wb.pieces.push(...made);
     selectedPiece = made[0].id;
-    exitDraw();
   }
+  exitDraw(true);
   syncWorkbench();
   commit();
   renderStuffPanel();
@@ -1318,6 +1862,9 @@ function renderStuffPanel() {
     list.append(btn);
   });
   if (!wb.pieces.length) list.innerHTML = '<p class="muted small">No pieces yet: draw one to start.</p>';
+  $('#thing-bend-card').hidden = !wb.pieces.length;
+  document.querySelectorAll<HTMLButtonElement>('#thing-bend-mode button').forEach((b) => b.classList.toggle('active', b.dataset.bend === (wb.bendMode ?? 'axis')));
+  $<HTMLInputElement>('#thing-bend').value = String(wb.bend ?? 0);
 
   const p = piece();
   $('#piece-card').hidden = !p;
@@ -1474,6 +2021,22 @@ $<HTMLInputElement>('#thing-name').oninput = (e) => {
   workbench().name = (e.target as HTMLInputElement).value;
 };
 $<HTMLInputElement>('#thing-name').onchange = () => commit();
+$<HTMLInputElement>('#thing-bend').oninput = (e) => {
+  workbench().bend = parseFloat((e.target as HTMLInputElement).value);
+  syncWorkbench();
+};
+$<HTMLInputElement>('#thing-bend').onchange = () => commit();
+document.querySelectorAll<HTMLButtonElement>('#thing-bend-mode button').forEach((b) => {
+  b.onclick = () => {
+    const wb = workbench();
+    wb.bendMode = b.dataset.bend as BendMode;
+    // picking a way to bend with nothing bent yet starts with a visible curve
+    if (!wb.bend) wb.bend = 0.4;
+    syncWorkbench();
+    commit();
+    renderStuffPanel();
+  };
+});
 $('#thing-new').onclick = () => {
   world.workbench = newThing();
   selectedPiece = '';
@@ -1623,13 +2186,6 @@ function renderCreatureBar() {
     el.append(btn);
   });
   $<HTMLButtonElement>('#cr-del').disabled = world.creatures.length < 2;
-  // per-creature: only meaningful while merging is on
-  $<HTMLInputElement>('#seamless').checked = state.seamless ?? true;
-  $<HTMLInputElement>('#seamless').disabled = !(state.merge ?? true);
-  $('#seamless-row').style.opacity = (state.merge ?? true) ? '1' : '.45';
-  $('#seamless-row').title = (state.merge ?? true)
-    ? 'For this creature: after you stop changing its shape, merged parts are rebuilt as one continuous skin with no seams'
-    : 'Turn on "Merge touching parts" (under Material) to use seamless joins';
 }
 
 /** A free spot on the floor to the right of everyone else. */
@@ -1788,10 +2344,20 @@ $('#attach-done').onclick = () => deselectAttachment();
 // ---------------------------------------------------------------------------
 // files
 
+// The top-bar menus share the same corner of the viewport, so only one is open at a time.
+const POPOVERS: [button: string, pop: string][] = [['#file-btn', '#file-pop'], ['#backdrop-btn', '#backdrop'], ['#settings-btn', '#settings-pop']];
+/** Open (or, if it's already open, close) one top-bar menu. Returns whether it's now open. */
+function togglePopover(pop: string): boolean {
+  const open = $(pop).hidden !== false;
+  for (const [b, p] of POPOVERS) {
+    $(p).hidden = !(open && p === pop);
+    $(b).classList.toggle('on', open && p === pop);
+  }
+  return open;
+}
+
 $('#file-btn').onclick = () => {
-  const pop = $('#file-pop');
-  pop.hidden = !pop.hidden;
-  $('#file-btn').classList.toggle('on', !pop.hidden);
+  if (!togglePopover('#file-pop')) return;
   $<HTMLInputElement>('#creature-name').value = state.name ?? '';
   $<HTMLInputElement>('#scene-name').value = world.name ?? '';
 };
@@ -2135,6 +2701,7 @@ function renderStyleParams(style: StyleId, el: HTMLElement = $('#style-params'),
     const num = document.createElement('input');
     num.type = 'number';
     num.className = 'num';
+    num.dataset.own = '1';
     num.step = String(p.step);
     num.value = String(values[p.key]);
     const apply = (v: number) => {
@@ -2207,7 +2774,7 @@ function renderEyes() {
   add.className = 'add';
   add.onclick = () => {
     const last = e.pairs[e.pairs.length - 1];
-    e.pairs.push({ size: Math.max(0.15, last.size * 0.75), spacing: last.spacing, height: Math.max(0.1, last.height - 0.22) });
+    e.pairs.push({ size: Math.max(0.15, last.size * 0.75), spacing: last.spacing, height: Math.max(0.1, last.height - 0.22), lift: last.lift ?? e.lift });
     eyePair = e.pairs.length - 1;
     e.enabled = true;
     creature.sync();
@@ -2232,7 +2799,7 @@ function renderEyes() {
   $<HTMLInputElement>('#eye-spacing').value = String(pair.spacing);
   $<HTMLInputElement>('#eye-height').value = String(pair.height);
   $('#eye-sliders').style.opacity = e.enabled ? '1' : '.4';
-  $<HTMLInputElement>('#eye-lift').value = String(e.lift ?? 0);
+  $<HTMLInputElement>('#eye-lift').value = String(pair.lift ?? e.lift ?? 0);
   // finish and colour only apply to the styles made of a material
   const shaped = e.enabled && (e.style === 'bead' || e.style === 'dot' || e.style === 'button');
   $('#eye-look').hidden = !shaped;
@@ -2372,7 +2939,10 @@ function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
 
 function renderRigPanel() {
   const b = creature.bones.get(selected);
-  $('#rig-title').textContent = b ? b.def.name : 'Nothing selected';
+  const title = $<HTMLInputElement>('#rig-title');
+  // a pair shares one name; the (L)/(R) is added on display
+  if (document.activeElement !== title) title.value = b ? (state.rig.bones.find((d) => d.id === b.def.baseId)?.name ?? b.def.name) : '';
+  title.disabled = !b;
   const isRoot = !b?.parent;
   const paired = !!b && b.def.sideSign !== 0;
   $<HTMLButtonElement>('#rig-dup').disabled = !b || isRoot;
@@ -2382,12 +2952,12 @@ function renderRigPanel() {
   $<HTMLButtonElement>('#rig-split').disabled = !b;
   $('#rig-pair-note').textContent = paired ? 'Mirrored pair: both sides move together.' : '';
   $<HTMLInputElement>('#rig-sym').checked = rigLocked();
-  $('#rig-lock-label').classList.toggle('on', rigLocked());
   $('#rig-lock-icon').textContent = rigLocked() ? '🔒' : '🔓';
   if (b) {
     $<HTMLInputElement>('#rig-w0').value = String(b.def.width);
     $<HTMLInputElement>('#rig-w1').value = String(b.def.widthEnd ?? b.def.width);
     $('#rig-drawn-note').hidden = !state.parts[b.src]?.outline;
+    $<HTMLInputElement>('#rig-roll').value = String(Math.round(((b.def.roll ?? 0) * 180) / Math.PI));
     $<HTMLInputElement>('#rig-bendy').checked = !!b.def.bendy;
     $<HTMLInputElement>('#rig-bend').value = String(b.def.bend ?? 0);
     $<HTMLInputElement>('#rig-bend-dir').value = String(Math.round(((b.def.bendDir ?? 0) * 180) / Math.PI));
@@ -2495,7 +3065,9 @@ $<HTMLInputElement>('#rig-w1').oninput = (e) => editBone((d) => (d.widthEnd = ro
 $<HTMLInputElement>('#rig-bend').oninput = (e) => editBone((d) => (d.bend = round3n((e.target as HTMLInputElement).value)));
 $<HTMLInputElement>('#rig-bend-dir').oninput = (e) =>
   editBone((d) => (d.bendDir = Math.round(parseFloat((e.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000));
-for (const id of ['#rig-w0', '#rig-w1', '#rig-bend', '#rig-bend-dir']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
+$<HTMLInputElement>('#rig-roll').oninput = (e) =>
+  editBone((d) => (d.roll = Math.round(parseFloat((e.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000));
+for (const id of ['#rig-w0', '#rig-w1', '#rig-roll', '#rig-bend', '#rig-bend-dir']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
 $<HTMLInputElement>('#rig-bendy').onchange = (e) => {
   const on = (e.target as HTMLInputElement).checked;
   editBone((d) => {
@@ -2504,6 +3076,27 @@ $<HTMLInputElement>('#rig-bendy').onchange = (e) => {
   });
   requestAnimationFrame(() => commitBoneEdit());
 };
+// ---- naming a bone ----
+function renameBone(commitIt: boolean) {
+  const b = creature.bones.get(selected);
+  const def = b && state.rig.bones.find((d) => d.id === b.def.baseId);
+  const name = $<HTMLInputElement>('#rig-title').value.trim();
+  if (!def || !name) return;
+  def.name = name;
+  // re-seat so the bones pick up the new name (it's shown on every part list)
+  creature.relayout(state.rig);
+  renderParts();
+  if (commitIt) {
+    commit();
+    renderUI();
+  }
+}
+$<HTMLInputElement>('#rig-title').oninput = () => renameBone(false);
+$<HTMLInputElement>('#rig-title').onchange = () => renameBone(true);
+$<HTMLInputElement>('#rig-title').onkeydown = (e) => {
+  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+};
+
 $('#rig-extend').onclick = () => rigEdit((rig) => extendBone(rig, selected), false);
 $('#rig-dup').onclick = () => rigEdit((rig) => duplicateLimb(rig, selected), true);
 $('#rig-unlink').onclick = () => rigEdit((rig) => unlinkPair(rig, selected), true);
@@ -2560,6 +3153,85 @@ function hint(text: string, ms = 2000, warn = false) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// settings (remembered in this browser)
+
+const SETTINGS_KEY = 'creature-creator/settings';
+const settings: { numbers: boolean; seamless: SeamlessMode } = (() => {
+  const defaults = { numbers: false, seamless: 'creature' as SeamlessMode };
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') };
+  } catch {
+    return defaults;
+  }
+})();
+setSeamlessMode(settings.seamless);
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    /* ignore */
+  }
+}
+
+function renderSettings() {
+  document.body.classList.toggle('show-nums', settings.numbers);
+  $<HTMLInputElement>('#set-nums').checked = settings.numbers;
+  document.querySelectorAll<HTMLButtonElement>('#set-seamless button').forEach((b) => b.classList.toggle('active', b.dataset.seamless === settings.seamless));
+  if (settings.numbers) syncSliderNumbers();
+}
+
+/**
+ * With "Show numbers" on, every slider has a number box beside it. Material
+ * sliders make their own (marked `own`: they take values past the slider's
+ * ends, so they aren't overwritten from it); the rest are added here and kept
+ * in step with their slider.
+ */
+function syncSliderNumbers() {
+  document.querySelectorAll<HTMLInputElement>('input[type=range]').forEach((range) => {
+    let num = range.nextElementSibling as HTMLInputElement | null;
+    if (!num?.classList.contains('num')) {
+      const box = document.createElement('input');
+      box.type = 'number';
+      box.className = 'num';
+      box.oninput = () => {
+        if (!Number.isFinite(parseFloat(box.value))) return;
+        range.value = box.value;
+        range.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      box.onchange = () => range.dispatchEvent(new Event('change', { bubbles: true }));
+      range.after(box);
+      num = box;
+    }
+    if (num.dataset.own || document.activeElement === num) return;
+    num.step = range.step;
+    const decimals = (range.step.split('.')[1] ?? '').length;
+    const text = Number(range.value).toFixed(decimals);
+    if (num.value !== text) num.value = text;
+  });
+}
+
+$('#settings-btn').onclick = () => {
+  if (togglePopover('#settings-pop')) renderSettings();
+};
+$<HTMLInputElement>('#set-nums').onchange = (e) => {
+  settings.numbers = (e.target as HTMLInputElement).checked;
+  saveSettings();
+  renderSettings();
+};
+document.querySelectorAll<HTMLButtonElement>('#set-seamless button').forEach((b) => {
+  b.onclick = () => {
+    settings.seamless = b.dataset.seamless as SeamlessMode;
+    setSeamlessMode(settings.seamless);
+    // each creature drops (or goes on to build) its skin
+    for (const c of creatures) c.markMergeDirty();
+    saveSettings();
+    renderSettings();
+    renderMerge();
+  };
+});
+
 // wire up static controls
 document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => (b.onclick = () => setMode(b.dataset.mode as Mode)));
 $('#draw').onclick = () => enterDraw({ kind: 'bone', boneId: selected });
@@ -2614,11 +3286,19 @@ function renderBackdrops() {
   $<HTMLInputElement>('#backdrop-color').value = backdrop;
 }
 $('#backdrop-btn').onclick = () => {
-  const pop = $('#backdrop');
-  pop.hidden = !pop.hidden;
-  $('#backdrop-btn').classList.toggle('on', !pop.hidden);
+  if (!togglePopover('#backdrop')) return;
   renderBackdrops();
   renderFloorUI();
+  $<HTMLInputElement>('#light-turn').value = String(lightTurn);
+};
+$<HTMLInputElement>('#light-turn').oninput = (e) => {
+  lightTurn = parseFloat((e.target as HTMLInputElement).value);
+  applyLighting();
+  try {
+    localStorage.setItem(LIGHT_KEY, JSON.stringify({ turn: lightTurn }));
+  } catch {
+    /* ignore */
+  }
 };
 $<HTMLInputElement>('#backdrop-color').oninput = (e) => {
   setBackdrop((e.target as HTMLInputElement).value);
@@ -2796,45 +3476,42 @@ $('#dof-pick').onclick = () => {
 };
 applyDof();
 
-$<HTMLInputElement>('#merge').onchange = (e) => {
-  state.merge = (e.target as HTMLInputElement).checked;
-  renderCreatureBar();
-  creature.markMergeDirty();
-  commit();
-  renderMerge();
-};
+// Blending: each slider at 0 is the same as that kind of blending being off.
+// The last non-zero amount is kept, so files and undo stay compatible.
 $<HTMLInputElement>('#merge-radius').oninput = (e) => {
-  state.mergeRadius = parseFloat((e.target as HTMLInputElement).value);
+  const v = parseFloat((e.target as HTMLInputElement).value);
+  state.merge = v > 0;
+  if (v > 0) state.mergeRadius = v;
   creature.markMergeDirty();
-};
-$<HTMLInputElement>('#merge-radius').onchange = () => commit();
-$<HTMLInputElement>('#merge-colors').onchange = (e) => {
-  state.mergeColors = (e.target as HTMLInputElement).checked;
-  creature.markMergeDirty();
-  commit();
   renderMerge();
 };
 $<HTMLInputElement>('#color-blend').oninput = (e) => {
-  state.colorBlend = parseFloat((e.target as HTMLInputElement).value);
+  const v = parseFloat((e.target as HTMLInputElement).value);
+  state.mergeColors = v > 0;
+  if (v > 0) state.colorBlend = v;
   creature.markMergeDirty();
+  renderMerge();
 };
-$<HTMLInputElement>('#color-blend').onchange = () => commit();
+for (const id of ['#merge-radius', '#color-blend']) $<HTMLInputElement>(id).onchange = () => commit();
 
 function renderMerge() {
-  $<HTMLInputElement>('#merge').checked = state.merge ?? true;
-  $<HTMLInputElement>('#merge-radius').value = String(state.mergeRadius ?? 0.1);
-  $('#merge-slider').style.opacity = (state.merge ?? true) ? '1' : '.4';
-  $<HTMLInputElement>('#merge-colors').checked = !!state.mergeColors;
-  $<HTMLInputElement>('#color-blend').value = String(state.colorBlend ?? 0.12);
-  $('#merge-colors-row').style.opacity = (state.merge ?? true) ? '1' : '.4';
-  $('#color-blend-slider').hidden = !state.mergeColors;
+  const on = state.merge ?? true;
+  $<HTMLInputElement>('#merge-radius').value = String(on ? (state.mergeRadius ?? 0.1) : 0);
+  $<HTMLInputElement>('#color-blend').value = String(state.mergeColors ? (state.colorBlend ?? 0.12) : 0);
+  // colours only blend where parts blend
+  $('#color-blend-row').classList.toggle('off', !on);
+  // per creature, only when Settings leaves it to each creature
+  $('#seamless-row').hidden = settings.seamless !== 'creature';
+  $<HTMLInputElement>('#seamless').checked = state.seamless ?? true;
+  $<HTMLInputElement>('#seamless').disabled = !on;
+  $('#seamless-row').style.opacity = on ? '1' : '.45';
 }
 
 $<HTMLInputElement>('#seamless').onchange = (e) => {
   state.seamless = (e.target as HTMLInputElement).checked;
   creature.invalidateSkin();
   commit();
-  renderCreatureBar();
+  renderMerge();
 };
 
 for (const k of ['size', 'spacing', 'height'] as const) {
@@ -2866,7 +3543,7 @@ $<HTMLInputElement>('#eye-color').onchange = () => {
   renderEyes();
 };
 $<HTMLInputElement>('#eye-lift').oninput = (ev) => {
-  state.eyes.lift = parseFloat((ev.target as HTMLInputElement).value);
+  state.eyes.pairs[eyePair].lift = parseFloat((ev.target as HTMLInputElement).value);
   creature.sync();
 };
 $<HTMLInputElement>('#eye-lift').onchange = () => commit();
@@ -2888,7 +3565,8 @@ $('#spin').onclick = () => {
 $('#new').onclick = () => {
   if (!confirm('Start a new creature? (You can undo this.)')) return;
   exitDraw();
-  state = { ...defaultState(state.rig), placement: state.placement, name: state.name };
+  // a fresh creature in the same spot in the scene (named afresh too)
+  state = { ...defaultState(state.rig), placement: state.placement };
   buildCreature();
   commit();
   renderUI();
@@ -2956,7 +3634,8 @@ function download(url: string, name: string) {
 
 window.addEventListener('keydown', (e) => {
   const tag = (e.target as HTMLElement).tagName;
-  if (tag === 'INPUT' && (e.target as HTMLInputElement).type === 'text') return;
+  // typing in a text or number box
+  if (tag === 'INPUT' && ['text', 'number'].includes((e.target as HTMLInputElement).type)) return;
   const k = e.key.toLowerCase();
   if ((e.ctrlKey || e.metaKey) && k === 'z') {
     e.preventDefault();
@@ -2967,6 +3646,11 @@ window.addEventListener('keydown', (e) => {
     redo();
   } else if (k === 'escape' && drawState) {
     exitDraw();
+  } else if (k === 'enter' && drawState) {
+    e.preventDefault();
+    finishDraw();
+  } else if ((k === 'e' || k === 'm' || k === 't' || k === 'r') && drawState && !e.ctrlKey && !e.metaKey) {
+    setDrawTool(({ e: 'erase', m: 'move', t: 'scale', r: 'rotate' } as const)[k]);
   } else if (k === 's' && drawState && !e.ctrlKey && !e.metaKey) {
     toggleSymmetry();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -3087,6 +3771,8 @@ function loop(now: number) {
   updateFocus(now);
   if (renderFrames <= 0) return;
   renderFrames--;
+  // sliders moved by code (undo, switching parts...) keep their numbers in step
+  if (settings.numbers) syncSliderNumbers();
   if (shadowsChanged()) renderer.shadowMap.needsUpdate = true;
   composer.render();
 }
@@ -3098,9 +3784,11 @@ world.creatures.forEach((s, i) => (creatures[i] = makeCreature(s)));
 activate(world.active);
 commit();
 renderUI();
+renderSettings();
+applyLighting();
 applyFloor();
 resize();
 requestAnimationFrame(loop);
 
 // handy for poking at the scene from the dev-tools console
-if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, openFile, selectAttachment } });
+if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, get drawState() { return drawState; }, openFile, selectAttachment } });

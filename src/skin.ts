@@ -131,9 +131,14 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
   const origin = bounds.min.clone();
   const size = bounds.getSize(new THREE.Vector3());
   const nx = Math.ceil(size.x / h) + 1, ny = Math.ceil(size.y / h) + 1, nz = Math.ceil(size.z / h) + 1;
-  if (nx * ny * nz > 12e6) return null; // absurdly large: don't try
-  const at = (i: number, j: number, k: number) => i + nx * (j + ny * k);
-  const values = new Float32Array(nx * ny * nz).fill(NaN);
+
+  // The grid is sparse: it's cut into C^3-cell blocks and only blocks the
+  // surface passes near are ever stored, so thin parts (a fine grid) on a big
+  // creature cost surface area, not volume.
+  const C = 4;
+  const bx = Math.ceil((nx - 1) / C), by = Math.ceil((ny - 1) / C), bz = Math.ceil((nz - 1) / C);
+  const cx = bx + 1, cy = by + 1, cz = bz + 1;
+  if (cx * cy * cz > 6e6) return null; // absurdly large: don't try
 
   let slice = performance.now();
   let tick = 0;
@@ -145,9 +150,30 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     return opts.shouldStop();
   };
 
+  // node (i, j, k) is stored in block (i/C, j/C, k/C); cells likewise
+  const blockKey = (i: number, j: number, k: number) => ((i / C) | 0) + cx * (((j / C) | 0) + cy * ((k / C) | 0));
+  const local = (i: number, j: number, k: number) => (i % C) + C * ((j % C) + C * (k % C));
+  const nodes = new Map<number, Float32Array>();
+  const getNode = (i: number, j: number, k: number): number => {
+    const b = nodes.get(blockKey(i, j, k));
+    return b ? b[local(i, j, k)] : NaN;
+  };
+  const setNode = (i: number, j: number, k: number, v: number) => {
+    const key = blockKey(i, j, k);
+    let b = nodes.get(key);
+    if (!b) nodes.set(key, (b = new Float32Array(C * C * C).fill(NaN)));
+    b[local(i, j, k)] = v;
+  };
+  const cells = new Map<number, Int32Array>();
+  const getCell = (i: number, j: number, k: number): number => cells.get(blockKey(i, j, k))?.[local(i, j, k)] ?? -1;
+  const setCell = (i: number, j: number, k: number, v: number) => {
+    const key = blockKey(i, j, k);
+    let b = cells.get(key);
+    if (!b) cells.set(key, (b = new Int32Array(C * C * C).fill(-1)));
+    b[local(i, j, k)] = v;
+  };
+
   // 1. coarse pass: find the blocks the surface can pass through
-  const C = 4;
-  const cx = Math.ceil((nx - 1) / C) + 1, cy = Math.ceil((ny - 1) / C) + 1, cz = Math.ceil((nz - 1) / C) + 1;
   const coarse = new Float32Array(cx * cy * cz);
   const reach = C * h * Math.sqrt(3) * 1.05;
   for (let k = 0; k < cz; k++) {
@@ -167,42 +193,45 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
   const center = new THREE.Vector3();
   const rel: Prepared[] = [];
   const relSide: number[] = [];
-  for (let bk = 0; bk < cz - 1; bk++) {
-    for (let bj = 0; bj < cy - 1; bj++) {
-      for (let bi = 0; bi < cx - 1; bi++) {
+  /** the part is out of reach from every node in the block: its distance there is just ±reach */
+  const relFar: boolean[] = [];
+  const active: number[] = [];
+  for (let bk = 0; bk < bz; bk++) {
+    for (let bj = 0; bj < by; bj++) {
+      for (let bi = 0; bi < bx; bi++) {
         let near = false;
         for (let c = 0; c < 8 && !near; c++) {
           const v = coarse[bi + (c & 1) + cx * (bj + ((c >> 1) & 1) + cy * (bk + ((c >> 2) & 1)))];
           if (!Number.isNaN(v) && Math.abs(v) < reach) near = true;
         }
         if (!near) continue;
+        active.push(bi, bj, bk);
 
         center.set(origin.x + (bi + 0.5) * C * h, origin.y + (bj + 0.5) * C * h, origin.z + (bk + 0.5) * C * h);
         rel.length = 0;
         relSide.length = 0;
+        relFar.length = 0;
         let buried = false;
         for (const pp of prepared) {
           if (!pp.box.containsPoint(center) && pp.box.distanceToPoint(center) > halfDiag) continue;
           q.copy(center).applyMatrix4(pp.fromSkin);
-                const d = exactDistance(pp.geo, pp.bvh, pp.normals, q, band + halfDiag, grad);
+          const d = exactDistance(pp.geo, pp.bvh, pp.normals, q, band + halfDiag, grad);
           if (Number.isFinite(d)) {
             rel.push(pp);
             relSide.push(d < 0 ? -1 : 1);
-          } else {
-                    if (insidePart(pp, q)) {
-              buried = true;
-              break;
-            }
+            relFar.push(Math.abs(d) - halfDiag > pp.k + 2.5 * h);
+          } else if (insidePart(pp, q)) {
+            buried = true;
+            break;
           }
         }
 
         for (let k = bk * C; k <= Math.min((bk + 1) * C, nz - 1); k++) {
           for (let j = bj * C; j <= Math.min((bj + 1) * C, ny - 1); j++) {
             for (let i = bi * C; i <= Math.min((bi + 1) * C, nx - 1); i++) {
-              const idx = at(i, j, k);
-              if (!Number.isNaN(values[idx])) continue;
+              if (!Number.isNaN(getNode(i, j, k))) continue;
               if (buried || !rel.length) {
-                values[idx] = buried ? -band : band;
+                setNode(i, j, k, buried ? -band : band);
                 continue;
               }
               pt.set(origin.x + i * h, origin.y + j * h, origin.z + k * h);
@@ -211,9 +240,9 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
               for (let r = 0; r < rel.length; r++) {
                 const pp = rel[r];
                 q.copy(pt).applyMatrix4(pp.fromSkin);
-                            // only distances within the join size (plus a couple of cells) shape the surface
+                // only distances within the join size (plus a couple of cells) shape the surface
                 const reachP = pp.k + 2.5 * h;
-                let d = exactDistance(pp.geo, pp.bvh, pp.normals, q, reachP, grad);
+                let d = relFar[r] ? Infinity : exactDistance(pp.geo, pp.bvh, pp.normals, q, reachP, grad);
                 // beyond reach from this node: same side as the block centre
                 if (!Number.isFinite(d)) d = relSide[r] * reachP;
                 if (!Number.isFinite(f)) {
@@ -223,7 +252,7 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
                 const t = Math.min(1, Math.max(0, 0.5 + (0.5 * (d - f)) / pp.k));
                 f = d * (1 - t) + f * t - pp.k * t * (1 - t);
               }
-              values[idx] = f;
+              setNode(i, j, k, f);
             }
           }
         }
@@ -232,9 +261,22 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     }
   }
 
+  // a block's (C+1)^3 corner nodes, copied out of the sparse store
+  const S = C + 1;
+  const scratch = new Float32Array(S * S * S);
+  const loadBlock = (bi: number, bj: number, bk: number) => {
+    for (let k = 0; k < S; k++) {
+      for (let j = 0; j < S; j++) {
+        for (let i = 0; i < S; i++) {
+          const gi = bi * C + i, gj = bj * C + j, gk = bk * C + k;
+          scratch[i + S * (j + S * k)] = gi < nx && gj < ny && gk < nz ? getNode(gi, gj, gk) : NaN;
+        }
+      }
+    }
+  };
+  const at = (li: number, lj: number, lk: number) => scratch[li + S * (lj + S * lk)];
+
   // 3. surface nets: one vertex per cell the surface crosses, at the mean of its edge crossings
-  const cellIndex = new Int32Array((nx - 1) * (ny - 1) * (nz - 1)).fill(-1);
-  const cellAt = (i: number, j: number, k: number) => i + (nx - 1) * (j + (ny - 1) * k);
   const positions: number[] = [];
   const corner = new Float32Array(8);
   const EDGES = [
@@ -242,32 +284,38 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     [0, 2], [1, 3], [4, 6], [5, 7], // y
     [0, 4], [1, 5], [2, 6], [3, 7], // z
   ];
-  for (let k = 0; k < nz - 1; k++) {
-    for (let j = 0; j < ny - 1; j++) {
-      for (let i = 0; i < nx - 1; i++) {
-        let inside = 0, known = true;
-        for (let c = 0; c < 8; c++) {
-          const v = values[at(i + (c & 1), j + ((c >> 1) & 1), k + ((c >> 2) & 1))];
-          if (Number.isNaN(v)) {
-            known = false;
-            break;
+  for (let a = 0; a < active.length; a += 3) {
+    const bi = active[a], bj = active[a + 1], bk = active[a + 2];
+    loadBlock(bi, bj, bk);
+    for (let lk = 0; lk < C; lk++) {
+      for (let lj = 0; lj < C; lj++) {
+        for (let li = 0; li < C; li++) {
+          const i = bi * C + li, j = bj * C + lj, k = bk * C + lk;
+          if (i >= nx - 1 || j >= ny - 1 || k >= nz - 1) continue;
+          let inside = 0, known = true;
+          for (let c = 0; c < 8; c++) {
+            const v = at(li + (c & 1), lj + ((c >> 1) & 1), lk + ((c >> 2) & 1));
+            if (Number.isNaN(v)) {
+              known = false;
+              break;
+            }
+            corner[c] = v;
+            if (v < 0) inside++;
           }
-          corner[c] = v;
-          if (v < 0) inside++;
+          if (!known || inside === 0 || inside === 8) continue;
+          let sx = 0, sy = 0, sz = 0, n = 0;
+          for (const [ea, eb] of EDGES) {
+            const va = corner[ea], vb = corner[eb];
+            if (va < 0 === vb < 0) continue;
+            const t = va / (va - vb);
+            sx += (ea & 1) + (((eb & 1) - (ea & 1)) * t);
+            sy += ((ea >> 1) & 1) + ((((eb >> 1) & 1) - ((ea >> 1) & 1)) * t);
+            sz += ((ea >> 2) & 1) + ((((eb >> 2) & 1) - ((ea >> 2) & 1)) * t);
+            n++;
+          }
+          setCell(i, j, k, positions.length / 3);
+          positions.push(origin.x + (i + sx / n) * h, origin.y + (j + sy / n) * h, origin.z + (k + sz / n) * h);
         }
-        if (!known || inside === 0 || inside === 8) continue;
-        let sx = 0, sy = 0, sz = 0, n = 0;
-        for (const [a, b] of EDGES) {
-          const va = corner[a], vb = corner[b];
-          if (va < 0 === vb < 0) continue;
-          const t = va / (va - vb);
-          sx += (a & 1) + (((b & 1) - (a & 1)) * t);
-          sy += ((a >> 1) & 1) + ((((b >> 1) & 1) - ((a >> 1) & 1)) * t);
-          sz += ((a >> 2) & 1) + ((((b >> 2) & 1) - ((a >> 2) & 1)) * t);
-          n++;
-        }
-        cellIndex[cellAt(i, j, k)] = positions.length / 3;
-        positions.push(origin.x + (i + sx / n) * h, origin.y + (j + sy / n) * h, origin.z + (k + sz / n) * h);
       }
     }
     if (await breathe()) return null;
@@ -280,23 +328,29 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     if (flip) index.push(a, c, b, a, d, c);
     else index.push(a, b, c, a, c, d);
   };
-  for (let k = 1; k < nz - 1; k++) {
-    for (let j = 1; j < ny - 1; j++) {
-      for (let i = 1; i < nx - 1; i++) {
-        const v0 = values[at(i, j, k)];
-        if (Number.isNaN(v0)) continue;
-        const neg = v0 < 0;
-        const vx = values[at(i + 1, j, k)];
-        if (!Number.isNaN(vx) && vx < 0 !== neg) {
-          quad(cellIndex[cellAt(i, j - 1, k - 1)], cellIndex[cellAt(i, j, k - 1)], cellIndex[cellAt(i, j, k)], cellIndex[cellAt(i, j - 1, k)], !neg);
-        }
-        const vy = values[at(i, j + 1, k)];
-        if (!Number.isNaN(vy) && vy < 0 !== neg) {
-          quad(cellIndex[cellAt(i - 1, j, k - 1)], cellIndex[cellAt(i - 1, j, k)], cellIndex[cellAt(i, j, k)], cellIndex[cellAt(i, j, k - 1)], !neg);
-        }
-        const vz = values[at(i, j, k + 1)];
-        if (!Number.isNaN(vz) && vz < 0 !== neg) {
-          quad(cellIndex[cellAt(i - 1, j - 1, k)], cellIndex[cellAt(i, j - 1, k)], cellIndex[cellAt(i, j, k)], cellIndex[cellAt(i - 1, j, k)], !neg);
+  for (let a = 0; a < active.length; a += 3) {
+    const bi = active[a], bj = active[a + 1], bk = active[a + 2];
+    loadBlock(bi, bj, bk);
+    for (let lk = 0; lk < C; lk++) {
+      for (let lj = 0; lj < C; lj++) {
+        for (let li = 0; li < C; li++) {
+          const i = bi * C + li, j = bj * C + lj, k = bk * C + lk;
+          if (i < 1 || j < 1 || k < 1 || i >= nx - 1 || j >= ny - 1 || k >= nz - 1) continue;
+          const v0 = at(li, lj, lk);
+          if (Number.isNaN(v0)) continue;
+          const neg = v0 < 0;
+          const vx = at(li + 1, lj, lk);
+          if (!Number.isNaN(vx) && vx < 0 !== neg) {
+            quad(getCell(i, j - 1, k - 1), getCell(i, j, k - 1), getCell(i, j, k), getCell(i, j - 1, k), !neg);
+          }
+          const vy = at(li, lj + 1, lk);
+          if (!Number.isNaN(vy) && vy < 0 !== neg) {
+            quad(getCell(i - 1, j, k - 1), getCell(i - 1, j, k), getCell(i, j, k), getCell(i, j, k - 1), !neg);
+          }
+          const vz = at(li, lj, lk + 1);
+          if (!Number.isNaN(vz) && vz < 0 !== neg) {
+            quad(getCell(i - 1, j - 1, k), getCell(i, j - 1, k), getCell(i, j, k), getCell(i - 1, j, k), !neg);
+          }
         }
       }
     }

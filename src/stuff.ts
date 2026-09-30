@@ -55,7 +55,13 @@ export interface Thing {
   /** false = felt fuzz grows and shrinks with the item's scale (default: it keeps its real length) */
   scaleMaterial?: boolean;
   materialSettings?: Partial<Record<StyleId, StyleSettings>>;
+  /** curve the whole thing, -1..1 (0 = flat as drawn) */
+  bend?: number;
+  /** axis = curve away from the centre line (a shield's curve, wings); radial = a dome around the crosshair */
+  bendMode?: BendMode;
 }
+
+export type BendMode = 'axis' | 'radial';
 
 export function uid(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -142,8 +148,9 @@ export function pieceGeometry(p: Piece): THREE.BufferGeometry {
  */
 export function buildThing(thing: Thing, settingsFor: (s: StyleId) => StyleSettings, unit = 1): THREE.Group {
   const group = new THREE.Group();
+  const bend = thingBend(thing);
   for (const p of thing.pieces) {
-    const geo = pieceGeometry(p);
+    const geo = bend ? bentGeometry(pieceGeometry(p), bend) : pieceGeometry(p);
     const k = thing.ownMaterial ? styleSettings(p.style, thing.materialSettings?.[p.style]) : settingsFor(p.style);
     const mesh = new THREE.Mesh(geo, makeMaterial(p.style, p.color, k));
     mesh.castShadow = castsShadow(p.style);
@@ -162,6 +169,72 @@ export function buildThing(thing: Thing, settingsFor: (s: StyleId) => StyleSetti
     group.add(mesh);
   }
   return group;
+}
+
+// ---------------------------------------------------------------------------
+// bending the whole thing: drawn flat, then wrapped onto a cylinder whose axis
+// runs along the centre line (axis), or onto a sphere around the crosshair
+// (radial). Positive bends curve the edges back (-Z), like a shield.
+
+interface ThingBend {
+  mode: BendMode;
+  /** signed radius of the curve; its centre sits at z = -r */
+  r: number;
+}
+
+function thingBend(thing: Thing): ThingBend | null {
+  const amount = thing.bend ?? 0;
+  if (Math.abs(amount) < 0.005 || !thing.pieces.length) return null;
+  const mode = thing.bendMode ?? 'axis';
+  // at full bend the farthest edge has turned a quarter circle
+  let reach = 0;
+  for (const p of thing.pieces) for (const [x, y] of p.outline) reach = Math.max(reach, mode === 'axis' ? Math.abs(x) : Math.hypot(x, y));
+  if (reach < 1e-4) return null;
+  return { mode, r: reach / (amount * (Math.PI / 2)) };
+}
+
+const bentCache = new WeakMap<THREE.BufferGeometry, Map<string, THREE.BufferGeometry>>();
+
+function bentGeometry(src: THREE.BufferGeometry, bd: ThingBend): THREE.BufferGeometry {
+  const key = `${bd.mode}:${bd.r.toFixed(5)}`;
+  let per = bentCache.get(src);
+  const hit = per?.get(key);
+  if (hit) return hit;
+  const g = src.clone();
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  const nor = g.getAttribute('normal') as THREE.BufferAttribute | undefined;
+  const r0 = bd.r;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    // unit direction away from the centre (line or point) in the drawing plane
+    let ux = 1, uy = 0, d = x;
+    if (bd.mode === 'radial') {
+      d = Math.hypot(x, y);
+      if (d > 1e-9) {
+        ux = x / d;
+        uy = y / d;
+      }
+    }
+    const phi = d / r0;
+    const c = Math.cos(phi), sn = Math.sin(phi);
+    const rr = r0 + z;
+    // along the curve: the drawing distance becomes arc length on a circle of radius r
+    const along = rr * sn;
+    if (bd.mode === 'axis') pos.setXYZ(i, along, y, rr * c - r0);
+    else pos.setXYZ(i, ux * along, uy * along, rr * c - r0);
+    if (nor) {
+      const nx = nor.getX(i), ny = nor.getY(i), nz = nor.getZ(i);
+      const nu = nx * ux + ny * uy;
+      const nu2 = nu * c + nz * sn;
+      nor.setXYZ(i, nx + (nu2 - nu) * ux, ny + (nu2 - nu) * uy, -nu * sn + nz * c);
+    }
+  }
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  if (!per) bentCache.set(src, (per = new Map()));
+  if (per.size > 8) per.clear();
+  per.set(key, g);
+  return g;
 }
 
 /**

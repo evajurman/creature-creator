@@ -246,7 +246,6 @@ input.text {
 .eye-pairs button.remove { background: #fff; color: #c2410c; }
 
 .style-params { margin-top: 10px; padding: 8px 10px 2px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
-.style-params .slider { grid-template-columns: 96px 1fr 58px; }
 .slider input.num {
   width: 100%; min-width: 0; padding: 3px 4px; font: inherit; font-size: 12px; font-weight: 600;
   border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit;
@@ -331,7 +330,6 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .creature-actions button { padding: 4px 8px; font-size: 12px; }
 .creature-actions button.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
 
-.rig-lock { display: inline-flex; margin: 4px 0 6px; }
 .rig-sub { margin: 12px 0 2px; }
 #rig-bend-row.off { opacity: .4; pointer-events: none; }
 
@@ -351,3 +349,42 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 
 .seamless-row { margin: 8px 0 0; font-size: 12px; }
 .seamless-row .muted { font-weight: 600; }
+.seamless-row[hidden] { display: none; }
+.slider.wide-label { grid-template-columns: 96px 1fr; }
+.slider.off { opacity: .4; }
+
+/* number boxes beside sliders: only with Settings > Show numbers */
+.slider input.num, .bar-slider input.num { display: none; }
+body.show-nums .slider:has(> input.num) { grid-template-columns: 70px 1fr 62px; }
+body.show-nums .slider.wide-label:has(> input.num),
+body.show-nums .style-params .slider:has(> input.num) { grid-template-columns: 96px 1fr 62px; }
+body.show-nums .dof-slider:has(> input.num) { grid-template-columns: 44px 1fr 62px; }
+body.show-nums .slider input.num, body.show-nums .bar-slider input.num { display: block; }
+.style-params .slider { grid-template-columns: 96px 1fr; }
+.bar-slider input.num {
+  width: 58px; padding: 2px 4px; font: inherit; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit;
+}
+
+.card-title-input { font-size: 16px; font-weight: 800; margin-bottom: 8px; }
+.thing-bend { margin-top: 10px; }
+.thing-bend .seg { margin-bottom: 0; }
+
+/* drawing bar: shapes, stretch, erase, done */
+.draw-bar { flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); border-radius: 22px; }
+.draw-bar .seg-btn {
+  border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 5px 10px;
+  border-radius: 999px; font-weight: 700; cursor: pointer;
+}
+.draw-bar .seg-btn:hover { background: var(--bg); }
+.draw-bar .seg-btn.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
+.draw-bar .seg-btn kbd { background: var(--bg); color: var(--muted); }
+#overlay.active.moving { cursor: move; }
+#overlay.active.erasing { cursor: cell; }
+.draw-bar .seg-btn:disabled, .draw-bar button:disabled { opacity: .4; cursor: default; }
+.bar-group { display: flex; gap: 4px; }
+.bar-group .seg-btn { padding: 4px 9px; font-size: 14px; line-height: 1.1; }
+.draw-bar button.done { background: var(--accent); }
+.draw-bar button.done kbd { background: rgba(255,255,255,.25); }
+
+#settings-pop .seg button { font-size: 12px; }

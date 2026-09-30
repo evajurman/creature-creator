@@ -25,6 +25,11 @@ export interface BoneDef {
    * plane, pi/2 = out of the drawing (for a body: forward), pi = the other side
    */
   bendDir?: number;
+  /**
+   * turn the bone about the line from its base to its tip, radians: the
+   * drawing (and so a flat part like a wing) turns with it
+   */
+  roll?: number;
   thickness?: number;
   color?: string;
   /** Define once on the +X side; a mirrored twin is generated. */
@@ -60,8 +65,7 @@ const biped: RigDef = {
     { id: 'arm', name: 'Upper arm', parent: 'body', start: [0.3, 1.36, 0], end: [0.58, 1.08, 0], side: Y, width: 0.19, mirror: true },
     { id: 'forearm', name: 'Forearm', parent: 'arm', start: [0.58, 1.08, 0], end: [0.8, 0.8, 0], side: Y, width: 0.17, mirror: true },
     { id: 'thigh', name: 'Thigh', parent: 'body', start: [0.17, 0.95, 0], end: [0.19, 0.52, 0], side: X, width: 0.24, mirror: true },
-    { id: 'shin', name: 'Shin', parent: 'thigh', start: [0.19, 0.52, 0], end: [0.2, 0.12, 0], side: X, width: 0.2, mirror: true },
-    { id: 'foot', name: 'Foot', parent: 'shin', start: [0.2, 0.09, -0.05], end: [0.2, 0.09, 0.28], side: X, width: 0.2, thickness: 0.75, mirror: true },
+    { id: 'shin', name: 'Shin', parent: 'thigh', start: [0.19, 0.52, 0], end: [0.2, 0.07, 0], side: X, width: 0.2, mirror: true },
   ],
 };
 
@@ -87,15 +91,14 @@ const bird: RigDef = {
   icon: '🐦',
   headId: 'head',
   bones: [
-    { id: 'body', name: 'Body', start: [0, 0.72, -0.38], end: [0, 1.0, 0.28], side: Y, width: 0.58, anchor: true },
-    { id: 'head', name: 'Head', parent: 'body', start: [0, 1.04, 0.24], end: [0, 1.46, 0.36], side: Z, width: 0.42 },
-    { id: 'beak', name: 'Beak', parent: 'head', start: [0, 1.28, 0.46], end: [0, 1.24, 0.74], side: Y, width: 0.13, thickness: 0.7, color: '#f2a23a' },
-    { id: 'wing', name: 'Wing', parent: 'body', start: [0.22, 0.96, 0.05], end: [0.78, 0.98, -0.1], side: Z, width: 0.42, thickness: 0.25, mirror: true },
-    { id: 'wingtip', name: 'Wing tip', parent: 'wing', start: [0.78, 0.98, -0.1], end: [1.25, 1.0, -0.26], side: Z, width: 0.32, thickness: 0.22, mirror: true },
-    { id: 'tail', name: 'Tail', parent: 'body', start: [0, 0.74, -0.38], end: [0, 0.62, -0.86], side: X, width: 0.34, thickness: 0.28 },
-    { id: 'leg', name: 'Leg', parent: 'body', start: [0.12, 0.66, 0], end: [0.14, 0.34, 0.03], side: Z, width: 0.11, mirror: true, color: '#f2a23a' },
-    { id: 'shin', name: 'Shin', parent: 'leg', start: [0.14, 0.34, 0.03], end: [0.14, 0.06, 0.05], side: Z, width: 0.07, mirror: true, color: '#f2a23a' },
-    { id: 'foot', name: 'Foot', parent: 'shin', start: [0.14, 0.04, -0.04], end: [0.14, 0.04, 0.24], side: X, width: 0.2, thickness: 0.4, mirror: true, color: '#f2a23a' },
+    { id: 'body', name: 'Body', start: [0, 0.47, -0.38], end: [0, 0.75, 0.28], side: Y, width: 0.58, anchor: true },
+    { id: 'head', name: 'Head', parent: 'body', start: [0, 0.79, 0.24], end: [0, 1.21, 0.36], side: Z, width: 0.42 },
+    { id: 'beak', name: 'Beak', parent: 'head', start: [0, 1.03, 0.46], end: [0, 0.99, 0.74], side: Y, width: 0.13, thickness: 0.7, color: '#f2a23a' },
+    // one bendy bone per wing, swept gently back
+    { id: 'wing', name: 'Wing', parent: 'body', start: [0.22, 0.71, 0.05], end: [1.12, 0.8, -0.14], side: Z, width: 0.42, widthEnd: 0.26, thickness: 0.25, mirror: true, bendy: true, bend: 0.3, bendDir: -1.9 },
+    { id: 'tail', name: 'Tail', parent: 'body', start: [0, 0.49, -0.38], end: [0, 0.37, -0.86], side: X, width: 0.34, thickness: 0.28 },
+    // short stub legs
+    { id: 'leg', name: 'Leg', parent: 'body', start: [0.12, 0.42, 0.02], end: [0.13, 0.06, 0.05], side: Z, width: 0.1, widthEnd: 0.13, mirror: true, color: '#f2a23a' },
   ],
 };
 
@@ -105,13 +108,12 @@ const serpent: RigDef = {
   name: 'Serpent',
   icon: '🐍',
   headId: 'head',
+  // three bendy segments curving opposite ways make the S
   bones: [
-    { id: 'seg1', name: 'Neck', start: [0, 0.2, 0.55], end: [0, 0.2, 0.08], side: X, width: 0.34, anchor: true },
+    { id: 'seg1', name: 'Neck', start: [0, 0.2, 0.55], end: [0, 0.2, -0.3], side: X, width: 0.34, anchor: true, bendy: true, bend: 0.16 },
     { id: 'head', name: 'Head', parent: 'seg1', start: [0, 0.24, 0.5], end: [0, 0.3, 1.02], side: X, width: 0.42 },
-    { id: 'seg2', name: 'Body 1', parent: 'seg1', start: [0, 0.2, 0.08], end: [0, 0.2, -0.4], side: X, width: 0.34 },
-    { id: 'seg3', name: 'Body 2', parent: 'seg2', start: [0, 0.2, -0.4], end: [0, 0.2, -0.88], side: X, width: 0.3 },
-    { id: 'seg4', name: 'Body 3', parent: 'seg3', start: [0, 0.19, -0.88], end: [0, 0.18, -1.36], side: X, width: 0.24 },
-    { id: 'seg5', name: 'Tail', parent: 'seg4', start: [0, 0.18, -1.36], end: [0, 0.16, -1.86], side: X, width: 0.14 },
+    { id: 'seg2', name: 'Body', parent: 'seg1', start: [0, 0.2, -0.3], end: [0, 0.19, -1.15], side: X, width: 0.32, widthEnd: 0.26, bendy: true, bend: -0.3 },
+    { id: 'seg3', name: 'Tail', parent: 'seg2', start: [0, 0.19, -1.15], end: [0, 0.16, -1.85], side: X, width: 0.24, widthEnd: 0.08, bendy: true, bend: 0.26 },
   ],
 };
 
@@ -441,6 +443,7 @@ export function extendBone(rig: RigState, sceneId: string): PartCopy[] {
     start: [...def.end],
     end: round3(add3(def.end, scale3(dir, segLen / l))),
     side: [...def.side],
+    roll: def.roll,
     width: def.width * 0.8,
     mirror,
   });
@@ -514,6 +517,7 @@ export function unlinkPair(rig: RigState, sceneId: string): PartCopy[] {
       start: mirrorV(d.start),
       end: mirrorV(d.end),
       side: mirrorV(d.side),
+      roll: d.roll ? -d.roll : undefined,
     });
     parts.push({ from: d.id + 'L', to: d.id + 'R' });
   }

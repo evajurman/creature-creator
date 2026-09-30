@@ -526,6 +526,112 @@ export function symmetrize(loop: Vec2[]): Vec2[] {
   return [...chain, ...mirrored];
 }
 
+/**
+ * Add `loops` to a shape (outer loops plus holes), or cut them out of it.
+ * Everything is drawn into a fine grid and the result traced back into loops
+ * (marching squares), which copes with any hand-drawn mess: self-crossings,
+ * strokes that split the shape in two, cuts that leave a hole.
+ */
+export function combineLoops(outers: Vec2[][], holes: Vec2[][], loops: Vec2[][], cut: boolean): { outers: Vec2[][]; holes: Vec2[][] } {
+  const all = cut ? outers : [...outers, ...loops];
+  const bb = bounds(all.flat());
+  const size = Math.max(bb.w, bb.h, 1e-3);
+  const cell = size / 400;
+  // a border of empty cells so every traced loop closes
+  const x0 = bb.minX - 3 * cell, y0 = bb.minY - 3 * cell;
+  const W = Math.ceil(bb.w / cell) + 7, H = Math.ceil(bb.h / cell) + 7;
+  const mask = new Uint8Array(W * H);
+
+  const fill = (loop: Vec2[], v: number) => {
+    const xs: number[] = [];
+    for (let j = 0; j < H; j++) {
+      const y = y0 + (j + 0.5) * cell;
+      xs.length = 0;
+      for (let a = 0, b = loop.length - 1; a < loop.length; b = a++) {
+        const [xa, ya] = loop[a], [xb, yb] = loop[b];
+        if (ya > y !== yb > y) xs.push(xa + ((y - ya) / (yb - ya)) * (xb - xa));
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const i0 = Math.max(0, Math.ceil((xs[k] - x0) / cell - 0.5));
+        const i1 = Math.min(W - 1, Math.floor((xs[k + 1] - x0) / cell - 0.5));
+        for (let i = i0; i <= i1; i++) mask[j * W + i] = v;
+      }
+    }
+  };
+  for (const l of outers) fill(l, 1);
+  for (const l of holes) fill(l, 0);
+  for (const l of loops) fill(l, cut ? 0 : 1);
+
+  // Marching squares over the cell centres. Each square yields segments
+  // between edge midpoints, directed so the filled side is on the left: outer
+  // loops come out counter-clockwise, holes clockwise. Edge ids: horizontal
+  // edge from sample (i, j) = 2 * (j * W + i), vertical = that + 1.
+  const at = (i: number, j: number) => mask[j * W + i];
+  const next = new Map<number, number>();
+  const hE = (i: number, j: number) => 2 * (j * W + i);
+  const vE = (i: number, j: number) => 2 * (j * W + i) + 1;
+  for (let j = 0; j < H - 1; j++) {
+    for (let i = 0; i < W - 1; i++) {
+      const c = at(i, j) | (at(i + 1, j) << 1) | (at(i + 1, j + 1) << 2) | (at(i, j + 1) << 3);
+      if (c === 0 || c === 15) continue;
+      const b = hE(i, j), t = hE(i, j + 1), l = vE(i, j), r = vE(i + 1, j);
+      const seg = (from: number, to: number) => next.set(from, to);
+      switch (c) {
+        case 1: seg(b, l); break;
+        case 2: seg(r, b); break;
+        case 3: seg(r, l); break;
+        case 4: seg(t, r); break;
+        case 5: seg(b, l); seg(t, r); break;
+        case 6: seg(t, b); break;
+        case 7: seg(t, l); break;
+        case 8: seg(l, t); break;
+        case 9: seg(b, t); break;
+        case 10: seg(r, b); seg(l, t); break;
+        case 11: seg(r, t); break;
+        case 12: seg(l, r); break;
+        case 13: seg(b, r); break;
+        case 14: seg(l, b); break;
+      }
+    }
+  }
+  const point = (e: number): Vec2 => {
+    const k = e >> 1, i = k % W, j = (k - i) / W;
+    return e & 1 ? [x0 + (i + 0.5) * cell, y0 + (j + 1) * cell] : [x0 + (i + 1) * cell, y0 + (j + 0.5) * cell];
+  };
+
+  const out = { outers: [] as Vec2[][], holes: [] as Vec2[][] };
+  const minArea = (cell * 4) ** 2;
+  for (const start of [...next.keys()]) {
+    if (!next.has(start)) continue;
+    const loop: Vec2[] = [];
+    let e = start;
+    while (next.has(e)) {
+      loop.push(point(e));
+      const n = next.get(e)!;
+      next.delete(e);
+      e = n;
+    }
+    const area = signedArea(loop);
+    if (Math.abs(area) < minArea || loop.length < 8) continue;
+    // soften the grid's stair steps (Taubin: no shrinking), keeping detail
+    let s = resampleClosed(loop, cell * 4);
+    for (let p = 0; p < 3; p++) {
+      for (const k of [0.5, -0.53]) {
+        s = s.map((q, i) => {
+          const a = s[(i - 1 + s.length) % s.length], c = s[(i + 1) % s.length];
+          return [q[0] + k * ((a[0] + c[0]) / 2 - q[0]), q[1] + k * ((a[1] + c[1]) / 2 - q[1])] as Vec2;
+        });
+      }
+    }
+    s = s.map(([x, y]) => [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4] as Vec2);
+    (area > 0 ? out.outers : out.holes).push(area > 0 ? s : s.reverse());
+  }
+  // biggest first: a body part keeps the main piece
+  out.outers.sort((a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)));
+  return out;
+}
+
 /** Taubin smoothing of a closed loop: removes wobble without shrinking it. */
 export function smoothLoop(loop: Vec2[], strength: number): Vec2[] {
   if (strength <= 0 || loop.length < 8) return loop;
