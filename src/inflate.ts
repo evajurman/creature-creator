@@ -209,25 +209,50 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
     }
   }
 
-  // Hex lattice for the interior, centred so symmetric drawings stay symmetric.
-  const minD = opts.lowPoly ? 0.6 * s : 0.85 * s;
-  const rowH = (s * Math.sqrt(3)) / 2;
+  // Hex lattice samples of the interior (x, y, distance to the silhouette),
+  // centred so symmetric drawings stay symmetric.
   const cx = (bb.minX + bb.maxX) / 2;
   const cy = (bb.minY + bb.maxY) / 2;
-  const y0 = cy - Math.ceil((cy - bb.minY) / rowH) * rowH;
-  for (let row = 0, y = y0; y <= bb.maxY; y += rowH, row++) {
-    const shift = row % 2 ? s / 2 : 0;
-    const x0 = cx + shift - Math.ceil((cx + shift - bb.minX) / s) * s;
-    for (let x = x0; x <= bb.maxX; x += s) {
-      let px = x, py = y;
-      if (opts.lowPoly) {
-        px += (rand() - 0.5) * 0.45 * s;
-        py += (rand() - 0.5) * 0.45 * s;
+  const lattice = (step: number, minDist: number): [number, number, number][] => {
+    const out: [number, number, number][] = [];
+    const rowH = (step * Math.sqrt(3)) / 2;
+    const y0 = cy - Math.ceil((cy - bb.minY) / rowH) * rowH;
+    for (let row = 0, y = y0; y <= bb.maxY; y += rowH, row++) {
+      const shift = row % 2 ? step / 2 : 0;
+      const x0 = cx + shift - Math.ceil((cx + shift - bb.minX) / step) * step;
+      for (let x = x0; x <= bb.maxX; x += step) {
+        if (!pointInPolygon(x, y, boundary)) continue;
+        const d = distToPolygon(x, y, boundary);
+        if (d >= minDist) out.push([x, y, d]);
       }
-      if (!pointInPolygon(px, py, boundary)) continue;
-      const d = distToPolygon(px, py, boundary);
-      if (d < minD) continue;
-      pts.push([px, py]);
+    }
+    return out;
+  };
+
+  // Low-poly: the shape is measured on the same fine samples as a smooth part,
+  // so its thickness is the same; only the mesh on top is coarse. Its vertices
+  // are picked from those samples thickest-first, so the ridge down the middle
+  // (the part's full depth) always gets vertices, then spread out a facet apart.
+  let fine: [number, number, number][] = [];
+  if (opts.lowPoly) {
+    const fs = Math.max(Math.sqrt(area / 650), size / 90);
+    fine = lattice(fs, 0.3 * fs);
+    const order = fine.map((f, i) => ({ i, key: f[2] + rand() * 0.25 * s })).sort((a, b) => b.key - a.key);
+    const taken: Vec2[] = [];
+    const ring = pts.slice(nb);
+    for (const { i } of order) {
+      const [x, y, d] = fine[i];
+      if (d < 0.55 * s) continue;
+      if (taken.some((q) => (q[0] - x) ** 2 + (q[1] - y) ** 2 < (0.8 * s) ** 2)) continue;
+      if (ring.some((q) => (q[0] - x) ** 2 + (q[1] - y) ** 2 < (0.5 * s) ** 2)) continue;
+      taken.push([x, y]);
+      pts.push([x, y]);
+      dist.push(d);
+      isLattice.push(true);
+    }
+  } else {
+    for (const [x, y, d] of lattice(s, 0.85 * s)) {
+      pts.push([x, y]);
       dist.push(d);
       isLattice.push(true);
     }
@@ -264,17 +289,18 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
     tris.push(a, b, c);
   }
 
-  // Union-of-spheres height field.
+  // Union-of-spheres height field: every interior sample is the centre of a
+  // sphere as big as its distance to the silhouette (low-poly uses the fine samples).
+  const spheres: [number, number, number][] = opts.lowPoly ? fine : pts.slice(nb).map((q, i) => [q[0], q[1], dist[nb + i]]);
   const h = new Float64Array(N);
   for (let v = nb; v < N; v++) {
     const [vx, vy] = pts[v];
     let best2 = dist[v] * dist[v];
-    for (let u = nb; u < N; u++) {
-      const du = dist[u];
+    for (const [ux, uy, du] of spheres) {
       const du2 = du * du;
       if (du2 <= best2) continue;
-      const dx = pts[u][0] - vx;
-      const dy = pts[u][1] - vy;
+      const dx = ux - vx;
+      const dy = uy - vy;
       const r2 = du2 - dx * dx - dy * dy;
       if (r2 > best2) best2 = r2;
     }
@@ -283,13 +309,9 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
 
   // A compact set of inscribed spheres describing the solid, used as a cheap
   // distance function when blending neighbouring parts together.
-  const order: number[] = [];
-  for (let u = nb; u < N; u++) if (dist[u] > 0.3 * s) order.push(u);
-  order.sort((a, b) => dist[b] - dist[a]);
+  const order = spheres.filter((q) => q[2] > 0.3 * s).sort((a, b) => b[2] - a[2]);
   const kept: number[] = [];
-  for (const u of order) {
-    const [ux, uy] = pts[u];
-    const du = dist[u];
+  for (const [ux, uy, du] of order) {
     let covered = false;
     for (let k = 0; k < kept.length; k += 3) {
       if (Math.hypot(kept[k] - ux, kept[k + 1] - uy) < 0.45 * du + 0.5 * s) {
@@ -301,7 +323,9 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
     if (kept.length >= 3 * 260) break;
   }
 
-  // Gentle smoothing of the interior to remove sphere-union ridges.
+  // Gentle smoothing of the interior to remove sphere-union ridges. Not for
+  // low-poly: flat facets hide the ridges anyway, and on a coarse mesh
+  // averaging with the silhouette's zero height would flatten the whole part.
   const nbrs: number[][] = Array.from({ length: N }, () => []);
   for (let k = 0; k < tris.length; k += 3) {
     const a = tris[k], b = tris[k + 1], c = tris[k + 2];
@@ -309,7 +333,7 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
     nbrs[b].push(a, c);
     nbrs[c].push(a, b);
   }
-  for (let pass = 0; pass < 3; pass++) {
+  for (let pass = 0; pass < (opts.lowPoly ? 0 : 3); pass++) {
     const next = Float64Array.from(h);
     for (let v = nb; v < N; v++) {
       if (!isLattice[v] || nbrs[v].length === 0) continue;
@@ -369,6 +393,8 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
   geo.userData.solid = { spheres: new Float32Array(kept), thickness: opts.thickness } satisfies Solid;
+  // low-poly: the facet size this part was built with (a seamless skin re-facets to match)
+  if (opts.lowPoly) geo.userData.facet = s;
   return geo;
 }
 

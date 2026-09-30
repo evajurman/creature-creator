@@ -21,6 +21,8 @@ export interface SkinPart {
   color: THREE.Color;
   /** fillet size where this part joins others */
   k: number;
+  /** low-poly: this part's facet size */
+  facet?: number;
 }
 
 export interface SkinOptions {
@@ -36,6 +38,7 @@ export interface SkinOptions {
 }
 
 interface Prepared {
+  facet?: number;
   geo: THREE.BufferGeometry;
   bvh: ReturnType<typeof bvhFor>;
   normals: THREE.BufferAttribute;
@@ -74,6 +77,7 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
       box,
       color: p.color,
       k: p.k,
+      facet: p.facet,
     };
   });
 
@@ -405,6 +409,14 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
   if (opts.lumps) applyLumps(geo, opts.lumps);
 
   if (opts.lowPoly) {
+    // each part's own facet size, where the skin passes through it (the finer one at joins)
+    const fallback = Math.max(h * 3, ...prepared.map((pp) => pp.facet ?? 0));
+    const sizeAt = (p: THREE.Vector3) => {
+      let s = Infinity;
+      for (const pp of prepared) if (pp.facet && pp.box.containsPoint(p)) s = Math.min(s, pp.facet);
+      return Number.isFinite(s) ? s : fallback;
+    };
+    geo = facetize(geo, sizeAt);
     geo = geo.toNonIndexed();
     geo.computeVertexNormals();
   }
@@ -413,6 +425,70 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
   return geo;
+}
+
+/**
+ * Low-poly look for a smooth skin: merge the vertices in each cell of a grid
+ * (cell = the local facet size) into one, and drop the triangles that
+ * collapse. Vertices facing different ways never merge, so thin parts (a
+ * wing's two sides) keep their thickness. The grid is turned off the axes so
+ * the facets don't line up in rows.
+ */
+function facetize(src: THREE.BufferGeometry, sizeAt: (p: THREE.Vector3) => number): THREE.BufferGeometry {
+  const pos = src.getAttribute('position') as THREE.BufferAttribute;
+  const nor = src.getAttribute('normal') as THREE.BufferAttribute;
+  const index = src.getIndex()!;
+  const turn = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(1, 0.7, 0.4).normalize(), 0.61);
+  const p = new THREE.Vector3(), q = new THREE.Vector3();
+  const clusters = new Map<string, number>();
+  const sums: number[] = [];
+  const counts: number[] = [];
+  const remap = new Int32Array(pos.count);
+  for (let v = 0; v < pos.count; v++) {
+    p.fromBufferAttribute(pos, v);
+    const s = sizeAt(p);
+    q.copy(p).applyMatrix4(turn);
+    const nx = nor.getX(v), ny = nor.getY(v), nz = nor.getZ(v);
+    const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+    const facing = ax >= ay && ax >= az ? (nx > 0 ? 0 : 1) : ay >= az ? (ny > 0 ? 2 : 3) : nz > 0 ? 4 : 5;
+    const key = `${s.toFixed(5)}|${Math.floor(q.x / s)}|${Math.floor(q.y / s)}|${Math.floor(q.z / s)}|${facing}`;
+    let c = clusters.get(key);
+    if (c === undefined) {
+      c = counts.length;
+      clusters.set(key, c);
+      sums.push(0, 0, 0);
+      counts.push(0);
+    }
+    sums[c * 3] += p.x;
+    sums[c * 3 + 1] += p.y;
+    sums[c * 3 + 2] += p.z;
+    counts[c]++;
+    remap[v] = c;
+  }
+  // Each cell's corner is its real surface vertex nearest the cell's average:
+  // an average of points on a curved surface sits inside it, which would
+  // shrink the creature a little everywhere.
+  const out = new Float32Array(counts.length * 3);
+  const best = new Float64Array(counts.length).fill(Infinity);
+  for (let v = 0; v < pos.count; v++) {
+    const c = remap[v];
+    const x = pos.getX(v), y = pos.getY(v), z = pos.getZ(v);
+    const d = (x - sums[c * 3] / counts[c]) ** 2 + (y - sums[c * 3 + 1] / counts[c]) ** 2 + (z - sums[c * 3 + 2] / counts[c]) ** 2;
+    if (d >= best[c]) continue;
+    best[c] = d;
+    out[c * 3] = x;
+    out[c * 3 + 1] = y;
+    out[c * 3 + 2] = z;
+  }
+  const tris: number[] = [];
+  for (let t = 0; t < index.count; t += 3) {
+    const a = remap[index.getX(t)], b = remap[index.getX(t + 1)], c = remap[index.getX(t + 2)];
+    if (a !== b && b !== c && a !== c) tris.push(a, b, c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(out, 3));
+  g.setIndex(tris);
+  return g;
 }
 
 /**

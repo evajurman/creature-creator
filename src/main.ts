@@ -16,6 +16,7 @@ import {
   defaultState,
   endForTip,
   EYE_STYLES,
+  setSeamlessLowPoly,
   setSeamlessMode,
   type Attachment,
   type BoneRT,
@@ -3157,8 +3158,8 @@ function hint(text: string, ms = 2000, warn = false) {
 // settings (remembered in this browser)
 
 const SETTINGS_KEY = 'creature-creator/settings';
-const settings: { numbers: boolean; seamless: SeamlessMode } = (() => {
-  const defaults = { numbers: false, seamless: 'creature' as SeamlessMode };
+const settings: { numbers: boolean; seamless: SeamlessMode; seamlessLowPoly: boolean } = (() => {
+  const defaults = { numbers: false, seamless: 'on' as SeamlessMode, seamlessLowPoly: false };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') };
   } catch {
@@ -3166,6 +3167,7 @@ const settings: { numbers: boolean; seamless: SeamlessMode } = (() => {
   }
 })();
 setSeamlessMode(settings.seamless);
+setSeamlessLowPoly(settings.seamlessLowPoly);
 
 function saveSettings() {
   try {
@@ -3179,6 +3181,10 @@ function renderSettings() {
   document.body.classList.toggle('show-nums', settings.numbers);
   $<HTMLInputElement>('#set-nums').checked = settings.numbers;
   document.querySelectorAll<HTMLButtonElement>('#set-seamless button').forEach((b) => b.classList.toggle('active', b.dataset.seamless === settings.seamless));
+  $<HTMLInputElement>('#set-seamless-lp').checked = settings.seamlessLowPoly;
+  // nothing to apply it to while seamless joins are off
+  $<HTMLInputElement>('#set-seamless-lp').disabled = settings.seamless === 'off';
+  $('#set-seamless-lp-row').style.opacity = settings.seamless === 'off' ? '.45' : '1';
   if (settings.numbers) syncSliderNumbers();
 }
 
@@ -3214,6 +3220,14 @@ function syncSliderNumbers() {
 
 $('#settings-btn').onclick = () => {
   if (togglePopover('#settings-pop')) renderSettings();
+};
+$<HTMLInputElement>('#set-seamless-lp').onchange = (e) => {
+  settings.seamlessLowPoly = (e.target as HTMLInputElement).checked;
+  setSeamlessLowPoly(settings.seamlessLowPoly);
+  // low-poly creatures build (or drop) their skins
+  for (const c of creatures) c.markMergeDirty();
+  saveSettings();
+  renderSettings();
 };
 $<HTMLInputElement>('#set-nums').onchange = (e) => {
   settings.numbers = (e.target as HTMLInputElement).checked;

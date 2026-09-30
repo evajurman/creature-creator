@@ -172,6 +172,11 @@ let seamlessMode: SeamlessMode = 'creature';
 export function setSeamlessMode(m: SeamlessMode) {
   seamlessMode = m;
 }
+/** Seamless skins for low-poly too (off by default: re-faceting a skin changes the low-poly look) */
+let seamlessLowPoly = false;
+export function setSeamlessLowPoly(on: boolean) {
+  seamlessLowPoly = on;
+}
 function seamlessOn(s: CreatureState): boolean {
   return seamlessMode === 'creature' ? (s.seamless ?? true) : seamlessMode === 'on';
 }
@@ -956,15 +961,20 @@ export class Creature {
       const k = this.settingsFor(style);
       const minR = Math.min(...joined.map(radius));
       const lowPoly = style === 'lowpoly';
-      const h = lowPoly
-        ? Math.min(0.08, Math.max(0.02, (minR / 2) * (k.facets ?? 1)))
-        : Math.min(0.02, Math.max(0.006, minR / 2.5));
-      const parts: SkinPart[] = joined.map((b) => ({
-        geo: ((b.mesh!.userData.skinGeo as (() => THREE.BufferGeometry) | undefined)?.() ?? b.mesh!.userData.baseGeo) as THREE.BufferGeometry,
-        toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
-        color: new THREE.Color(s.parts[b.src].color),
-        k: Math.max(0.005, Math.min(kMax, 0.6 * radius(b))),
-      }));
+      // low-poly keeps its own parts (and fast joins) unless the setting says otherwise
+      if (lowPoly && !seamlessLowPoly) continue;
+      // low-poly is built smooth like the rest, then re-faceted to each part's own facet size
+      const h = Math.min(0.02, Math.max(0.006, minR / 2.5));
+      const parts: SkinPart[] = joined.map((b) => {
+        const geo = ((b.mesh!.userData.skinGeo as (() => THREE.BufferGeometry) | undefined)?.() ?? b.mesh!.userData.baseGeo) as THREE.BufferGeometry;
+        return {
+          geo,
+          toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
+          color: new THREE.Color(s.parts[b.src].color),
+          k: Math.max(0.005, Math.min(kMax, 0.6 * radius(b))),
+          facet: geo.userData.facet as number | undefined,
+        };
+      });
       // clay lumps go back on after the skin is built
       const lumps = style === 'clay' ? (k.lumps ?? 0) * Math.min(0.012, Math.max(0.004, minR * 0.08)) : 0;
       const geo = await buildSkin(parts, { h, colorBlend: kc, lowPoly, lumps, shouldStop: () => version !== this.skinVersion });
@@ -1014,6 +1024,7 @@ export class Creature {
     return JSON.stringify([
       s.merge ?? true,
       seamlessOn(s),
+      seamlessLowPoly,
       s.mergeRadius,
       blend,
       s.rig,
