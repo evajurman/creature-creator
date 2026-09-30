@@ -11,6 +11,7 @@ import {
   makeOutlineMaterial,
   makeStrayHairs,
   styleSettings,
+  surfaceColor,
   type StyleId,
   type FuzzSpot,
   type StyleSettings,
@@ -884,7 +885,6 @@ export class Creature {
     for (const c of mesh.children) if (c instanceof THREE.Mesh) c.geometry = g;
     const part = this.state.parts[b.src];
     const lowPoly = (part.style ?? this.state.style) === 'lowpoly';
-    const tint = painted ? new THREE.Color(1, 1, 1) : new THREE.Color(part.color);
     // body + fuzz shells (stray-hair lines keep their own per-hair colours)
     const mats = [mesh.material, ...mesh.children.filter((c) => c instanceof THREE.Mesh).map((c) => (c as THREE.Mesh).material)];
     for (const m of mats as THREE.MeshStandardMaterial[]) {
@@ -894,7 +894,11 @@ export class Creature {
         m.vertexColors = want;
         m.needsUpdate = true;
       }
-      m.color.copy(tint);
+      // back to the colour the material was made with (not the plain part
+      // colour: glass, say, is only tinted by it), or white under baked colours
+      m.userData.baseColor ??= m.color.clone();
+      if (painted) m.color.setRGB(1, 1, 1);
+      else m.color.copy(m.userData.baseColor as THREE.Color);
     }
   }
 
@@ -970,7 +974,7 @@ export class Creature {
         return {
           geo,
           toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
-          color: new THREE.Color(s.parts[b.src].color),
+          color: this.shownColor(b),
           k: Math.max(0.005, Math.min(kMax, 0.6 * radius(b))),
           facet: geo.userData.facet as number | undefined,
         };
@@ -1048,7 +1052,7 @@ export class Creature {
     const kc = s.mergeColors ? (s.colorBlend ?? 0.12) : 0;
 
     // repaint only if the colours (or the fade width) changed
-    sk.parts.forEach((p, i) => p.color.set(s.parts[sk.members[i].src].color));
+    sk.parts.forEach((p, i) => p.color.copy(this.shownColor(sk.members[i])));
     const colorKey = JSON.stringify([sk.parts.map((p) => p.color.getHex()), kc]);
     if (colorKey !== sk.colorKey) {
       sk.painted = paintSkin(sk.mesh.geometry, sk.parts, kc, sk.lowPoly);
@@ -1113,6 +1117,13 @@ export class Creature {
     }
   }
 
+  /** A part's colour as its material shows it (see surfaceColor). */
+  private shownColor(b: BoneRT): THREE.Color {
+    const p = this.state.parts[b.src];
+    const style = p.style ?? this.state.style;
+    return surfaceColor(style, p.color, this.settingsFor(style));
+  }
+
   private near(a: BoneRT, b: BoneRT, k: number): boolean {
     const ga = a.mesh!.userData.baseGeo as THREE.BufferGeometry;
     const gb = b.mesh!.userData.baseGeo as THREE.BufferGeometry;
@@ -1133,7 +1144,10 @@ export class Creature {
       return m * Math.min(1, sol.thickness);
     };
     const rA = maxR(solidA);
-    const own = new THREE.Color(this.state.parts[b.src].color);
+    const own = this.shownColor(b);
+    // Colour fades are measured a bit wider than asked (up to the slider's
+    // top), so dragging the fade slider only redoes colours, not the shape.
+    const reach = kc > 0 ? Math.max(kc, Math.min(0.4, 2 * kc)) : 0;
 
     const toWorld = b.mesh!.matrixWorld;
     const toLocal = toWorld.clone().invert();
@@ -1155,8 +1169,8 @@ export class Creature {
         k,
         inv,
         rot: new THREE.Matrix3().setFromMatrix4(o.mesh!.matrixWorld),
-        box: g.boundingBox!.clone().expandByScalar(Math.max(k, kc)),
-        color: new THREE.Color(this.state.parts[o.src].color),
+        box: g.boundingBox!.clone().expandByScalar(Math.max(k, reach)),
+        color: this.shownColor(o),
         // same-coloured neighbours don't tint
         tints: kc > 0 && colorKey !== myKey,
       };
@@ -1178,6 +1192,36 @@ export class Creature {
     const grad = new THREE.Vector3(), gw = new THREE.Vector3(), gsum = new THREE.Vector3();
     const col = new THREE.Color();
 
+    // What the fused shape depends on: if only the colour fade changed since
+    // last time, just repaint from the remembered distances.
+    const r6 = (v: number) => v.toFixed(6);
+    const shapeKey = [
+      base.uuid, kMax, ...toWorld.elements.map(r6),
+      ...nbrs.flatMap((o) => [o.def.id, (o.mesh!.userData.baseGeo as THREE.BufferGeometry).uuid, ...o.mesh!.matrixWorld.elements.map(r6)]),
+    ].join(',');
+    const cache = out.userData.fade as { key: string; reach: number; f: Float32Array } | undefined;
+    const n = others.length;
+    const paint = (i: number, fAt: (j: number) => number) => {
+      col.copy(own);
+      for (let j = 0; j < n; j++) {
+        const o = others[j];
+        const f = fAt(j);
+        if (o.tints && f < kc) {
+          // 50/50 at the seam, fading to our own colour kc away from it
+          const t = Math.min(1, Math.max(0, 1 - f / kc));
+          col.lerp(o.color, 0.5 * t * t * (3 - 2 * t));
+        }
+      }
+      const jv = jitter ? jitter.getX(i) : 1;
+      c1!.setXYZ(i, col.r * jv, col.g * jv, col.b * jv);
+    };
+    if (kc > 0 && c1 && cache?.key === shapeKey && kc <= cache.reach) {
+      for (let i = 0; i < p0.count; i++) paint(i, (j) => cache.f[i * n + j]);
+      c1.needsUpdate = true;
+      return;
+    }
+    const fs = kc > 0 ? new Float32Array(p0.count * n).fill(Infinity) : null;
+
 
     for (let i = 0; i < p0.count; i++) {
       pw.fromBufferAttribute(p0, i).applyMatrix4(toWorld);
@@ -1186,17 +1230,13 @@ export class Creature {
       let d = 0;
       gsum.copy(nw);
       let touched = false;
-      col.copy(own);
-      for (const o of others) {
+      for (let j = 0; j < n; j++) {
+        const o = others[j];
         q.copy(pw).applyMatrix4(o.inv);
         if (!o.box.containsPoint(q)) continue;
         // exact signed distance to the neighbour's real surface, so both sides build the same fillet
-        const f = exactDistance(o.geo, o.bvh, o.normals, q, Math.max(o.k, kc), grad);
-        if (o.tints && f < kc) {
-          // 50/50 at the seam, fading to our own colour kc away from it
-          const t = Math.min(1, Math.max(0, 1 - f / kc));
-          col.lerp(o.color, 0.5 * t * t * (3 - 2 * t));
-        }
+        const f = exactDistance(o.geo, o.bvh, o.normals, q, Math.max(o.k, reach), grad);
+        if (fs) fs[i * n + j] = f;
         if (f >= o.k) continue;
         gw.copy(grad).applyMatrix3(o.rot).normalize();
         const h = Math.min(1, Math.max(0, 0.5 + (0.5 * (f - d)) / o.k));
@@ -1205,9 +1245,11 @@ export class Creature {
         touched = true;
       }
       if (c1) {
-        const j = jitter ? jitter.getX(i) : 1;
-        if (kc > 0) c1.setXYZ(i, col.r * j, col.g * j, col.b * j);
-        else c1.setXYZ(i, j, j, j);
+        if (fs) paint(i, (j) => fs[i * n + j]);
+        else {
+          const jv = jitter ? jitter.getX(i) : 1;
+          c1.setXYZ(i, jv, jv, jv);
+        }
       }
       if (!touched) {
         p1.setXYZ(i, p0.getX(i), p0.getY(i), p0.getZ(i));
@@ -1231,6 +1273,7 @@ export class Creature {
     p1.needsUpdate = true;
     n1.needsUpdate = true;
     if (c1) c1.needsUpdate = true;
+    out.userData.fade = fs ? { key: shapeKey, reach, f: fs } : undefined;
     out.computeBoundingSphere();
   }
 
@@ -1499,7 +1542,8 @@ function eyeMaterial(finish: EyeFinish, color: string, headStyle: StyleId, headS
       // a coloured glass marble: strong tint so the colour reads
       return makeMaterial('glass', color, { ...styleSettings('glass'), ...(headStyle === 'glass' ? headSettings : {}), tint: 0.85 });
     default:
-      return makeMaterial(headStyle, color, headSettings);
+      // glass: tinted strongly, or a dark eye colour barely shows through clear glass
+      return makeMaterial(headStyle, color, headStyle === 'glass' ? { ...headSettings, tint: Math.max(headSettings.tint, 0.85) } : headSettings);
   }
 }
 

@@ -523,6 +523,55 @@ function dropSpecks(index: number[], vertexCount: number): number[] {
   return out;
 }
 
+interface FadeDistances {
+  /** how far out they were measured */
+  reach: number;
+  /** vertex v's entries are start[v] .. start[v + 1] */
+  start: Int32Array;
+  part: Uint16Array;
+  d: Float32Array;
+}
+
+/**
+ * Each skin vertex's distance to every part near it, remembered on the skin
+ * (measured a bit wider than needed, up to the fade slider's top), so moving
+ * the colour-fade slider only redoes the colours, not the distance queries.
+ */
+function fadeDistances(geo: THREE.BufferGeometry, parts: SkinPart[], need: number): FadeDistances {
+  const cached = geo.userData.fade as FadeDistances | undefined;
+  if (cached && cached.reach >= need) return cached;
+  const reach = Math.max(need, Math.min(0.8, 2 * need));
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  const prepared = parts.map((p) => ({
+    p,
+    bvh: bvhFor(p.geo),
+    normals: sharedNormals(p.geo),
+    fromSkin: p.toSkin.clone().invert(),
+    box: p.geo.boundingBox!.clone().applyMatrix4(p.toSkin).expandByScalar(reach),
+  }));
+  const start = new Int32Array(pos.count + 1);
+  const part: number[] = [];
+  const dist: number[] = [];
+  const pt = new THREE.Vector3(), q = new THREE.Vector3(), grad = new THREE.Vector3();
+  for (let v = 0; v < pos.count; v++) {
+    start[v] = part.length;
+    pt.fromBufferAttribute(pos, v);
+    for (let i = 0; i < prepared.length; i++) {
+      const pp = prepared[i];
+      if (!pp.box.containsPoint(pt)) continue;
+      q.copy(pt).applyMatrix4(pp.fromSkin);
+      const d = exactDistance(pp.p.geo, pp.bvh, pp.normals, q, reach, grad);
+      if (!Number.isFinite(d)) continue;
+      part.push(i);
+      dist.push(d);
+    }
+  }
+  start[pos.count] = part.length;
+  const out = { reach, start, part: Uint16Array.from(part), d: Float32Array.from(dist) };
+  geo.userData.fade = out;
+  return out;
+}
+
 /**
  * (Re)colour a skin: blended part colours near the seams (when blending and
  * the colours differ) and per-facet shading for low-poly. Returns whether
@@ -541,39 +590,29 @@ export function paintSkin(geo: THREE.BufferGeometry, parts: SkinPart[], colorBle
 
   if (blend) {
     const kc = colorBlend;
-    const prepared = parts.map((p) => ({
-      p,
-      bvh: bvhFor(p.geo),
-      normals: sharedNormals(p.geo),
-      fromSkin: p.toSkin.clone().invert(),
-      box: p.geo.boundingBox!.clone().applyMatrix4(p.toSkin).expandByScalar(2 * kc),
-    }));
-    const pt = new THREE.Vector3(), q = new THREE.Vector3(), grad = new THREE.Vector3();
+    const fade = fadeDistances(geo, parts, 2 * kc);
     const c = new THREE.Color();
     for (let v = 0; v < n; v++) {
-      pt.fromBufferAttribute(pos, v);
       let wsum = 0;
       c.setRGB(0, 0, 0);
       let nearest = 0, nearestD = Infinity;
-      for (let i = 0; i < prepared.length; i++) {
-        const pp = prepared[i];
-        if (!pp.box.containsPoint(pt)) continue;
-        q.copy(pt).applyMatrix4(pp.fromSkin);
-        const d = exactDistance(pp.p.geo, pp.bvh, pp.normals, q, 2 * kc, grad);
-        if (!Number.isFinite(d)) continue;
+      for (let e = fade.start[v]; e < fade.start[v + 1]; e++) {
+        const d = fade.d[e];
+        if (d >= 2 * kc) continue;
+        const pc = parts[fade.part[e]].color;
         if (d < nearestD) {
           nearestD = d;
-          nearest = i;
+          nearest = fade.part[e];
         }
         // 50/50 where two parts are equally close, each part's own colour away from the seam
         const w = 1 / (Math.max(d, 0) + 0.25 * kc) ** 2;
-        c.r += pp.p.color.r * w;
-        c.g += pp.p.color.g * w;
-        c.b += pp.p.color.b * w;
+        c.r += pc.r * w;
+        c.g += pc.g * w;
+        c.b += pc.b * w;
         wsum += w;
       }
       if (wsum > 0) c.multiplyScalar(1 / wsum);
-      else c.copy(prepared[nearest].p.color);
+      else c.copy(parts[nearest].color);
       colors[v * 3] = c.r;
       colors[v * 3 + 1] = c.g;
       colors[v * 3 + 2] = c.b;

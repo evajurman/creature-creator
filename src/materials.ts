@@ -47,7 +47,7 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
   ],
   glass: [
     { key: 'clarity', label: 'Clarity', min: 0, max: 1, step: 0.01, value: 0.97 },
-    { key: 'tint', label: 'Tint strength', min: 0, max: 1, step: 0.01, value: 0.2 },
+    { key: 'tint', label: 'Tint strength', min: 0, max: 1, step: 0.01, value: 0.7 },
     { key: 'thick', label: 'Thickness', min: 0, max: 1, step: 0.01, value: 0.08 },
     { key: 'ior', label: 'Refraction', min: 1, max: 2.2, step: 0.01, value: 1.45 },
   ],
@@ -445,6 +445,16 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * The colour a material shows for a part's colour: glass is only tinted by
+ * it (full tint strength = the plain colour). Used wherever colours get baked
+ * into a mesh (blended colours), so baking doesn't change the look.
+ */
+export function surfaceColor(style: StyleId, color: string, k: StyleSettings): THREE.Color {
+  const c = new THREE.Color(color);
+  return style === 'glass' ? new THREE.Color(1, 1, 1).lerp(c, k.tint) : c;
+}
+
 export function makeMaterial(style: StyleId, color: string, settings: StyleSettings = styleSettings(style)): THREE.Material {
   const c = new THREE.Color(color);
   const k = settings;
@@ -495,7 +505,7 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
       // real transmission: things behind and inside are refracted and tinted
       const white = new THREE.Color(1, 1, 1);
       return new THREE.MeshPhysicalMaterial({
-        color: white.clone().lerp(c, k.tint * 0.6),
+        color: surfaceColor('glass', color, k),
         metalness: 0,
         roughness: (1 - k.clarity) * 0.55,
         transmission: 1,
