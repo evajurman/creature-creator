@@ -27,6 +27,8 @@ export interface InflateOptions {
   /** strength of hand-made lumps (clay); 0 = smooth */
   lumps?: number;
   seed?: number;
+  /** holes through the shape: it puffs round each one like an inflatable ring */
+  holes?: Vec2[][];
 }
 
 // ---------------------------------------------------------------------------
@@ -190,10 +192,26 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
 
   const boundary = cleanOutline(outline, s);
   const bb = bounds(boundary);
-  const nb = boundary.length;
+  // holes run the other way round, so "left of the edge" always points into the solid;
+  // ones too small to show at this mesh size are left out
+  const holeLoops = (opts.holes ?? [])
+    .map((h) => cleanOutline(h, s).reverse())
+    .filter((h) => h.length >= 6 && Math.min(bounds(h).w, bounds(h).h) > 1.5 * s);
+  const loops = [boundary, ...holeLoops];
+  // every silhouette point, outline first: [loop start, loop length] for each
+  const edgePts: Vec2[] = loops.flat();
+  const loopOf: [number, number][] = [];
+  for (let k = 0, at = 0; k < loops.length; at += loops[k].length, k++) for (let i = 0; i < loops[k].length; i++) loopOf.push([at, loops[k].length]);
+  const nb = edgePts.length;
+  const inside = (x: number, y: number) => pointInPolygon(x, y, boundary) && !holeLoops.some((h) => pointInPolygon(x, y, h));
+  const edgeDist = (x: number, y: number) => {
+    let d = distToPolygon(x, y, boundary);
+    for (const h of holeLoops) d = Math.min(d, distToPolygon(x, y, h));
+    return d;
+  };
   const rand = mulberry32(opts.seed ?? 1234);
 
-  const pts: Vec2[] = boundary.slice();
+  const pts: Vec2[] = edgePts.slice();
   const dist: number[] = new Array(nb).fill(0);
   const isLattice: boolean[] = new Array(nb).fill(false);
 
@@ -203,16 +221,18 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
     const off = f * s;
     const accepted: Vec2[] = [];
     for (let i = 0; i < nb; i++) {
-      const a = boundary[(i - 1 + nb) % nb];
-      const b = boundary[(i + 1) % nb];
+      const [start, len] = loopOf[i];
+      const j = i - start;
+      const a = edgePts[start + ((j - 1 + len) % len)];
+      const b = edgePts[start + ((j + 1) % len)];
       let tx = b[0] - a[0];
       let ty = b[1] - a[1];
       const tl = Math.hypot(tx, ty) || 1;
       tx /= tl;
       ty /= tl;
-      const p: Vec2 = [boundary[i][0] - ty * off, boundary[i][1] + tx * off];
-      if (!pointInPolygon(p[0], p[1], boundary)) continue;
-      const d = distToPolygon(p[0], p[1], boundary);
+      const p: Vec2 = [edgePts[i][0] - ty * off, edgePts[i][1] + tx * off];
+      if (!inside(p[0], p[1])) continue;
+      const d = edgeDist(p[0], p[1]);
       if (d < off * 0.8) continue;
       const min2 = (0.35 * s) ** 2;
       if (accepted.some((q) => (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 < min2)) continue;
@@ -235,8 +255,8 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
       const shift = row % 2 ? step / 2 : 0;
       const x0 = cx + shift - Math.ceil((cx + shift - bb.minX) / step) * step;
       for (let x = x0; x <= bb.maxX; x += step) {
-        if (!pointInPolygon(x, y, boundary)) continue;
-        const d = distToPolygon(x, y, boundary);
+        if (!inside(x, y)) continue;
+        const d = edgeDist(x, y);
         if (d >= minDist) out.push([x, y, d]);
       }
     }
@@ -286,17 +306,15 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   for (let k = 0; k < t.length; k += 3) {
     let a = t[k], b = t[k + 1], c = t[k + 2];
     const [ax, ay] = pts[a], [bx, by] = pts[b], [cx2, cy2] = pts[c];
-    // An outline edge's midpoint lies exactly on the boundary, so only test chords.
-    const isOutlineEdge = (i: number, j: number) =>
-      i < nb && j < nb && (Math.abs(i - j) === 1 || Math.abs(i - j) === nb - 1);
-    const midInside = (i: number, j: number) =>
-      isOutlineEdge(i, j) || pointInPolygon((pts[i][0] + pts[j][0]) / 2, (pts[i][1] + pts[j][1]) / 2, boundary);
-    const inside =
-      pointInPolygon((ax + bx + cx2) / 3, (ay + by + cy2) / 3, boundary) &&
-      midInside(a, b) &&
-      midInside(b, c) &&
-      midInside(c, a);
-    if (!inside) continue;
+    // An outline (or hole) edge's midpoint lies exactly on the silhouette, so only test chords.
+    const isOutlineEdge = (i: number, j: number) => {
+      if (i >= nb || j >= nb || loopOf[i][0] !== loopOf[j][0]) return false;
+      const d = Math.abs(i - j);
+      return d === 1 || d === loopOf[i][1] - 1;
+    };
+    const midInside = (i: number, j: number) => isOutlineEdge(i, j) || inside((pts[i][0] + pts[j][0]) / 2, (pts[i][1] + pts[j][1]) / 2);
+    const keep = inside((ax + bx + cx2) / 3, (ay + by + cy2) / 3) && midInside(a, b) && midInside(b, c) && midInside(c, a);
+    if (!keep) continue;
     const cross = (bx - ax) * (cy2 - ay) - (by - ay) * (cx2 - ax);
     if (Math.abs(cross) < 1e-12) continue;
     if (cross < 0) [b, c] = [c, b];

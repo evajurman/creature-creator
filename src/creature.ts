@@ -1153,6 +1153,8 @@ export class Creature {
       const toSkin = this.group.matrixWorld.clone().invert().multiply(head.mesh.matrixWorld);
       const v = new THREE.Vector3();
       setFuzzMask(mesh, this.eyeSpots.map((sp) => (v.set(sp.x, sp.y, sp.z).applyMatrix4(toSkin), { x: v.x, y: v.y, z: v.z, r: sp.r })));
+    } else {
+      setFuzzMask(mesh, []);
     }
   }
 
@@ -1342,6 +1344,8 @@ export class Creature {
     this.eyes = new THREE.Group();
     // felt: clear fuzz from under the eyes (reset first; refilled below)
     for (const b of this.list) if (b.mesh) setFuzzMask(b.mesh, []);
+    // the seamless skin reads these too: no eyes, no bare patches
+    this.eyeSpots = [];
     if (!head || !head.mesh || !e.enabled) return;
     head.pivot.add(this.eyes);
     const spots: FuzzSpot[] = [];

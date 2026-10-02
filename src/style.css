@@ -469,3 +469,20 @@ details.fine[open] > summary { margin-bottom: 6px; }
 .load-actions button { flex: 1; }
 .load-actions button:disabled { opacity: .45; cursor: default; }
 .load-list[hidden], .load-all[hidden] { display: none; }
+.dim-toggle { display: flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--bg); margin-left: 4px; }
+.dim-toggle .seg-btn { padding: 4px 10px; }
+#piece-flat[hidden] { display: none; }
+
+/* ---- Stuff: one row per piece, with redraw and delete on the right ---- */
+#pieces { display: flex; flex-direction: column; gap: 4px; }
+.piece-row {
+  display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--bg);
+}
+.piece-row.active { background: var(--ink); border-color: var(--ink); }
+.piece-row button { border: 0; background: transparent; cursor: pointer; font-weight: 700; font-size: 13px; color: inherit; }
+.piece-row.active button { color: #fff; }
+.piece-pick { flex: 1; display: flex; align-items: center; gap: 6px; padding: 5px 8px; text-align: left; border-radius: 8px; }
+.piece-pick i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); flex: none; }
+.piece-icon { width: 30px; height: 28px; border-radius: 8px; display: grid; place-items: center; opacity: .7; }
+.piece-icon:hover { opacity: 1; background: rgba(127,127,127,.18); }

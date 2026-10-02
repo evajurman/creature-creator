@@ -208,11 +208,6 @@
             <label class="color-pick"><input id="piece-color" type="color" /> Custom</label>
             <div class="mini-styles" id="piece-styles"></div>
             <div class="thing-material" id="piece-style-params"></div>
-            <div class="row">
-              <button id="piece-hole" class="ghost" title="Draw a hole through this piece (flat pieces)">◌ Cut a hole</button>
-              <button id="piece-clear-holes" class="ghost">Fill holes</button>
-              <button id="piece-del" class="ghost">🗑 Delete</button>
-            </div>
           </div>
 
           <div class="row thing-actions-row" id="thing-actions">
@@ -265,6 +260,11 @@
           <button data-piece="translate" class="seg-btn" title="Slide this piece anywhere on the board (W)">✥ Move</button>
           <button data-piece="rotate" class="seg-btn" title="Turn this piece (E)">⟳ Rotate</button>
           <button data-piece="scale" class="seg-btn" title="Make this piece bigger, smaller, wider or taller (R)">⤢ Scale</button>
+          <span class="dim-toggle">
+            <button data-dim="2d" class="seg-btn" title="Keep the piece flat on the board">2D</button>
+            <button data-dim="3d" class="seg-btn" title="Lift the piece off the board and tilt it any way">3D</button>
+          </span>
+          <button id="piece-flat" class="seg-btn" title="Put this piece back down flat on the board" hidden>⤓ Lay flat</button>
         </div>
         <div id="attach-bar" class="draw-bar attach-bar" hidden>
           <span id="attach-name" class="attach-name"></span>

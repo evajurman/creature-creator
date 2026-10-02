@@ -43,6 +43,16 @@ export interface Piece {
   style: StyleId;
   /** layer offset along Z (in front of / behind other pieces) */
   z: number;
+  /**
+   * 3D: where this piece's drawing plane sits in the thing, tilted or lifted
+   * off the board. Absent = flat on the board like it was drawn.
+   */
+  place?: PiecePlace;
+}
+
+export interface PiecePlace {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
 }
 
 export interface Thing {
@@ -109,7 +119,7 @@ export function pieceGeometry(p: Piece): THREE.BufferGeometry {
 
   let g: THREE.BufferGeometry;
   if (p.kind === 'puffy') {
-    g = buildInflatedGeometry(p.outline, { thickness: p.thickness, lowPoly: p.style === 'lowpoly', lumps: p.style === 'clay' ? 1 : 0 });
+    g = buildInflatedGeometry(p.outline, { thickness: p.thickness, lowPoly: p.style === 'lowpoly', lumps: p.style === 'clay' ? 1 : 0, holes: p.holes });
   } else if (p.kind === 'turned') {
     g = turnedGeometry(p);
     if (p.style === 'lowpoly') {
@@ -174,7 +184,8 @@ export function buildThing(thing: Thing, wearer: Wearer, unit = 1): THREE.Group 
     const { style, k } = pieceLook(thing, raw, wearer);
     // low-poly and clay shape the mesh itself
     const p = style === raw.style ? raw : { ...raw, style };
-    const geo = bend ? bentGeometry(pieceGeometry(p), bend) : pieceGeometry(p);
+    // bending curves the board; pieces lifted off it in 3D keep their shape
+    const geo = bend && !p.place ? bentGeometry(pieceGeometry(p), bend) : pieceGeometry(p);
     const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
     // soft (VSM) shadows draw receivers into the shadow map too: a glass jar
     // would block the light from whatever's inside it
@@ -193,6 +204,10 @@ export function buildThing(thing: Thing, wearer: Wearer, unit = 1): THREE.Group 
       if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, 7, k.hairs * 0.6, false, unit));
     }
     setOpacity(mesh, p.opacity ?? 1);
+    if (p.place) {
+      mesh.position.set(...p.place.position);
+      mesh.quaternion.set(...p.place.quaternion);
+    }
     group.add(mesh);
   }
   return group;
@@ -215,7 +230,7 @@ function thingBend(thing: Thing): ThingBend | null {
   const mode = thing.bendMode ?? 'axis';
   // at full bend the farthest edge has turned a quarter circle
   let reach = 0;
-  for (const p of thing.pieces) for (const [x, y] of p.outline) reach = Math.max(reach, mode === 'axis' ? Math.abs(x) : Math.hypot(x, y));
+  for (const p of thing.pieces) if (!p.place) for (const [x, y] of p.outline) reach = Math.max(reach, mode === 'axis' ? Math.abs(x) : Math.hypot(x, y));
   if (reach < 1e-4) return null;
   return { mode, r: reach / (amount * (Math.PI / 2)) };
 }

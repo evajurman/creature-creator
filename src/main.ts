@@ -896,7 +896,15 @@ canvas.addEventListener('pointerup', (e) => {
 });
 
 canvas.addEventListener('dblclick', (e) => {
-  if (mode === 'stuff') return;
+  if (mode === 'stuff') {
+    const id = drawState ? null : pickPiece(e.clientX, e.clientY);
+    if (id) {
+      selectedPiece = id;
+      renderStuffPanel();
+      enterDraw({ kind: 'piece', redraw: id });
+    }
+    return;
+  }
   const other = pickOtherCreature(e.clientX, e.clientY);
   if (other) activate(other.index);
   const id = pickPart(e.clientX, e.clientY);
@@ -1105,8 +1113,8 @@ function focusOnBone(b: BoneRT) {
 // ---------------------------------------------------------------------------
 // drawing
 
-/** What a stroke is for: a body part's outline, or a piece (or hole) on the stuff workbench. */
-type DrawTarget = { kind: 'bone'; boneId: string } | { kind: 'piece'; hole: boolean };
+/** What a stroke is for: a body part's outline, or a piece on the stuff workbench (new, or one being redrawn). */
+type DrawTarget = { kind: 'bone'; boneId: string } | { kind: 'piece'; redraw?: string };
 /** What dragging on the drawing does once there's a shape: add to it, cut from it, or move, resize or turn it. */
 type DrawTool = 'draw' | 'erase' | 'move' | 'scale' | 'rotate';
 type ShapeKind = 'square' | 'triangle' | 'circle';
@@ -1188,8 +1196,7 @@ function drawHint() {
   // how to look around while the drawing layer is in the way
   const nav = ' · Right-drag or Space+drag to pan, F to face it again';
   if (target.kind === 'piece') {
-    const what = target.hole ? 'a hole inside the selected piece' : 'a piece';
-    hint((symOn() ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`) + nav, 0);
+    hint((symOn() ? 'Draw a piece: across the dashed line = one symmetric shape, to one side = a mirrored pair' : 'Draw a piece as one closed loop. Erase inside it to make holes') + nav, 0);
     return;
   }
   hint((symOn() ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`) + nav, 0);
@@ -1227,10 +1234,20 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
     for (const c of creatures) if (c !== creature) c.root.visible = false;
     focusOnBone(b);
   } else {
-    drawState = { target, frame: board, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null };
+    // a piece lifted off the board is redrawn on its own plane
+    const own = target.redraw ? piece() : undefined;
+    const lifted = own?.place;
+    const frame = lifted ? framePiece(own!) : board;
+    drawState = { target, frame, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null };
+    if (target.redraw && own) {
+      // start from the shape as it is: draw to add, erase to cut, or move, size and turn it
+      drawState.pending = [structuredClone(own.outline)];
+      drawState.holes = structuredClone(own.holes);
+    }
     // pieces are drawn flat: show the thing unbent meanwhile
     syncWorkbench();
-    focusOnBoard();
+    if (lifted) focusOnPlane(frame);
+    else focusOnBoard();
   }
   overlay.classList.add('active');
   $('#draw-bar').hidden = false;
@@ -1465,9 +1482,9 @@ function applyLoops(ds: DrawState, loops: Vec2[][], cut: boolean) {
   }
   let outers = res.outers;
   let holes = res.holes;
-  if (ds.target.kind === 'bone' || ds.target.hole) {
-    // a body part (or a hole) is one solid loop: keep the biggest piece
-    if (outers.length > 1 || holes.length) hint(ds.target.kind === 'bone' ? 'A body part is one solid shape: kept the biggest piece' : 'Kept the biggest piece of the hole', 2200);
+  if (ds.target.kind === 'bone') {
+    // a body part is one solid loop: keep the biggest piece
+    if (outers.length > 1 || holes.length) hint('A body part is one solid shape: kept the biggest piece', 2200);
     outers = outers.slice(0, 1);
     holes = [];
   }
@@ -1533,7 +1550,7 @@ function mergeOverlaps(ds: DrawState) {
   // boxes can overlap without the shapes touching: then leave them be
   if (res.outers.length >= loops.length) return;
   ds.pending = res.outers;
-  ds.holes = ds.target.kind === 'piece' && !ds.target.hole ? res.holes : [];
+  ds.holes = ds.target.kind === 'piece' ? res.holes : [];
   previewPending();
 }
 
@@ -1639,8 +1656,12 @@ function finishDraw() {
   const ds = drawState;
   if (!ds?.pending) return;
   const loops = pendingLoops(ds);
+  if (ds.target.kind === 'piece' && ds.target.redraw) {
+    replacePiece(ds.target.redraw, pendingPieces(ds));
+    return;
+  }
   if (ds.target.kind === 'piece') {
-    addPieces(ds.target.hole ? loops : pendingPieces(ds), ds.target.hole);
+    addPieces(pendingPieces(ds));
     return;
   }
   const b = creature.bones.get(ds.target.boneId)!;
@@ -1949,14 +1970,16 @@ function benchThing(): Thing {
   const ds = drawState;
   if (!ds || ds.target.kind !== 'piece') return wb;
   const shown: Thing = { ...wb, bend: 0 };
+  const redraw = ds.target.redraw;
+  if (redraw) {
+    shown.pieces = wb.pieces.flatMap((p) =>
+      p.id !== redraw ? [p] : pendingPieces(ds).map((pp, i) => ({ ...p, outline: pp.outline, holes: pp.holes, id: i ? `preview${i}` : p.id })),
+    );
+    return shown;
+  }
   if (!ds.pending) return shown;
   const target = piece();
-  if (!ds.target.hole) {
-    shown.pieces = [...wb.pieces, ...pendingPieces(ds).map((pp, i) => ({ ...newPiece(pp.outline, target), holes: pp.holes, id: `preview${i}` }))];
-  } else if (target?.kind === 'flat') {
-    const loops = pendingLoops(ds);
-    shown.pieces = wb.pieces.map((p) => (p === target ? { ...p, holes: [...p.holes, ...holesInside(p, loops)] } : p));
-  }
+  shown.pieces = [...wb.pieces, ...pendingPieces(ds).map((pp, i) => ({ ...newPiece(pp.outline, target), holes: pp.holes, id: `preview${i}` }))];
   return shown;
 }
 
@@ -1984,11 +2007,14 @@ function syncWorkbench() {
 }
 
 // ---- moving, turning and resizing a piece after it's drawn ----
-// The selected piece is wrapped in a pivot at its middle, so it turns and
-// grows about itself; letting go bakes the move into its outline.
+// The selected piece is wrapped in a pivot at its middle (inside a holder
+// that carries its 3D placement), so it turns and grows about itself.
+// 2D keeps it flat on its own plane and bakes the change into its outline;
+// 3D lifts and tilts the plane itself, leaving the drawing as it is.
 
 type PieceMode = 'translate' | 'rotate' | 'scale';
 let pieceMode: PieceMode = 'translate';
+let pieceDim: '2d' | '3d' = '2d';
 let piecePivot: THREE.Group | null = null;
 
 function refreshPieceGizmo() {
@@ -2001,20 +2027,27 @@ function refreshPieceGizmo() {
     return;
   }
   // still wrapped round this piece's current mesh: nothing to do
-  if (piecePivot && piecePivot.parent === bench && piecePivot.userData.pieceId === p.id && gizmo.object === piecePivot) {
+  if (piecePivot && piecePivot.parent?.parent === bench && piecePivot.userData.pieceId === p.id && gizmo.object === piecePivot) {
     setPieceMode(pieceMode);
     return;
   }
   const mesh = bench!.children.find((m) => m.userData.pieceId === p.id);
   if (!mesh) return;
   const b = bounds(p.outline);
+  const c = new THREE.Vector2((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+  // holder = the piece's plane in the thing; pivot = its middle on that plane
+  const holder = new THREE.Group();
+  holder.position.copy(mesh.position);
+  holder.quaternion.copy(mesh.quaternion);
   const pivot = new THREE.Group();
   pivot.userData.pieceId = p.id;
-  pivot.userData.center = new THREE.Vector2((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
-  pivot.position.set((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, 0);
-  bench!.add(pivot);
+  pivot.userData.center = c;
+  pivot.position.set(c.x, c.y, 0);
+  bench!.add(holder);
+  holder.add(pivot);
   pivot.add(mesh);
-  mesh.position.set(-pivot.position.x, -pivot.position.y, 0);
+  mesh.position.set(-c.x, -c.y, 0);
+  mesh.quaternion.identity();
   piecePivot = pivot;
   gizmo.attach(pivot);
   setPieceMode(pieceMode);
@@ -2022,51 +2055,107 @@ function refreshPieceGizmo() {
 }
 
 function setPieceMode(m: PieceMode) {
-  // a turned piece is spun round the centre line: it can only slide up and down, or grow
-  const turned = piece()?.kind === 'turned';
-  if (turned && m === 'rotate') m = 'translate';
+  const p = piece();
+  // flat, a turned piece is spun round the centre line: it can only slide up and down, or grow
+  const turned2d = p?.kind === 'turned' && pieceDim === '2d';
+  if (turned2d && m === 'rotate') m = 'translate';
   pieceMode = m;
   gizmo.setMode(m);
   gizmo.setSpace('local');
-  // everything happens in the drawing's own plane
-  gizmo.showX = m === 'scale' || (m === 'translate' && !turned);
-  gizmo.showY = m !== 'rotate';
-  gizmo.showZ = m === 'rotate';
+  if (pieceDim === '3d' && m !== 'scale') {
+    gizmo.showX = gizmo.showY = gizmo.showZ = true;
+  } else {
+    // everything happens in the piece's own plane (resizing always does)
+    gizmo.showX = m === 'scale' || (m === 'translate' && !turned2d);
+    gizmo.showY = m !== 'rotate';
+    gizmo.showZ = m === 'rotate';
+  }
   document.querySelectorAll<HTMLButtonElement>('#piece-bar [data-piece]').forEach((b) => {
     b.classList.toggle('on', b.dataset.piece === m);
-    if (b.dataset.piece === 'rotate') b.disabled = turned;
+    if (b.dataset.piece === 'rotate') b.disabled = turned2d;
   });
+  document.querySelectorAll<HTMLButtonElement>('#piece-bar [data-dim]').forEach((b) => b.classList.toggle('on', b.dataset.dim === pieceDim));
+  $('#piece-flat').hidden = !p?.place;
+  invalidate();
 }
 
-/** Make the gizmo's move permanent: run the outline (and holes) through it. */
+function setPieceDim(d: '2d' | '3d') {
+  pieceDim = d;
+  setPieceMode(pieceMode);
+  if (d === '3d') hint('3D: lift pieces off the board and tilt them any way', 2200);
+}
+
+/** Make the gizmo's change permanent. */
 function bakePiece() {
   const p = piece();
   const pivot = piecePivot;
-  if (!p || !pivot || pivot.userData.pieceId !== p.id) return;
+  const holder = pivot?.parent;
+  if (!p || !pivot || !holder || pivot.userData.pieceId !== p.id) return;
   pivot.updateMatrix();
+  holder.updateMatrix();
   const c = pivot.userData.center as THREE.Vector2;
   if (pivot.matrix.equals(new THREE.Matrix4().makeTranslation(c.x, c.y, 0))) return;
-  const v = new THREE.Vector3();
-  const r = (n: number) => Math.round(n * 1e4) / 1e4;
-  const move = ([x, y]: Vec2): Vec2 => {
-    v.set(x - c.x, y - c.y, 0).applyMatrix4(pivot.matrix);
-    return [r(v.x), r(v.y)];
-  };
-  // a flip (negative size) turns the outline inside out: keep its direction
-  const flip = pivot.scale.x * pivot.scale.y < 0;
-  const fix = (l: Vec2[]) => (flip ? l.map(move).reverse() : l.map(move));
-  p.outline = fix(p.outline);
-  p.holes = p.holes.map(fix);
-  // rebuilt from the new outline; the gizmo wraps the new mesh
+  const r = (n: number, k = 1e4) => Math.round(n * k) / k;
+  if (pieceDim === '3d' && pieceMode !== 'scale') {
+    // 3D: move the piece's plane; its drawing stays as drawn
+    const m = holder.matrix.clone().multiply(pivot.matrix).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, 0));
+    const pos = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    m.decompose(pos, q, new THREE.Vector3());
+    const flat = pos.lengthSq() < 1e-8 && Math.abs(q.w) > 1 - 1e-9;
+    if (flat) delete p.place;
+    else p.place = { position: pos.toArray().map((v) => r(v)) as [number, number, number], quaternion: q.toArray().map((v) => r(v, 1e6)) as [number, number, number, number] };
+  } else {
+    // 2D (and resizing): run the outline and holes through the move, on the piece's own plane
+    const v = new THREE.Vector3();
+    const move = ([x, y]: Vec2): Vec2 => {
+      v.set(x - c.x, y - c.y, 0).applyMatrix4(pivot.matrix);
+      return [r(v.x), r(v.y)];
+    };
+    // a flip (negative size) turns the outline inside out: keep its direction
+    const flip = pivot.scale.x * pivot.scale.y < 0;
+    const fix = (l: Vec2[]) => (flip ? l.map(move).reverse() : l.map(move));
+    p.outline = fix(p.outline);
+    p.holes = p.holes.map(fix);
+  }
+  // rebuilt from the new shape; the gizmo wraps the new mesh
   piecePivot = null;
   syncWorkbench();
   commit();
   autosaveThing();
 }
 
+/** Put a lifted piece back down flat on the board. */
+function layPieceFlat() {
+  const p = piece();
+  if (!p?.place) return;
+  delete p.place;
+  piecePivot = null;
+  syncWorkbench();
+  commit();
+  autosaveThing();
+  hint('Back flat on the board', 1500);
+}
+
+/** A tilted piece's own plane in the scene, for cutting holes into it. */
+const pieceFrame = new THREE.Group();
+board.add(pieceFrame);
+function framePiece(p: Piece): THREE.Object3D {
+  if (!p.place) return board;
+  pieceFrame.position.set(...p.place.position);
+  pieceFrame.quaternion.set(...p.place.quaternion);
+  pieceFrame.updateMatrixWorld(true);
+  return pieceFrame;
+}
+
 document.querySelectorAll<HTMLButtonElement>('#piece-bar [data-piece]').forEach((b) => {
   b.onclick = () => setPieceMode(b.dataset.piece as PieceMode);
 });
+document.querySelectorAll<HTMLButtonElement>('#piece-bar [data-dim]').forEach((b) => {
+  b.onclick = () => setPieceDim(b.dataset.dim as '2d' | '3d');
+});
+$('#piece-flat').onclick = () => layPieceFlat();
+
 
 // ---- auto-save: the thing on the workbench is kept in My stuff as you go ----
 
@@ -2122,6 +2211,15 @@ function openOnBench(t: Thing) {
   focusOnBoard();
 }
 
+/** Look straight at a drawing plane (a tilted piece's), from the side it faces. */
+function focusOnPlane(frame: THREE.Object3D) {
+  const c = frame.getWorldPosition(new THREE.Vector3());
+  const n = new THREE.Vector3(0, 0, 1).transformDirection(frame.matrixWorld);
+  // face it from whichever side the camera is already on
+  if (n.dot(camera.position.clone().sub(c)) < 0) n.negate();
+  flyTo(c.clone().addScaledVector(n, 1.4), c);
+}
+
 function focusOnBoard() {
   const c = board.getWorldPosition(new THREE.Vector3());
   let r = 0.7;
@@ -2133,33 +2231,37 @@ function focusOnBoard() {
   flyTo(c.clone().add(new THREE.Vector3(0, 0, Math.max(1.4, dist))), c);
 }
 
-/** Done on the workbench: add the drawn pieces (with any holes erased in them), or cut the holes into the selected piece. */
-function addPieces(shapes: Vec2[][] | { outline: Vec2[]; holes: Vec2[][] }[], hole: boolean) {
+/** Done on the workbench: add the drawn pieces, with any holes erased in them. */
+function addPieces(shapes: { outline: Vec2[]; holes: Vec2[][] }[]) {
   const wb = workbench();
-  if (hole) {
-    const target = piece();
-    if (!target || target.kind !== 'flat') {
-      exitDraw();
-      hint('Holes can only be cut in a flat piece', 2200, true);
-      return;
-    }
-    const cut = holesInside(target, shapes as Vec2[][]);
-    if (!cut.length) {
-      // stay in drawing so it can be redrawn in the right place
-      hint('Draw the hole inside the selected piece', 2200, true);
-      return;
-    }
-    target.holes.push(...cut);
-  } else {
-    const made = (shapes as { outline: Vec2[]; holes: Vec2[][] }[]).map((sh) => ({ ...newPiece(sh.outline, piece()), holes: sh.holes }));
-    wb.pieces.push(...made);
-    selectedPiece = made[0].id;
-  }
+  const made = shapes.map((sh) => ({ ...newPiece(sh.outline, piece()), holes: sh.holes }));
+  wb.pieces.push(...made);
+  selectedPiece = made[0].id;
   exitDraw(true);
   syncWorkbench();
   commit();
   renderStuffPanel();
   flashPart();
+}
+
+/** Done redrawing a piece: it keeps its colour, material, kind and place, with the new outline. */
+function replacePiece(id: string, shapes: { outline: Vec2[]; holes: Vec2[][] }[]) {
+  const wb = workbench();
+  const i = wb.pieces.findIndex((p) => p.id === id);
+  if (i < 0 || !shapes.length) {
+    exitDraw();
+    return;
+  }
+  const old = wb.pieces[i];
+  const next = shapes.map((sh, k) => ({ ...structuredClone(old), outline: sh.outline, holes: sh.holes, id: k ? uid() : old.id }));
+  wb.pieces.splice(i, 1, ...next);
+  selectedPiece = old.id;
+  exitDraw(true);
+  syncWorkbench();
+  commit();
+  renderStuffPanel();
+  flashPart();
+  if (next.length > 1) hint(`Redrawn as ${next.length} pieces`, 1800);
 }
 
 function pickPiece(x: number, y: number): string | null {
@@ -2231,17 +2333,36 @@ function renderStuffPanel() {
 
   const list = $('#pieces');
   list.innerHTML = '';
+  // one row per piece: pick it, redraw it, or throw it away
   wb.pieces.forEach((p, i) => {
-    const btn = document.createElement('button');
-    btn.innerHTML = `<i style="background:${p.color}"></i>`;
-    btn.append(`${p.kind === 'flat' ? '▭' : p.kind === 'turned' ? '◎' : '⬭'} Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
-    btn.classList.toggle('active', p.id === selectedPiece);
-    btn.onclick = () => {
+    const row = document.createElement('div');
+    row.className = 'piece-row';
+    row.classList.toggle('active', p.id === selectedPiece);
+    const pick = document.createElement('button');
+    pick.className = 'piece-pick';
+    pick.innerHTML = `<i style="background:${p.color}"></i>`;
+    pick.append(`${p.kind === 'flat' ? '▭' : p.kind === 'turned' ? '◎' : '⬭'} Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
+    pick.onclick = () => {
       selectedPiece = p.id;
       flashPart();
       renderStuffPanel();
     };
-    list.append(btn);
+    const edit = document.createElement('button');
+    edit.className = 'piece-icon';
+    edit.textContent = '✏️';
+    edit.title = 'Redraw this piece: add to it, erase bits (erase inside it for a hole), or move, size and turn it. Or double-click it';
+    edit.onclick = () => {
+      selectedPiece = p.id;
+      renderStuffPanel();
+      enterDraw({ kind: 'piece', redraw: p.id });
+    };
+    const del = document.createElement('button');
+    del.className = 'piece-icon';
+    del.textContent = '✕';
+    del.title = 'Delete this piece';
+    del.onclick = () => deletePiece(p.id);
+    row.append(pick, edit, del);
+    list.append(row);
   });
   if (!wb.pieces.length) list.innerHTML = '<p class="muted small">No pieces yet: draw one to start.</p>';
   $('#thing-bend-card').hidden = !wb.pieces.length;
@@ -2266,8 +2387,6 @@ function renderStuffPanel() {
     $('#piece-round-row').hidden = p.kind !== 'flat';
     $<HTMLInputElement>('#piece-round').value = String(p.round);
     $<HTMLInputElement>('#piece-z').value = String(p.z);
-    $<HTMLButtonElement>('#piece-hole').disabled = p.kind !== 'flat';
-    $<HTMLButtonElement>('#piece-clear-holes').hidden = !p.holes.length;
     const sw = $('#piece-swatches');
     sw.innerHTML = '';
     for (const c of SWATCHES) {
@@ -2352,17 +2471,17 @@ function renderCollection() {
   }
 }
 
-$('#piece-draw').onclick = () => enterDraw({ kind: 'piece', hole: false });
-$('#piece-hole').onclick = () => enterDraw({ kind: 'piece', hole: true });
-$('#piece-clear-holes').onclick = () => updatePiece((p) => (p.holes = []));
-$('#piece-del').onclick = () => {
+$('#piece-draw').onclick = () => enterDraw({ kind: 'piece' });
+function deletePiece(id: string) {
+  if (drawState) exitDraw();
   const wb = workbench();
-  wb.pieces = wb.pieces.filter((p) => p.id !== selectedPiece);
-  selectedPiece = '';
+  wb.pieces = wb.pieces.filter((p) => p.id !== id);
+  if (selectedPiece === id) selectedPiece = '';
   syncWorkbench();
   commit();
   renderStuffPanel();
-};
+  autosaveThing();
+}
 document.querySelectorAll<HTMLButtonElement>('#piece-kind button').forEach((b) => {
   b.onclick = () =>
     updatePiece((p) => {
@@ -4371,10 +4490,11 @@ window.addEventListener('keydown', (e) => {
     if (drawState.target.kind === 'bone') {
       const b = creature.bones.get(drawState.target.boneId);
       if (b) focusOnBone(b);
-    } else focusOnBoard();
+    } else if (drawState.frame !== board) focusOnPlane(drawState.frame);
+    else focusOnBoard();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
     if (k === 'd' && mode === 'shape') enterDraw();
-    else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece', hole: false });
+    else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece' });
     else if (k === '3') setMode('stuff');
     else if (k === 'm' && mode === 'shape' && !drawState) setMirror(!rigLock);
     else if (mode === 'stuff' && piecePivot && !drawState && (k === 'w' || k === 'e' || k === 'r')) setPieceMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
