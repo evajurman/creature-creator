@@ -1145,13 +1145,19 @@ interface DrawState {
 let drawState: DrawState | null = null;
 
 const DRAW_PREFS_KEY = 'creature-creator/draw';
-const drawPrefs: { symmetry: boolean; smoothing: number } = (() => {
+// symmetry is remembered separately for body parts and for stuff (letters,
+// badges... are rarely symmetric, so stuff starts with it off)
+const drawPrefs: { symmetry: boolean; pieceSymmetry: boolean; smoothing: number } = (() => {
   try {
-    return { symmetry: true, smoothing: 0.5, ...JSON.parse(localStorage.getItem(DRAW_PREFS_KEY) ?? '{}') };
+    return { symmetry: true, pieceSymmetry: false, smoothing: 0.5, ...JSON.parse(localStorage.getItem(DRAW_PREFS_KEY) ?? '{}') };
   } catch {
-    return { symmetry: true, smoothing: 0.5 };
+    return { symmetry: true, pieceSymmetry: false, smoothing: 0.5 };
   }
 })();
+/** Is symmetry on for what's being drawn right now? */
+function symOn(): boolean {
+  return drawState?.target.kind === 'piece' ? drawPrefs.pieceSymmetry : drawPrefs.symmetry;
+}
 function saveDrawPrefs() {
   try {
     localStorage.setItem(DRAW_PREFS_KEY, JSON.stringify(drawPrefs));
@@ -1183,10 +1189,10 @@ function drawHint() {
   const nav = ' · Right-drag or Space+drag to pan, F to face it again';
   if (target.kind === 'piece') {
     const what = target.hole ? 'a hole inside the selected piece' : 'a piece';
-    hint((drawPrefs.symmetry ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`) + nav, 0);
+    hint((symOn() ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`) + nav, 0);
     return;
   }
-  hint((drawPrefs.symmetry ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`) + nav, 0);
+  hint((symOn() ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`) + nav, 0);
 
 }
 
@@ -1231,6 +1237,7 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
   syncDrawBar();
   updateSkeletonVisibility();
   drawHint();
+  refreshPieceGizmo();
 }
 
 /** Leave drawing. Unless the shape is being kept (Done), a bone's previewed outline goes back. */
@@ -1253,9 +1260,9 @@ function exitDraw(keep = false) {
 }
 
 function syncDrawBar() {
-  $<HTMLInputElement>('#sym').checked = drawPrefs.symmetry;
+  $<HTMLInputElement>('#sym').checked = symOn();
   $<HTMLInputElement>('#smooth').value = String(drawPrefs.smoothing);
-  $('#sym-label').classList.toggle('on', drawPrefs.symmetry);
+  $('#sym-label').classList.toggle('on', symOn());
   const has = !!drawState?.pending;
   $<HTMLButtonElement>('#done-draw').disabled = !has;
   $<HTMLButtonElement>('#reset-draw').disabled = !has;
@@ -1272,7 +1279,8 @@ function syncDrawBar() {
 }
 
 function toggleSymmetry() {
-  drawPrefs.symmetry = !drawPrefs.symmetry;
+  if (drawState?.target.kind === 'piece') drawPrefs.pieceSymmetry = !drawPrefs.pieceSymmetry;
+  else drawPrefs.symmetry = !drawPrefs.symmetry;
   saveDrawPrefs();
   syncDrawBar();
   drawHint();
@@ -1320,7 +1328,7 @@ function tooSmall(loop: Vec2[], minArea: number, minSize: number) {
 function boneLoops(raw: Vec2[]): Vec2[][] {
   let local = raw;
   if (local.length >= 6) {
-    if (drawPrefs.symmetry) local = symmetrize(local);
+    if (symOn()) local = symmetrize(local);
     local = smoothLoop(local, drawPrefs.smoothing);
   }
   return [local];
@@ -1329,7 +1337,7 @@ function boneLoops(raw: Vec2[]): Vec2[][] {
 /** A workbench stroke: across the centre line = one symmetric piece, off to one side = a mirrored pair. */
 function pieceLoops(raw: Vec2[]): Vec2[][] {
   let loops: Vec2[][] = [raw];
-  if (raw.length >= 6 && drawPrefs.symmetry) {
+  if (raw.length >= 6 && symOn()) {
     const crosses = raw.some((p) => p[0] > 0.01) && raw.some((p) => p[0] < -0.01);
     // a half-outline that starts and ends on the axis also means "one symmetric shape"
     const tol = Math.max(0.03, bounds(raw).w * 0.15);
@@ -1400,9 +1408,9 @@ function stampLoops(ds: DrawState): Vec2[][] {
   if (!ds.stamp || !sd) return [];
   let [cx, cy] = sd.centre;
   // right by the centre line: one symmetric shape on it, not a pair
-  if (drawPrefs.symmetry && Math.abs(cx) < sd.r * 0.3) cx = 0;
+  if (symOn() && Math.abs(cx) < sd.r * 0.3) cx = 0;
   const loop = shapeLoop(ds.stamp, cx, cy, sd.r);
-  return drawPrefs.symmetry && cx !== 0 ? [loop, mirrorLoop(loop)] : [loop];
+  return symOn() && cx !== 0 ? [loop, mirrorLoop(loop)] : [loop];
 }
 
 function placeStamp(ds: DrawState) {
@@ -1435,7 +1443,7 @@ function combineStroke(ds: DrawState, raw: Vec2[]) {
     renderOverlay();
     return;
   }
-  applyLoops(ds, drawPrefs.symmetry ? [loop, mirrorLoop(loop)] : [loop], ds.tool === 'erase');
+  applyLoops(ds, symOn() ? [loop, mirrorLoop(loop)] : [loop], ds.tool === 'erase');
 }
 
 const mirrorLoop = (l: Vec2[]) => l.map(([x, y]) => [-x, y] as Vec2).reverse();
@@ -1476,7 +1484,7 @@ function applyLoops(ds: DrawState, loops: Vec2[][], cut: boolean) {
  */
 function unite(ds: DrawState, outers: Vec2[][], holes: Vec2[][], loops: Vec2[][], cut: boolean) {
   const res = combineLoops(outers, holes, loops, cut);
-  if (ds.target.kind !== 'bone' || cut || !drawPrefs.symmetry || res.outers.length < 2) return res;
+  if (ds.target.kind !== 'bone' || cut || !symOn() || res.outers.length < 2) return res;
   const widened = loops.map(toAxis);
   const joined = combineLoops(outers, holes, widened, false);
   if (joined.outers.length < 2) return joined;
@@ -1555,17 +1563,17 @@ function transformShape(ds: DrawState, p: Vec2, keepProportions: boolean) {
   const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
   // which side of the centre line a loop is on: 1, -1, or 0 if it's across it
   const side = (l: Vec2[]) => {
-    if (!drawPrefs.symmetry) return 1;
+    if (!symOn()) return 1;
     const bb = bounds(l);
     return bb.minX < -1e-3 && bb.maxX > 1e-3 ? 0 : (bb.minX + bb.maxX) / 2 >= 0 ? 1 : -1;
   };
-  const grabSide = drawPrefs.symmetry && g.start[0] < 0 ? -1 : 1;
+  const grabSide = symOn() && g.start[0] < 0 ? -1 : 1;
   let fn: (l: Vec2[]) => Vec2[];
   if (ds.tool === 'move') {
     const dx = p[0] - g.start[0], dy = p[1] - g.start[1];
     fn = (l) => {
       const sd = side(l);
-      const mx = drawPrefs.symmetry ? dx * sd * grabSide : dx;
+      const mx = symOn() ? dx * sd * grabSide : dx;
       return l.map(([x, y]) => [r4(x + mx), r4(y + dy)] as Vec2);
     };
   } else if (ds.tool === 'scale') {
@@ -1583,7 +1591,7 @@ function transformShape(ds: DrawState, p: Vec2, keepProportions: boolean) {
       const sd = side(l);
       // a pair turns each loop about its own middle, in mirror image
       let ox = cx, oy = cy, ang = a;
-      if (drawPrefs.symmetry && sd !== 0) {
+      if (symOn() && sd !== 0) {
         const bb = bounds(l);
         ox = (bb.minX + bb.maxX) / 2;
         oy = (bb.minY + bb.maxY) / 2;
@@ -1665,7 +1673,7 @@ overlay.addEventListener('pointerdown', (e) => {
     if (!at) return;
     const bb = bounds(drawState.pending.flat());
     // with symmetry on, everything stays centred on the centre line
-    const centre: Vec2 = [drawPrefs.symmetry ? 0 : (bb.minX + bb.maxX) / 2, (bb.minY + bb.maxY) / 2];
+    const centre: Vec2 = [symOn() ? 0 : (bb.minX + bb.maxX) / 2, (bb.minY + bb.maxY) / 2];
     drawState.grab = { start: at, outers: drawState.pending, holes: drawState.holes, centre };
     hint('');
     return;
@@ -1750,7 +1758,7 @@ function renderOverlay() {
   const frame = drawState.frame;
   octx.lineJoin = octx.lineCap = 'round';
 
-  if (drawPrefs.symmetry) {
+  if (symOn()) {
     const a = localToOverlay(frame, drawState.axis[0]);
     const z = localToOverlay(frame, drawState.axis[1]);
     octx.setLineDash([10, 8]);
@@ -1813,7 +1821,7 @@ function renderOverlay() {
   const ink = erasing ? '#3a3340' : '#ff6b4a';
   const inkSoft = erasing ? 'rgba(58,51,64,' : 'rgba(255,107,74,';
 
-  if (drawPrefs.symmetry && drawState.local.length > 1) {
+  if (symOn() && drawState.local.length > 1) {
     // live preview of the mirrored half
     octx.strokeStyle = inkSoft + '.45)';
     octx.lineWidth = 3;
@@ -1835,13 +1843,13 @@ function renderOverlay() {
     octx.stroke();
     octx.setLineDash([]);
   }
-  octx.fillStyle = drawPrefs.symmetry ? 'transparent' : inkSoft + '.12)';
+  octx.fillStyle = symOn() ? 'transparent' : inkSoft + '.12)';
   octx.strokeStyle = ink;
   octx.lineWidth = 4;
   if (erasing) octx.setLineDash([8, 6]);
   octx.beginPath();
   pts.forEach(([x, y], i) => (i ? octx.lineTo(x, y) : octx.moveTo(x, y)));
-  if (!drawPrefs.symmetry) octx.fill();
+  if (!symOn()) octx.fill();
   octx.stroke();
   octx.setLineDash([]);
 }
@@ -1960,7 +1968,11 @@ function benchWearer(): Wearer {
 function syncWorkbench() {
   const thing = benchThing();
   const key = JSON.stringify([thing.pieces, thing.ownMaterial, thing.inherit, thing.materialSettings, thing.bend, thing.bendMode, state.materialSettings, state.style, getMeshDetail()]);
-  if (key === benchKey) return;
+  if (key === benchKey) {
+    refreshPieceGizmo();
+    return;
+  }
+  piecePivot = null;
   benchKey = key;
   if (bench) {
     board.remove(bench);
@@ -1968,7 +1980,93 @@ function syncWorkbench() {
   }
   bench = buildThing(thing, benchWearer());
   board.add(bench);
+  refreshPieceGizmo();
 }
+
+// ---- moving, turning and resizing a piece after it's drawn ----
+// The selected piece is wrapped in a pivot at its middle, so it turns and
+// grows about itself; letting go bakes the move into its outline.
+
+type PieceMode = 'translate' | 'rotate' | 'scale';
+let pieceMode: PieceMode = 'translate';
+let piecePivot: THREE.Group | null = null;
+
+function refreshPieceGizmo() {
+  const p = piece();
+  const on = mode === 'stuff' && !drawState && !!p && !!bench;
+  $('#piece-bar').hidden = !on;
+  if (!on) {
+    if (piecePivot && gizmo.object === piecePivot) gizmo.detach();
+    piecePivot = null;
+    return;
+  }
+  // still wrapped round this piece's current mesh: nothing to do
+  if (piecePivot && piecePivot.parent === bench && piecePivot.userData.pieceId === p.id && gizmo.object === piecePivot) {
+    setPieceMode(pieceMode);
+    return;
+  }
+  const mesh = bench!.children.find((m) => m.userData.pieceId === p.id);
+  if (!mesh) return;
+  const b = bounds(p.outline);
+  const pivot = new THREE.Group();
+  pivot.userData.pieceId = p.id;
+  pivot.userData.center = new THREE.Vector2((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+  pivot.position.set((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, 0);
+  bench!.add(pivot);
+  pivot.add(mesh);
+  mesh.position.set(-pivot.position.x, -pivot.position.y, 0);
+  piecePivot = pivot;
+  gizmo.attach(pivot);
+  setPieceMode(pieceMode);
+  $('#piece-name').textContent = `Piece ${workbench().pieces.indexOf(p) + 1}`;
+}
+
+function setPieceMode(m: PieceMode) {
+  // a turned piece is spun round the centre line: it can only slide up and down, or grow
+  const turned = piece()?.kind === 'turned';
+  if (turned && m === 'rotate') m = 'translate';
+  pieceMode = m;
+  gizmo.setMode(m);
+  gizmo.setSpace('local');
+  // everything happens in the drawing's own plane
+  gizmo.showX = m === 'scale' || (m === 'translate' && !turned);
+  gizmo.showY = m !== 'rotate';
+  gizmo.showZ = m === 'rotate';
+  document.querySelectorAll<HTMLButtonElement>('#piece-bar [data-piece]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.piece === m);
+    if (b.dataset.piece === 'rotate') b.disabled = turned;
+  });
+}
+
+/** Make the gizmo's move permanent: run the outline (and holes) through it. */
+function bakePiece() {
+  const p = piece();
+  const pivot = piecePivot;
+  if (!p || !pivot || pivot.userData.pieceId !== p.id) return;
+  pivot.updateMatrix();
+  const c = pivot.userData.center as THREE.Vector2;
+  if (pivot.matrix.equals(new THREE.Matrix4().makeTranslation(c.x, c.y, 0))) return;
+  const v = new THREE.Vector3();
+  const r = (n: number) => Math.round(n * 1e4) / 1e4;
+  const move = ([x, y]: Vec2): Vec2 => {
+    v.set(x - c.x, y - c.y, 0).applyMatrix4(pivot.matrix);
+    return [r(v.x), r(v.y)];
+  };
+  // a flip (negative size) turns the outline inside out: keep its direction
+  const flip = pivot.scale.x * pivot.scale.y < 0;
+  const fix = (l: Vec2[]) => (flip ? l.map(move).reverse() : l.map(move));
+  p.outline = fix(p.outline);
+  p.holes = p.holes.map(fix);
+  // rebuilt from the new outline; the gizmo wraps the new mesh
+  piecePivot = null;
+  syncWorkbench();
+  commit();
+  autosaveThing();
+}
+
+document.querySelectorAll<HTMLButtonElement>('#piece-bar [data-piece]').forEach((b) => {
+  b.onclick = () => setPieceMode(b.dataset.piece as PieceMode);
+});
 
 // ---- auto-save: the thing on the workbench is kept in My stuff as you go ----
 
@@ -2067,13 +2165,17 @@ function addPieces(shapes: Vec2[][] | { outline: Vec2[]; holes: Vec2[][] }[], ho
 function pickPiece(x: number, y: number): string | null {
   if (!bench) return null;
   setRay(x, y);
-  const hit = raycaster.intersectObjects(bench.children, false)[0];
-  return hit ? (hit.object.userData.pieceId as string) : null;
+  // fuzz and ink sit inside a piece's mesh, and the selected piece sits in a pivot
+  for (const hit of raycaster.intersectObjects(bench.children, true)) {
+    for (let o: THREE.Object3D | null = hit.object; o && o !== bench; o = o.parent) if (o.userData.pieceId) return o.userData.pieceId as string;
+  }
+  return null;
 }
 
 /** Glow the selected piece (k fades 1 -> 0). */
 function flashPiece(k: number) {
-  bench?.children.forEach((m) => {
+  bench?.traverse((m) => {
+    if (!m.userData.pieceId || !(m as THREE.Mesh).isMesh) return;
     const mat = (m as THREE.Mesh).material as THREE.MeshStandardMaterial;
     if (!mat || !('emissive' in mat)) return;
     if (m.userData.pieceId === selectedPiece && k > 0) mat.emissive.setRGB(1, 0.42, 0.29).multiplyScalar(0.45 * k);
@@ -2086,26 +2188,33 @@ function captureThumb(): string {
   if (!bench) return '';
   const box = new THREE.Box3().setFromObject(bench);
   if (box.isEmpty()) return '';
-  const savedPos = camera.position.clone();
-  const savedTarget = controls.target.clone();
-  const c = box.getCenter(new THREE.Vector3());
-  const r = box.getSize(new THREE.Vector3()).length() / 2;
-  camera.position.copy(c).add(new THREE.Vector3(r * 0.35, r * 0.25, r / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.1));
-  camera.lookAt(c);
+  // pictured from wherever the camera is: crop a square round the thing as it's seen now
+  camera.updateMatrixWorld();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let k = 0; k < 8; k++) {
+    const v = new THREE.Vector3(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z).project(camera);
+    const px = ((v.x + 1) / 2) * canvas.width;
+    const py = ((1 - v.y) / 2) * canvas.height;
+    x0 = Math.min(x0, px);
+    x1 = Math.max(x1, px);
+    y0 = Math.min(y0, py);
+    y1 = Math.max(y1, py);
+  }
+  const side = Math.min(Math.max(x1 - x0, y1 - y0) * 1.15, canvas.width, canvas.height);
+  const sx = THREE.MathUtils.clamp((x0 + x1) / 2 - side / 2, 0, canvas.width - side);
+  const sy = THREE.MathUtils.clamp((y0 + y1) / 2 - side / 2, 0, canvas.height - side);
   boardGrid.visible = false;
   const url = withCleanScene(() => {
     composer.render();
     const size = 160;
     const out = document.createElement('canvas');
     out.width = out.height = size;
-    const s = Math.min(canvas.width, canvas.height);
-    out.getContext('2d')!.drawImage(canvas, (canvas.width - s) / 2, (canvas.height - s) / 2, s, s, 0, 0, size, size);
+    out.getContext('2d')!.drawImage(canvas, sx, sy, side, side, 0, 0, size, size);
     return out.toDataURL('image/jpeg', 0.82);
   });
   boardGrid.visible = true;
-  camera.position.copy(savedPos);
-  controls.target.copy(savedTarget);
-  camera.lookAt(savedTarget);
+  // put the grid and handles straight back on screen
+  invalidate();
   return url;
 }
 
@@ -2185,6 +2294,7 @@ function renderStuffPanel() {
     renderThingMaterial(wb, [p.style], $('#piece-style-params'), state.style);
   }
   renderCollection();
+  refreshPieceGizmo();
 }
 
 function updatePiece(fn: (p: Piece) => void, doCommit = true) {
@@ -2337,6 +2447,7 @@ gizmo.addEventListener('dragging-changed', (e) => {
   controls.enabled = !(e as unknown as { value: boolean }).value;
 });
 gizmo.addEventListener('objectChange', () => {
+  invalidate();
   if (placing) {
     // creatures only grow or shrink evenly: whichever handle moved sets the size
     const s = creature.root.scale;
@@ -2361,6 +2472,10 @@ gizmo.addEventListener('mouseDown', () => {
   if (placing) gapBefore = floorGap();
 });
 gizmo.addEventListener('mouseUp', () => {
+  if (piecePivot && gizmo.object === piecePivot) {
+    bakePiece();
+    return;
+  }
   // a rescaled felt attachment regrows its fuzz at the new size
   if (selectedAttachment) creature.syncAttachments();
   if (placing && gizmo.mode === 'translate' && lifted()) setKeepFloor(false, true);
@@ -2378,6 +2493,7 @@ function selectAttachment(id: string) {
   if (!obj) return deselectAttachment();
   stopPlacing();
   selectedAttachment = id;
+  gizmo.showX = gizmo.showY = gizmo.showZ = true;
   gizmo.attach(obj);
   $('#attach-bar').hidden = false;
   syncAttachBar();
@@ -2424,6 +2540,7 @@ function startPlacing() {
   if (mode === 'stuff') return;
   if (selectedAttachment) deselectAttachment();
   placing = true;
+  gizmo.showX = gizmo.showY = gizmo.showZ = true;
   gizmo.attach(creature.root);
   setPlaceMode('translate');
   $('#place-bar').hidden = false;
@@ -3394,6 +3511,7 @@ function setMode(m: Mode) {
     frameCreature();
   }
   updateSkeletonVisibility();
+  refreshPieceGizmo();
   if (m === 'shape') {
     hint('Drag the orange balls to bend · the teal arrows to stretch · double-click a part to draw it', 3600);
     renderRigPanel();
@@ -4162,12 +4280,16 @@ $('#new').onclick = () => {
 /** Render one clean frame without handles or guides, then restore. */
 function withCleanScene<T>(fn: () => T): T {
   const skel = handlesVisible();
+  const helper = gizmo.getHelper();
+  const gizmoShown = helper.visible;
   creature.setSkeletonVisible(false);
   creature.flash(null, 0);
+  helper.visible = false;
   try {
     return fn();
   } finally {
     creature.setSkeletonVisible(skel);
+    helper.visible = gizmoShown;
   }
 }
 
@@ -4255,6 +4377,7 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece', hole: false });
     else if (k === '3') setMode('stuff');
     else if (k === 'm' && mode === 'shape' && !drawState) setMirror(!rigLock);
+    else if (mode === 'stuff' && piecePivot && !drawState && (k === 'w' || k === 'e' || k === 'r')) setPieceMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
     else if (selectedAttachment && (k === 'w' || k === 'e' || k === 'r')) {
       gizmo.setMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
       syncAttachBar();
@@ -4415,4 +4538,4 @@ resize();
 requestAnimationFrame(loop);
 
 // handy for poking at the scene from the dev-tools console
-if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, renderer, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, get drawState() { return drawState; }, openFile, selectAttachment } });
+if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, renderer, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, get drawState() { return drawState; }, openFile, selectAttachment, gizmo } });
