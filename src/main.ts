@@ -664,7 +664,7 @@ function fitShadows() {
 
 const raycaster = new THREE.Raycaster();
 const pointer = { downX: 0, downY: 0, moved: false };
-type DragKind = 'root' | 'start' | 'end' | 'bend' | 'len' | 'wid' | 'size';
+type DragKind = 'root' | 'start' | 'end' | 'bend' | 'len' | 'wid' | 'size' | 'roll';
 let drag: {
   id: string;
   kind: DragKind;
@@ -682,6 +682,16 @@ let drag: {
   toDef?: THREE.Matrix3;
   /** size gizmo: what it's measured against on screen, and the drawing before the drag */
   sizer?: { anchor: THREE.Vector2; reach: THREE.Vector2; outline: Vec2[] | null; meshX: Map<THREE.Mesh, number> };
+  /** roll ring: where the press was, which way on screen the ring moves as the part rolls, and how many pixels per radian */
+  roll?: {
+    start: THREE.Vector2;
+    dir: THREE.Vector2;
+    pxPerRad: number;
+    base: number;
+    /** the part (and its twin) before the drag: rest turn and pose, to keep a posed limb where it is */
+    rest: Map<string, THREE.Quaternion>;
+    pose: CreatureState['pose'];
+  };
   moved: boolean;
 } | null = null;
 
@@ -747,6 +757,19 @@ canvas.addEventListener('pointerdown', (e) => {
     toDef = new THREE.Matrix3().setFromMatrix4(b.restWorld.clone().multiply(unbent.invert()));
   }
   let sizer: NonNullable<typeof drag>['sizer'];
+  let roll: NonNullable<typeof drag>['roll'];
+  if (b && kind === 'roll') {
+    // which way the ring travels on screen as the part rolls a little (about its own length)
+    const at = h.position.clone();
+    const eps = 0.02;
+    const moved = toScreen(b.pivot, at.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), eps)).sub(toScreen(b.pivot, at));
+    const pxPerRad = moved.length() / eps;
+    // seen end-on the ring barely moves: fall back to dragging sideways
+    const visible = pxPerRad > 40;
+    const dir = visible ? moved.normalize() : new THREE.Vector2(1, 0);
+    const rest = new Map(creature.linked(id).map((l) => [l.def.id, l.restQuat.clone()] as const));
+    roll = { start: new THREE.Vector2(e.clientX, e.clientY), dir, pxPerRad: visible ? pxPerRad : 120, base: state.rig.bones.find((d) => d.id === b.def.baseId)?.roll ?? 0, rest, pose: structuredClone(state.pose) };
+  }
   if (b && (kind === 'len' || kind === 'wid' || kind === 'size')) {
     // measure the grab against the bone's base (length), its centre line (width) or both
     const at = h.position;
@@ -759,7 +782,7 @@ canvas.addEventListener('pointerdown', (e) => {
     creature.invalidateSkin();
   }
   if (kind === 'root') gapBefore = floorGap();
-  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: reshape ? JSON.stringify(state.rig) : undefined, toDef, sizer };
+  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: reshape ? JSON.stringify(state.rig) : undefined, toDef, sizer, roll };
   $('#viewport').style.cursor = 'grabbing';
 });
 
@@ -783,6 +806,32 @@ canvas.addEventListener('pointermove', (e) => {
       def.bendDir = Math.round((b.def.sideSign === -1 ? -dir : dir) * 1000) / 1000;
       creature.relayout(state.rig);
       creature.sync();
+    } else if (drag.roll) {
+      if (!drag.moved) return;
+      const b = creature.bones.get(drag.id);
+      if (!b) return;
+      const rl = drag.roll;
+      const turn = new THREE.Vector2(e.clientX, e.clientY).sub(rl.start).dot(rl.dir) / rl.pxPerRad;
+      state.rig = JSON.parse(drag.rigBase!) as RigState;
+      const def = state.rig.bones.find((d) => d.id === b.def.baseId);
+      if (!def) return;
+      // defs describe the left twin; the right one turns the other way (as with the Roll slider)
+      let r = rl.base + turn * (b.def.sideSign === -1 ? -1 : 1);
+      r = Math.atan2(Math.sin(r), Math.cos(r));
+      def.roll = Math.round(r * 1000) / 1000;
+      creature.relayout(state.rig);
+      // a pose is kept relative to the part's rest axes, which just turned: turn it back
+      // the other way so a bent limb stays where it was and only spins about its length
+      for (const [lid, before] of rl.rest) {
+        const q = rl.pose[lid];
+        const l = creature.bones.get(lid);
+        if (!q || !l) continue;
+        const d = before.clone().invert().multiply(l.restQuat);
+        const kept = d.clone().invert().multiply(new THREE.Quaternion(...q)).multiply(d);
+        state.pose[lid] = kept.toArray() as [number, number, number, number];
+      }
+      creature.applyPose();
+      invalidate();
     } else if (drag.sizer) {
       if (!drag.moved) return;
       const sz = drag.sizer;

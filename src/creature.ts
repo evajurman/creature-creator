@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { bvhFor, exactDistance, sharedNormals } from './distance';
 import { buildSkin, paintSkin, type SkinPart } from './skin';
 import { buildInflatedGeometry, defaultOutline, getMeshDetail, type Solid, type Vec2 } from './inflate';
@@ -227,6 +228,30 @@ const startGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
 const bendGeo = new THREE.OctahedronGeometry(0.042);
 const arrowGeo = new THREE.ConeGeometry(0.034, 0.075, 16);
 const cornerGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05);
+/**
+ * The roll grip: a short curved tube with rounded ends, sitting on a corner of
+ * the size box and bending out of the drawing (±Z) the way that corner travels
+ * as the part rolls. `side` -1 is the left corner. Its middle is at the origin.
+ */
+function rollGrip(side: number): THREE.BufferGeometry {
+  const r = 0.09; // radius of the curve
+  const tube = 0.018;
+  const span = (90 * Math.PI) / 180;
+  const arc = new THREE.TorusGeometry(r, tube, 10, 18, span);
+  arc.rotateZ(-span / 2); // centre the arc on +X
+  arc.rotateX(Math.PI / 2); // curve it out of the drawing, round the bone's axis
+  arc.translate(-r, 0, 0); // its middle at the origin
+  const caps = [-1, 1].map((k) => {
+    const a = (k * span) / 2;
+    return new THREE.SphereGeometry(tube * 1.25, 10, 8).translate(r * Math.cos(a) - r, 0, r * Math.sin(a));
+  });
+  const g = mergeGeometries([arc, ...caps])!;
+  // the left grip is the right one mirrored
+  if (side < 0) g.rotateY(Math.PI);
+  return g;
+}
+const rollGeoL = rollGrip(-1);
+const rollGeoR = rollGrip(1);
 
 // ---------------------------------------------------------------------------
 // bendy bones: the bone's local frame (X = side, Y = along the bone, Z = out
@@ -429,9 +454,10 @@ export class Creature {
     this.sizerBox = new THREE.LineLoop(new THREE.BufferGeometry(), sizerLineMat);
     this.sizerBox.renderOrder = 999;
     this.sizer.add(this.sizerBox);
-    // [kind, sign]: 'len' stretches along the bone, 'wid' fattens it, 'size' does both
-    for (const [kind, sign] of [['len', 1], ['wid', -1], ['wid', 1], ['size', -1], ['size', 1]] as const) {
-      const h = new THREE.Mesh(kind === 'size' ? cornerGeo : arrowGeo, sizerMat);
+    // [kind, sign]: 'len' stretches along the bone, 'wid' fattens it, 'size' does both, 'roll' turns it about its length
+    const grips = [['len', 1], ['wid', -1], ['wid', 1], ['size', -1], ['size', 1], ['roll', -1], ['roll', 1]] as const;
+    for (const [kind, sign] of grips) {
+      const h = new THREE.Mesh(kind === 'size' ? cornerGeo : kind === 'roll' ? (sign < 0 ? rollGeoL : rollGeoR) : arrowGeo, sizerMat);
       if (kind === 'wid') h.rotation.z = (-sign * Math.PI) / 2;
       if (kind === 'size') h.rotation.z = Math.PI / 4;
       h.renderOrder = 1000;
@@ -618,6 +644,7 @@ export class Creature {
       else if (m && !m.userData.shared) m.dispose();
     });
     for (const b of this.list) (b.mesh?.userData.mergeGeo as THREE.BufferGeometry | undefined)?.dispose();
+    this.sizerBox.geometry.dispose();
   }
 
   sync() {
@@ -1619,6 +1646,7 @@ export class Creature {
       const sign = h.userData.sign as number;
       if (h.userData.kind === 'len') h.position.set((x0 + x1) / 2, y1 + 0.07, 0);
       else if (h.userData.kind === 'wid') h.position.set(sign < 0 ? x0 - 0.06 : x1 + 0.06, cy, 0);
+      else if (h.userData.kind === 'roll') h.position.set(sign < 0 ? x0 : x1, y0, 0);
       else h.position.set(sign < 0 ? x0 : x1, y1, 0);
     }
   }
