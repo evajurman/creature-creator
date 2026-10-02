@@ -148,7 +148,14 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
     conic-gradient(#e8838f 0 25%, #f3c58c 0 50%, #8fb8ec 0 75%, #9fd98b 0);
   box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.7);
 }
+.ball.knit {
+  background:
+    repeating-linear-gradient(60deg, rgba(255,255,255,.28) 0 2px, transparent 2px 5px),
+    repeating-linear-gradient(-60deg, rgba(0,0,0,.14) 0 2px, transparent 2px 5px),
+    radial-gradient(circle at 35% 30%, #f6b3c4, #c9667f 75%);
+}
 .turned-row { justify-content: flex-start; gap: 14px; margin-top: 0; }
+
 .turned-row .check { margin: 4px 0; }
 .turned-row[hidden] { display: none; }
 
@@ -285,6 +292,18 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .thing-actions button { flex: 1; padding: 3px 4px; font-size: 11px; }
 .thing-card.pick { cursor: pointer; }
 .thing-card.pick:hover { border-color: var(--accent); }
+#stuff-panel .thing-list { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+#stuff-panel .thing-card { padding: 4px; }
+#stuff-panel .thing-name { font-size: 11px; text-align: center; }
+.thing-card.current { border: 2px solid var(--accent); background: var(--accent-soft); }
+.thing-card.new-card .thumb { display: grid; place-items: center; font-size: 28px; color: var(--muted); border: 2px dashed var(--line); background: #fff; }
+.editing-head { display: flex; align-items: center; gap: 8px; }
+.saved-badge { font-size: 11px; font-weight: 700; color: #3d8b5f; text-transform: none; letter-spacing: 0; }
+.saved-badge.warn { color: #c2410c; }
+.thing-actions-row { justify-content: flex-start; flex-wrap: wrap; }
+.inherit-note { margin: 4px 0 8px; }
+.viewport.space-pan, .viewport.space-pan canvas { cursor: grab; }
+
 .attach-pop { width: 300px; max-height: 70%; overflow-y: auto; right: auto; left: 12px; }
 .pop-title { display: flex; justify-content: space-between; align-items: center; }
 
@@ -394,3 +413,5 @@ body.show-nums .slider input.num, body.show-nums .bar-slider input.num { display
 .draw-bar button.done kbd { background: rgba(255,255,255,.25); }
 
 #settings-pop .seg button { font-size: 12px; }
+.mini-styles[hidden] { display: none; }
+.slider[hidden] { display: none; }

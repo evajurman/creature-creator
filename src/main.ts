@@ -28,7 +28,7 @@ import {
   type Placement,
   type SeamlessMode,
 } from './creature';
-import { bounds, clipLoop, combineLoops, pointInPolygon, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
+import { bounds, clipLoop, combineLoops, getMeshDetail, pointInPolygon, setMeshDetail, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import {
   buildThing,
   collection,
@@ -45,8 +45,9 @@ import {
   type BendMode,
   type Piece,
   type Thing,
+  type Wearer,
 } from './stuff';
-import { FUR_LAYER, STYLE_PARAMS, STYLES, makeMaterial, setGlassEnvironment, styleSettings, type StyleId } from './materials';
+import { FUR_LAYER, STYLE_PARAMS, STYLES, makeMaterial, setFuzzQuality, setGlassEnvironment, styleSettings, type StyleId } from './materials';
 import {
   RIGS,
   addLimb,
@@ -79,8 +80,30 @@ const canvas = $<HTMLCanvasElement>('#gl');
 const overlay = $<HTMLCanvasElement>('#overlay');
 const octx = overlay.getContext('2d')!;
 
+// ---------------------------------------------------------------------------
+// performance: how much work each frame and each shape takes (Settings)
+
+type Quality = 'high' | 'balanced' | 'fast';
+const QUALITY: Record<Quality, { dpr: number; detail: number; fuzz: number; samples: number; shadow: number; ao: boolean; aoSamples: number; glass: number }> = {
+  high: { dpr: 2, detail: 1, fuzz: 1, samples: 4, shadow: 2048, ao: true, aoSamples: 16, glass: 1 },
+  balanced: { dpr: 1.5, detail: 0.6, fuzz: 0.67, samples: 4, shadow: 2048, ao: true, aoSamples: 8, glass: 0.75 },
+  fast: { dpr: 1, detail: 0.35, fuzz: 0.34, samples: 2, shadow: 1024, ao: false, aoSamples: 8, glass: 0.5 },
+};
+let quality: Quality = (() => {
+  try {
+    const q = JSON.parse(localStorage.getItem('creature-creator/settings') ?? '{}').quality;
+    return q in QUALITY ? (q as Quality) : 'high';
+  } catch {
+    return 'high';
+  }
+})();
+const pixelRatio = () => Math.min(devicePixelRatio, QUALITY[quality].dpr);
+setMeshDetail(QUALITY[quality].detail);
+setFuzzQuality(QUALITY[quality].fuzz);
+
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(pixelRatio());
+renderer.transmissionResolutionScale = QUALITY[quality].glass;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.VSMShadowMap;
 // Shadows don't depend on the camera: the loop redraws the map only when a
@@ -111,7 +134,7 @@ scene.add(hemi);
 const key = new THREE.DirectionalLight(0xfff0dc, 3.2);
 key.position.set(2.2, 4.6, 3.0);
 key.castShadow = true;
-key.shadow.mapSize.set(2048, 2048);
+key.shadow.mapSize.setScalar(QUALITY[quality].shadow);
 key.shadow.camera.left = key.shadow.camera.bottom = -3;
 key.shadow.camera.right = key.shadow.camera.top = 3;
 key.shadow.camera.near = 0.5;
@@ -204,7 +227,7 @@ function refreshFloorColors() {
 
 function sizeMirror() {
   if (!mirror) return;
-  const dpr = Math.min(devicePixelRatio, 2);
+  const dpr = pixelRatio();
   mirror.getRenderTarget().setSize(Math.round(viewport.clientWidth * dpr), Math.round(viewport.clientHeight * dpr));
 }
 
@@ -241,9 +264,30 @@ function buildFloorMesh() {
   scene.add(floorMesh);
 }
 
+/**
+ * Glass only refracts what's drawn before it, which is the opaque objects, so a
+ * see-through shadow catcher would vanish behind a glass jar (a creature in a
+ * jar would float with no shadow under it). So the catcher is drawn with the
+ * opaque objects, keeping its alpha blending. Over a mirror it has to be drawn
+ * after the veil instead, as a normal see-through layer.
+ */
+function setShadowCatcher(withOpaque: boolean) {
+  if (shadowMat.transparent === !withOpaque) return;
+  shadowMat.transparent = !withOpaque;
+  shadowMat.blending = withOpaque ? THREE.CustomBlending : THREE.NormalBlending;
+  shadowMat.blendSrc = THREE.SrcAlphaFactor;
+  shadowMat.blendDst = THREE.OneMinusSrcAlphaFactor;
+  // as three's normal blending: the picture's own alpha stays solid
+  shadowMat.blendSrcAlpha = THREE.OneFactor;
+  shadowMat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+  shadowMat.needsUpdate = true;
+}
+
 function applyFloor() {
   const m = floorPrefs.mode;
   ground.visible = m === 'shadow' || m === 'mirror';
+  setShadowCatcher(m !== 'mirror');
+
   if (m === 'mirror' && !mirror) {
     mirror = new Reflector(new THREE.CircleGeometry(40, 96), { clipBias: 0.003, color: 0xffffff, textureWidth: 1024, textureHeight: 1024 });
     mirror.rotation.x = -Math.PI / 2;
@@ -314,7 +358,7 @@ camera.position.set(2.8, 2.0, 4.4);
 
 // Post-processing: MSAA scene render, ground-truth ambient occlusion for the
 // creases where parts meet and contact shadows on the floor, then tone mapping.
-const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: QUALITY[quality].samples }));
 
 // Felt fuzz and ambient occlusion: AO darkens whatever pixels it lands on,
 // and the fuzz halo sticks out past the body's edge over the floor's contact
@@ -341,7 +385,8 @@ scenePass.render = (...args: Parameters<RenderPass['render']>) => {
 };
 composer.addPass(scenePass);
 const gtao = new GTAOPass(scene, camera, 1, 1);
-gtao.updateGtaoMaterial({ radius: 0.28, distanceExponent: 1.6, thickness: 1.2, scale: 1.3, samples: 16 });
+gtao.updateGtaoMaterial({ radius: 0.28, distanceExponent: 1.6, thickness: 1.2, scale: 1.3, samples: QUALITY[quality].aoSamples });
+gtao.enabled = QUALITY[quality].ao;
 gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
 gtao.blendIntensity = 1.0;
 composer.addPass(gtao);
@@ -391,6 +436,7 @@ class FurPass extends Pass {
   }
 }
 const furPass = new FurPass();
+furPass.enabled = gtao.enabled;
 composer.addPass(furPass);
 // lights have to share the fuzz's layer to light it
 for (const l of [hemi, key, fill, rim]) l.layers.enable(FUR_LAYER);
@@ -500,6 +546,7 @@ function commit() {
   save();
   updateUndo();
   fitShadows();
+  if (mode === 'stuff') autosaveThing();
 }
 
 function restore(snap: string) {
@@ -524,6 +571,7 @@ function restore(snap: string) {
   world = next;
   activate(world.active);
   syncWorkbench();
+  if (mode === 'stuff') autosaveThing();
   if (selectedAttachment) selectAttachment(selectedAttachment);
   save();
   fitShadows();
@@ -731,7 +779,7 @@ canvas.addEventListener('pointerup', (e) => {
     commit();
     return;
   }
-  if (pointer.moved || e.button !== 0 || gizmo.dragging) return;
+  if (pointer.moved || e.button !== 0 || gizmo.dragging || drawState) return;
   if (pickingFocus) {
     focusAt(e.clientX, e.clientY);
     return;
@@ -953,7 +1001,9 @@ function dropToFloor() {
     hint('Already on the floor', 1500);
     return;
   }
-  creature.group.position.y -= box.min.y;
+  // the creature may be turned or resized: the drop is straight down in the scene
+  const down = creature.root.worldToLocal(new THREE.Vector3(0, -box.min.y, 0)).sub(creature.root.worldToLocal(new THREE.Vector3()));
+  creature.group.position.add(down);
   creature.capturePose();
   commit();
   hint('Dropped to the floor', 1500);
@@ -1049,12 +1099,15 @@ function drawHint() {
     hint(msg, 0);
     return;
   }
+  // how to look around while the drawing layer is in the way
+  const nav = ' · Right-drag or Space+drag to pan, F to face it again';
   if (target.kind === 'piece') {
     const what = target.hole ? 'a hole inside the selected piece' : 'a piece';
-    hint(drawPrefs.symmetry ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`, 0);
+    hint((drawPrefs.symmetry ? `Draw ${what}: across the dashed line = one symmetric shape, to one side = a mirrored pair` : `Draw ${what} as one closed loop`) + nav, 0);
     return;
   }
-  hint(drawPrefs.symmetry ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`, 0);
+  hint((drawPrefs.symmetry ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`) + nav, 0);
+
 }
 
 function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
@@ -1586,6 +1639,28 @@ overlay.addEventListener('wheel', (e) => {
   canvas.dispatchEvent(new WheelEvent('wheel', e));
   e.preventDefault();
 }, { passive: false });
+// While drawing, the right (or middle) button still moves the view: the
+// press is handed to the camera controls under the drawing layer, which then
+// follow the pointer until it's let go.
+overlay.addEventListener('pointerdown', (e) => {
+  if (!drawState || e.button === 0) return;
+  canvas.dispatchEvent(new PointerEvent('pointerdown', e));
+});
+overlay.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Hold Space to pan with the left button too (the drawing layer steps aside meanwhile).
+let spacePan = false;
+function setSpacePan(on: boolean) {
+  if (spacePan === on) return;
+  spacePan = on;
+  overlay.style.pointerEvents = on ? 'none' : '';
+  controls.mouseButtons.LEFT = on ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+  viewport.classList.toggle('space-pan', on);
+}
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') setSpacePan(false);
+});
+window.addEventListener('blur', () => setSpacePan(false));
 
 function renderOverlay() {
   const dpr = overlay.width / overlay.clientWidth || 1;
@@ -1797,17 +1872,76 @@ function benchThing(): Thing {
   return shown;
 }
 
+/** On the workbench, a thing that inherits its material shows the creature's. */
+function benchWearer(): Wearer {
+  return { style: state.style, settingsFor: (s) => creature.settingsFor(s) };
+}
+
 function syncWorkbench() {
   const thing = benchThing();
-  const key = JSON.stringify([thing.pieces, thing.ownMaterial, thing.materialSettings, thing.bend, thing.bendMode, state.materialSettings]);
+  const key = JSON.stringify([thing.pieces, thing.ownMaterial, thing.inherit, thing.materialSettings, thing.bend, thing.bendMode, state.materialSettings, state.style, getMeshDetail()]);
   if (key === benchKey) return;
   benchKey = key;
   if (bench) {
     board.remove(bench);
     disposeThing(bench);
   }
-  bench = buildThing(thing, (s) => creature.settingsFor(s));
+  bench = buildThing(thing, benchWearer());
   board.add(bench);
+}
+
+// ---- auto-save: the thing on the workbench is kept in My stuff as you go ----
+
+let thingSaveTimer = 0;
+function autosaveThing() {
+  if (!world.workbench?.pieces.length) return;
+  clearTimeout(thingSaveTimer);
+  thingSaveTimer = window.setTimeout(saveWorkbenchNow, 450);
+}
+
+/** Put the workbench thing in the collection now (with a fresh picture), and update anything wearing it. */
+function saveWorkbenchNow() {
+  clearTimeout(thingSaveTimer);
+  const wb = world.workbench;
+  if (!wb?.pieces.length) return;
+  // a shape waiting for Done would end up in the picture: wait for it
+  if (drawState) {
+    autosaveThing();
+    return;
+  }
+  const saved: Thing = { ...structuredClone(wb), name: wb.name.trim() || 'Thing' };
+  saved.thumb = mode === 'stuff' ? captureThumb() : collection().find((t) => t.id === wb.id)?.thumb;
+  const ok = putThing(saved);
+  const badge = $('#thing-saved');
+  badge.textContent = ok ? '✓ Saved' : 'Storage full: download it to keep it';
+  badge.classList.toggle('warn', !ok);
+  if (!ok) return;
+  // creatures already wearing it get the new shape; how its material looks
+  // stays each wearer's own choice
+  world.creatures.forEach((s, i) => {
+    let changed = false;
+    for (const a of s.attachments ?? []) {
+      if (a.thing.id !== wb.id) continue;
+      const { inherit, ownMaterial, materialSettings, scaleMaterial } = a.thing;
+      a.thing = { ...stripThumb(saved), inherit, ownMaterial, materialSettings, scaleMaterial };
+      changed = true;
+    }
+    if (changed) creatures[i]?.sync();
+  });
+  save();
+  renderCollection();
+}
+
+/** Put a thing on the workbench (saving the one that was there first). */
+function openOnBench(t: Thing) {
+  saveWorkbenchNow();
+  world.workbench = stripThumb(t);
+  selectedPiece = '';
+  $('#thing-saved').textContent = '';
+  syncWorkbench();
+  commit();
+  renderStuffPanel();
+  focusOnBoard();
 }
 
 function focusOnBoard() {
@@ -1911,7 +2045,7 @@ function renderStuffPanel() {
   wb.pieces.forEach((p, i) => {
     const btn = document.createElement('button');
     btn.innerHTML = `<i style="background:${p.color}"></i>`;
-    btn.append(`${p.kind === 'flat' ? '▭' : '⬭'} Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
+    btn.append(`${p.kind === 'flat' ? '▭' : p.kind === 'turned' ? '◎' : '⬭'} Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
     btn.classList.toggle('active', p.id === selectedPiece);
     btn.onclick = () => {
       selectedPiece = p.id;
@@ -1958,6 +2092,8 @@ function renderStuffPanel() {
     $<HTMLInputElement>('#piece-color').value = p.color;
     const st = $('#piece-styles');
     st.innerHTML = '';
+    // an item that inherits its material shows the wearer's instead
+    st.hidden = !!wb.inherit;
     for (const s of STYLES) {
       const b = document.createElement('button');
       b.innerHTML = `<span class="ball ${s.id}"></span>`;
@@ -1966,7 +2102,7 @@ function renderStuffPanel() {
       b.onclick = () => updatePiece((q) => (q.style = s.id));
       st.append(b);
     }
-    renderThingMaterial(wb, [p.style], $('#piece-style-params'));
+    renderThingMaterial(wb, [p.style], $('#piece-style-params'), state.style);
   }
   renderCollection();
 }
@@ -1983,59 +2119,45 @@ function updatePiece(fn: (p: Piece) => void, doCommit = true) {
 }
 
 function renderCollection() {
+  const current = world.workbench?.id;
   for (const [sel, forAttach] of [['#thing-list', false], ['#attach-options', true]] as const) {
     const el = $(sel);
     el.innerHTML = '';
     const things = collection();
-    if (!things.length) {
-      el.innerHTML = forAttach
-        ? '<p class="muted small">Your collection is empty. Make something in the 🗡 Stuff tab first.</p>'
-        : '<p class="muted small">Nothing saved yet.</p>';
+    if (forAttach && !things.length) {
+      el.innerHTML = '<p class="muted small">Nothing here yet. Make something in the 🗡 Stuff tab first.</p>';
       continue;
     }
-    for (const t of things) {
-      const card = document.createElement('div');
-      card.className = 'thing-card';
-      const img = document.createElement(t.thumb ? 'img' : 'div');
+    const card = (name: string, thumb: string | undefined, onclick: () => void) => {
+      const c = document.createElement('div');
+      c.className = 'thing-card pick';
+      const img = document.createElement(thumb ? 'img' : 'div');
       img.className = 'thumb';
-      if (t.thumb) (img as HTMLImageElement).src = t.thumb;
-      const name = document.createElement('span');
-      name.className = 'thing-name';
-      name.textContent = t.name;
-      card.append(img, name);
-      if (forAttach) {
-        card.classList.add('pick');
-        card.onclick = () => attachThing(t);
-      } else {
-        const actions = document.createElement('div');
-        actions.className = 'thing-actions';
-        const mk = (label: string, title: string, fn: () => void) => {
-          const b = document.createElement('button');
-          b.className = 'ghost';
-          b.textContent = label;
-          b.title = title;
-          b.onclick = fn;
-          actions.append(b);
-        };
-        mk('Edit', 'Open on the workbench', () => {
-          world.workbench = structuredClone(t);
-          selectedPiece = '';
-          syncWorkbench();
-          commit();
-          renderStuffPanel();
-          focusOnBoard();
-        });
-        mk('⬇', 'Download as a .stuff file', () =>
-          downloadText(`${safeFileName(t.name, 'thing')}.stuff`, JSON.stringify(envelope('stuff', t))),
-        );
-        mk('✕', 'Remove from collection', () => {
-          if (!confirm(`Remove "${t.name}" from your collection? (Creatures already wearing it keep their copy.)`)) return;
-          removeThing(t.id);
-          renderCollection();
-        });
-        card.append(actions);
-      }
-      el.append(card);
+      if (thumb) (img as HTMLImageElement).src = thumb;
+      const label = document.createElement('span');
+      label.className = 'thing-name';
+      label.textContent = name;
+      c.title = name;
+      c.append(img, label);
+      c.onclick = onclick;
+      el.append(c);
+      return c;
+    };
+    if (!forAttach) {
+      // start something new (an empty workbench already is something new)
+      const fresh = card('New', undefined, () => {
+        if (world.workbench?.pieces.length) openOnBench(newThing());
+      });
+      fresh.classList.add('new-card');
+      fresh.querySelector('.thumb')!.textContent = '＋';
+      fresh.classList.toggle('current', !things.some((t) => t.id === current));
+    }
+    for (const t of things) {
+      const c = card(t.name, t.thumb, () => {
+        if (forAttach) attachThing(t);
+        else if (t.id !== current) openOnBench(t);
+      });
+      if (!forAttach) c.classList.toggle('current', t.id === current);
     }
   }
 }
@@ -2096,32 +2218,32 @@ document.querySelectorAll<HTMLButtonElement>('#thing-bend-mode button').forEach(
     renderStuffPanel();
   };
 });
-$('#thing-new').onclick = () => {
-  world.workbench = newThing();
+$('#thing-dup').onclick = () => {
+  const wb = workbench();
+  if (!wb.pieces.length) return;
+  openOnBench({ ...structuredClone(wb), id: uid(), name: `${wb.name.trim() || 'Thing'} copy` });
+  hint('Made a copy to change', 1800);
+};
+$('#thing-download').onclick = () => {
+  const wb = workbench();
+  downloadText(`${safeFileName(wb.name, 'thing')}.stuff`, JSON.stringify(envelope('stuff', stripThumb(wb))));
+};
+$('#thing-delete').onclick = () => {
+  const wb = workbench();
+  const name = wb.name.trim() || 'this thing';
+  if (wb.pieces.length && !confirm(`Delete "${name}" from My stuff? (Creatures already wearing it keep their copy.)`)) return;
+  clearTimeout(thingSaveTimer);
+  removeThing(wb.id);
+  // carry on with the last thing in the list, or a fresh one
+  const next = collection().at(-1);
+  world.workbench = next ? stripThumb(next) : newThing();
   selectedPiece = '';
+  $('#thing-saved').textContent = '';
   syncWorkbench();
   commit();
   renderStuffPanel();
 };
-$('#thing-save').onclick = () => {
-  const wb = workbench();
-  if (!wb.pieces.length) {
-    hint('Draw at least one piece first', 2000, true);
-    return;
-  }
-  wb.name = wb.name.trim() || 'Thing';
-  wb.thumb = captureThumb();
-  if (!putThing(wb)) {
-    hint('Browser storage is full: export your collection to a file and remove some things', 3500, true);
-    return;
-  }
-  // creatures already wearing this thing pick up the new version
-  for (const a of state.attachments ?? []) if (a.thing.id === wb.id) a.thing = stripThumb(wb);
-  creature.sync();
-  commit();
-  renderStuffPanel();
-  hint(`Saved "${wb.name}" to your collection`, 2000);
-};
+
 
 // ---------------------------------------------------------------------------
 // attaching stuff to body parts
@@ -2135,9 +2257,13 @@ gizmo.addEventListener('dragging-changed', (e) => {
 });
 gizmo.addEventListener('objectChange', () => {
   if (placing) {
-    // keep creatures standing on the floor, turning only about the vertical
-    creature.root.position.y = 0;
-    creature.root.rotation.set(0, creature.root.rotation.y, 0);
+    // creatures only grow or shrink evenly: whichever handle moved sets the size
+    const s = creature.root.scale;
+    if (gizmo.mode === 'scale' && !(s.x === s.y && s.y === s.z)) {
+      const pick = [s.x, s.y, s.z].reduce((a, v) => (Math.abs(v - placeScale) > Math.abs(a - placeScale) ? v : a), placeScale);
+      s.setScalar(Math.max(0.02, pick));
+    }
+    placeScale = s.x;
     creature.capturePlacement();
     fitShadows();
     return;
@@ -2182,16 +2308,30 @@ function deselectAttachment() {
 }
 
 // ---------------------------------------------------------------------------
-// placing creatures: the same gizmo, limited to sliding on the floor and turning
+// arranging creatures in the scene: the same gizmo moves, turns and resizes
+// a whole creature anywhere in 3D
 
 let placing = false;
+/** the creature's size when the scale handles were last read */
+let placeScale = 1;
+type PlaceMode = 'translate' | 'rotate' | 'scale';
 
-function setPlaceMode(m: 'translate' | 'rotate') {
+function setPlaceMode(m: PlaceMode) {
   gizmo.setMode(m);
-  gizmo.setSpace('world');
-  gizmo.showX = gizmo.showZ = m === 'translate';
-  gizmo.showY = m === 'rotate';
+  // move along the scene's axes; turn and size about the creature's own
+  gizmo.setSpace(m === 'translate' ? 'world' : 'local');
+  placeScale = creature.root.scale.x;
   document.querySelectorAll<HTMLButtonElement>('#place-bar [data-place]').forEach((b) => b.classList.toggle('on', b.dataset.place === m));
+}
+
+/** Arrange: rest the creature on the floor (its lowest point, stuff included, at floor level). */
+function placeOnFloor() {
+  const box = creatureBox(true);
+  if (box.isEmpty()) return;
+  creature.root.position.y -= box.min.y;
+  creature.capturePlacement();
+  fitShadows();
+  commit();
 }
 
 function startPlacing() {
@@ -2209,15 +2349,26 @@ function stopPlacing() {
   if (!placing) return;
   placing = false;
   gizmo.detach();
-  gizmo.showX = gizmo.showY = gizmo.showZ = true;
   gizmo.setSpace('local');
   $('#place-bar').hidden = true;
   $('#cr-place').classList.remove('on');
 }
 
 document.querySelectorAll<HTMLButtonElement>('#place-bar [data-place]').forEach((b) => {
-  b.onclick = () => setPlaceMode(b.dataset.place as 'translate' | 'rotate');
+  b.onclick = () => setPlaceMode(b.dataset.place as PlaceMode);
 });
+$('#place-floor').onclick = () => placeOnFloor();
+$('#place-reset').onclick = () => {
+  // upright, normal size, still facing the same way
+  const yaw = new THREE.Euler().setFromQuaternion(creature.root.quaternion, 'YXZ').y;
+  creature.root.rotation.set(0, yaw, 0);
+  creature.root.scale.setScalar(1);
+  creature.root.position.y = 0;
+  placeScale = 1;
+  creature.capturePlacement();
+  fitShadows();
+  commit();
+};
 $('#place-done').onclick = () => {
   stopPlacing();
   commit(); // records the move if anything changed (no-op otherwise)
@@ -2270,7 +2421,7 @@ function addCreature(s: CreatureState) {
 }
 
 $('#cr-add').onclick = () => {
-  const s = defaultState(structuredClone(state.rig));
+  const s = defaultState(freshRig(state.rig));
   s.style = state.style;
   s.materialSettings = structuredClone(state.materialSettings);
   s.placement = freeSpot();
@@ -2281,7 +2432,10 @@ $('#cr-dup').onclick = () => {
   const s = structuredClone(state);
   delete s.workbench;
   s.name = state.name?.trim() ? `${state.name.trim()} copy` : undefined;
-  s.placement = freeSpot();
+  // same size, turn and height; just moved over to free floor
+  const spot = freeSpot();
+  s.placement = { ...(state.placement ?? spot), x: spot.x, z: spot.z };
+
   addCreature(s);
 };
 $('#cr-del').onclick = () => {
@@ -2320,7 +2474,8 @@ function syncAttachBar() {
 function renderAttachMaterial() {
   const a = currentAttachment();
   if (!a) return;
-  renderThingMaterial(a.thing, [...new Set(a.thing.pieces.map((p) => p.style))], $('#attach-mat-body'));
+  const part = state.parts[creature.bones.get(a.bone)?.src ?? ''];
+  renderThingMaterial(a.thing, [...new Set(a.thing.pieces.map((p) => p.style))], $('#attach-mat-body'), part?.style ?? state.style);
 }
 
 function attachThing(t: Thing) {
@@ -2500,7 +2655,8 @@ function openFile(text: string, how: 'open' | 'add') {
       const spot = freeSpot();
       const minX = Math.min(...incoming.map((s) => s.placement?.x ?? 0));
       for (const s of incoming) {
-        s.placement = { x: spot.x + ((s.placement?.x ?? 0) - minX), z: s.placement?.z ?? 0, yaw: s.placement?.yaw ?? 0 };
+        s.placement = { ...s.placement, x: spot.x + ((s.placement?.x ?? 0) - minX), z: s.placement?.z ?? 0, yaw: s.placement?.yaw ?? 0 };
+
         world.creatures.push(s);
         creatures.push(makeCreature(s));
       }
@@ -2673,34 +2829,47 @@ function renderStyles() {
 type SettingsOwner = { materialSettings?: CreatureState['materialSettings'] };
 
 /**
- * A stuff item's material controls: an "Inherits material" box (use the
- * creature's settings) and, when it's off, sliders that only affect this item.
+ * A stuff item's material controls. "Inherits material" makes it take the
+ * material of whatever wears it (type and settings: the body part it's on);
+ * otherwise each piece keeps its own material, with sliders just for this item.
  */
-function renderThingMaterial(thing: Thing, styles: StyleId[], el: HTMLElement) {
+function renderThingMaterial(thing: Thing, styles: StyleId[], el: HTMLElement, wearerStyle: StyleId) {
   el.innerHTML = '';
+  // items from before inheriting meant this shared the creature's settings:
+  // give them their own copy, looking just as they do now
+  if (!thing.inherit && !thing.ownMaterial) {
+    thing.ownMaterial = true;
+    thing.materialSettings ??= {};
+    for (const st of styles) thing.materialSettings[st] ??= { ...creature.settingsFor(st) };
+  }
   const row = document.createElement('label');
   row.className = 'check';
   const box = document.createElement('input');
   box.type = 'checkbox';
-  box.checked = !thing.ownMaterial;
+  box.checked = !!thing.inherit;
   box.onchange = () => {
-    thing.ownMaterial = !box.checked;
-    if (thing.ownMaterial) {
-      // start from what it looks like now
+    thing.inherit = box.checked;
+    if (!thing.inherit) {
+      // back to its own pieces' materials, starting from what those look like on the creature
+      thing.ownMaterial = true;
       thing.materialSettings ??= {};
       for (const st of styles) thing.materialSettings[st] ??= { ...creature.settingsFor(st) };
     }
     creature.sync();
     syncWorkbench();
     commit();
-    renderThingMaterial(thing, styles, el);
+    if (mode === 'stuff') renderStuffPanel();
+    else renderThingMaterial(thing, styles, el, wearerStyle);
   };
-  row.append(box, ' Inherits material ');
-  const note = document.createElement('span');
-  note.className = 'muted small';
-  note.textContent = thing.ownMaterial ? '(own settings, just for this item)' : "(shares the creature's settings)";
-  row.append(note);
+  row.append(box, ' Inherits material');
   el.append(row);
+  const styleName = STYLES.find((s) => s.id === wearerStyle)?.name ?? wearerStyle;
+  if (thing.inherit) {
+    const note = document.createElement('p');
+    note.className = 'muted small inherit-note';
+    note.textContent = `Made of ${styleName}, like the ${mode === 'stuff' ? 'creature' : 'part it’s on'}. Change it in ✏️ Build › Material.`;
+    el.append(note);
+  }
   const scaleRow = document.createElement('label');
   scaleRow.className = 'check';
   scaleRow.title = 'On: fuzz keeps the same real length when the item is scaled. Off: it grows and shrinks with the item.';
@@ -2714,13 +2883,15 @@ function renderThingMaterial(thing: Thing, styles: StyleId[], el: HTMLElement) {
   };
   scaleRow.append(scaleBox, ' Re-adjust material on scale');
   el.append(scaleRow);
+  if (thing.inherit) return;
   for (const st of styles) {
     const sub = document.createElement('div');
     sub.className = 'style-params';
     el.append(sub);
-    renderStyleParams(st, sub, thing.ownMaterial ? thing : state);
+    renderStyleParams(st, sub, thing);
   }
 }
+
 
 /**
  * Sliders for a material. With the default owner (the creature) they apply
@@ -2919,10 +3090,23 @@ function setStyle(id: StyleId) {
   renderStyles();
 }
 
+/**
+ * A fresh copy of the skeleton a creature was started from: the current
+ * template (or saved rig), so new creatures get its latest version. An edited
+ * skeleton is kept as it is.
+ */
+function freshRig(rig: RigState): RigState {
+  if (rig.base.startsWith('saved:')) return structuredClone(savedRigs().find((r) => r.base === rig.base) ?? rig);
+  const t = RIGS.find((r) => r.id === rig.base);
+  return t ? rigFromTemplate(t) : structuredClone(rig);
+}
+
 function switchRig(base: string) {
-  if (base === state.rig.base) return;
   const rig = base.startsWith('saved:') ? savedRigs().find((r) => r.base === base) : rigFromTemplate(getRig(base));
   if (!rig) return;
+  // picking the plan it already has only does something if its skeleton is
+  // out of date (made before the template changed)
+  if (base === state.rig.base && JSON.stringify(rig.bones) === JSON.stringify(state.rig.bones)) return;
   const dirty = Object.values(state.parts).some((p) => p.outline) || Object.keys(state.pose).length > 0;
   if (dirty && !confirm('Switch body plan? Your drawn shapes and pose will be cleared (colours and material stay).')) return;
   const body = state.parts[creature.list[0].src].color;
@@ -2943,6 +3127,8 @@ function switchRig(base: string) {
 
 function setMode(m: Mode) {
   if (drawState) exitDraw();
+  // leaving the workbench: keep what's on it (while it's still there to photograph)
+  if (mode === 'stuff' && m !== 'stuff') saveWorkbenchNow();
   mode = m;
   document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
   $('#build-panel').hidden = m !== 'build';
@@ -2962,6 +3148,7 @@ function setMode(m: Mode) {
     syncWorkbench();
     renderStuffPanel();
     focusOnBoard();
+    autosaveThing();
     hint('Draw pieces on the board; the blue crosshair is where it attaches', 3200);
   } else if (wasStuff) {
     frameCreature();
@@ -3216,8 +3403,8 @@ function hint(text: string, ms = 2000, warn = false) {
 // settings (remembered in this browser)
 
 const SETTINGS_KEY = 'creature-creator/settings';
-const settings: { numbers: boolean; seamless: SeamlessMode; seamlessLowPoly: boolean } = (() => {
-  const defaults = { numbers: false, seamless: 'on' as SeamlessMode, seamlessLowPoly: false };
+const settings: { numbers: boolean; seamless: SeamlessMode; seamlessLowPoly: boolean; quality: Quality } = (() => {
+  const defaults = { numbers: false, seamless: 'on' as SeamlessMode, seamlessLowPoly: false, quality };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') };
   } catch {
@@ -3243,6 +3430,7 @@ function renderSettings() {
   // nothing to apply it to while seamless joins are off
   $<HTMLInputElement>('#set-seamless-lp').disabled = settings.seamless === 'off';
   $('#set-seamless-lp-row').style.opacity = settings.seamless === 'off' ? '.45' : '1';
+  document.querySelectorAll<HTMLButtonElement>('#set-quality button').forEach((b) => b.classList.toggle('active', b.dataset.quality === quality));
   if (settings.numbers) syncSliderNumbers();
 }
 
@@ -3252,18 +3440,47 @@ function renderSettings() {
  * ends, so they aren't overwritten from it); the rest are added here and kept
  * in step with their slider.
  */
+const nativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!;
+
+/**
+ * Let a slider hold a value past its ends (typed into its number box, or put
+ * back from a saved value): it shows pinned at the end but reads back the real
+ * number, so every handler that reads `.value` just works. Touching the slider
+ * itself goes back to its own range.
+ */
+function unlimited(range: HTMLInputElement) {
+  if (range.dataset.unlimited) return;
+  range.dataset.unlimited = '1';
+  let over: string | null = null;
+  Object.defineProperty(range, 'value', {
+    configurable: true,
+    get: () => over ?? (nativeValue.get!.call(range) as string),
+    set: (v: string) => {
+      nativeValue.set!.call(range, v);
+      const n = parseFloat(v);
+      over = Number.isFinite(n) && (n < parseFloat(range.min) || n > parseFloat(range.max)) ? String(v) : null;
+    },
+  });
+  const drop = () => (over = null);
+  range.addEventListener('pointerdown', drop);
+  range.addEventListener('keydown', drop);
+}
+
 function syncSliderNumbers() {
   document.querySelectorAll<HTMLInputElement>('input[type=range]').forEach((range) => {
     let num = range.nextElementSibling as HTMLInputElement | null;
     if (!num?.classList.contains('num')) {
+      unlimited(range);
       const box = document.createElement('input');
       box.type = 'number';
       box.className = 'num';
       box.oninput = () => {
         if (!Number.isFinite(parseFloat(box.value))) return;
+        // past either end, the slider pins there but keeps the typed value
         range.value = box.value;
         range.dispatchEvent(new Event('input', { bubbles: true }));
       };
+
       box.onchange = () => range.dispatchEvent(new Event('change', { bubbles: true }));
       range.after(box);
       num = box;
@@ -3287,7 +3504,50 @@ $<HTMLInputElement>('#set-seamless-lp').onchange = (e) => {
   saveSettings();
   renderSettings();
 };
+/** Switch performance level: renderer settings now, and every shape rebuilt at the new detail. */
+function setQuality(q: Quality) {
+  if (q === quality) return;
+  quality = settings.quality = q;
+  const Q = QUALITY[q];
+  setMeshDetail(Q.detail);
+  setFuzzQuality(Q.fuzz);
+  renderer.transmissionResolutionScale = Q.glass;
+  // a new shadow map size takes a fresh map
+  key.shadow.mapSize.setScalar(Q.shadow);
+  key.shadow.map?.dispose();
+  key.shadow.map = null;
+  renderer.shadowMap.needsUpdate = true;
+  // anti-aliasing: the targets are rebuilt with the new sample count on next use
+  for (const rt of [composer.renderTarget1, composer.renderTarget2]) {
+    rt.samples = Q.samples;
+    rt.dispose();
+  }
+  gtao.updateGtaoMaterial({ samples: Q.aoSamples });
+  gtao.enabled = furPass.enabled = Q.ao;
+  $<HTMLInputElement>('#ao').checked = Q.ao;
+  resize();
+  // every creature (and the workbench) remeshed at the new detail
+  exitDraw();
+  stopPlacing();
+  for (let i = 0; i < creatures.length; i++) {
+    creatures[i].dispose();
+    creatures[i] = makeCreature(world.creatures[i]);
+  }
+  creature = undefined as unknown as Creature; // replaced wholesale
+  activate(world.active);
+  benchKey = '';
+  syncWorkbench();
+  fitShadows();
+  saveSettings();
+  renderSettings();
+  renderUI();
+}
+document.querySelectorAll<HTMLButtonElement>('#set-quality button').forEach((b) => {
+  b.onclick = () => setQuality(b.dataset.quality as Quality);
+});
+
 $<HTMLInputElement>('#set-nums').onchange = (e) => {
+
   settings.numbers = (e.target as HTMLInputElement).checked;
   saveSettings();
   renderSettings();
@@ -3640,7 +3900,8 @@ $('#new').onclick = () => {
   if (!confirm('Start a new creature? (You can undo this.)')) return;
   exitDraw();
   // a fresh creature in the same spot in the scene (named afresh too)
-  state = { ...defaultState(state.rig), placement: state.placement };
+  state = { ...defaultState(freshRig(state.rig)), placement: state.placement };
+
   buildCreature();
   commit();
   renderUI();
@@ -3729,6 +3990,15 @@ window.addEventListener('keydown', (e) => {
     setDrawTool(({ e: 'erase', m: 'move', t: 'scale', r: 'rotate' } as const)[k]);
   } else if (k === 's' && drawState && !e.ctrlKey && !e.metaKey) {
     toggleSymmetry();
+  } else if (e.code === 'Space' && drawState) {
+    e.preventDefault();
+    setSpacePan(true);
+  } else if (k === 'f' && drawState) {
+    // back to a straight-on view of the drawing
+    if (drawState.target.kind === 'bone') {
+      const b = creature.bones.get(drawState.target.boneId);
+      if (b) focusOnBone(b);
+    } else focusOnBoard();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
     if (k === 'd' && mode === 'build') enterDraw();
     else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece', hole: false });
@@ -3737,10 +4007,15 @@ window.addEventListener('keydown', (e) => {
       gizmo.setMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
       syncAttachBar();
     }
+    else if (placing && (k === 'w' || k === 'e' || k === 'r')) setPlaceMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
     else if (k === '1') setMode('build');
     else if (k === '2') setMode('rig');
     else if (k === '3') setMode('pose');
-    else if (k === 'f') frameCreature();
+    else if (k === 'f') {
+      if (mode === 'stuff') focusOnBoard();
+      else frameCreature();
+    }
+
     else if (k === 'a' && e.shiftKey) frameAll();
   }
 });
@@ -3752,7 +4027,8 @@ function resize() {
   const w = viewport.clientWidth;
   const h = viewport.clientHeight;
   renderer.setSize(w, h, false);
-  composer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(pixelRatio());
+  composer.setPixelRatio(pixelRatio());
   composer.setSize(w, h);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
@@ -3789,7 +4065,8 @@ function shadowsChanged(): boolean {
   const cam = key.shadow.camera;
   next.push(...key.matrixWorld.elements, ...key.target.matrixWorld.elements, cam.left, cam.right, cam.top, cam.bottom, cam.far);
   scene.traverseVisible((o) => {
-    if (!(o instanceof THREE.Mesh) || !o.castShadow) return;
+    // soft (VSM) shadow maps draw receivers as well as casters
+    if (!(o instanceof THREE.Mesh) || !(o.castShadow || o.receiveShadow)) return;
     const pos = o.geometry.getAttribute('position');
     next.push(o, o.geometry, pos?.version ?? 0, o.material, ...o.matrixWorld.elements);
   });
@@ -3819,6 +4096,22 @@ function settleWhenIdle(now: number) {
 }
 
 let lastSkins = '';
+// A one-time nudge towards Settings > Performance when frames keep coming slowly.
+let lastDrawn = 0;
+let slowFrames = 0;
+let slowHinted = false;
+function watchSpeed(now: number) {
+  const dt = now - lastDrawn;
+  lastDrawn = now;
+  // only while drawing frame after frame (a drag, a camera move...)
+  if (slowHinted || quality === 'fast' || drawState || dt > 250) return;
+  slowFrames = dt > 55 ? slowFrames + 1 : Math.max(0, slowFrames - 2);
+  if (slowFrames > 40) {
+    slowHinted = true;
+    hint('Running slowly? Try ⚙ Settings › Performance › Fast', 6000);
+  }
+}
+
 function loop(now: number) {
   requestAnimationFrame(loop);
   if (tween) {
@@ -3851,12 +4144,15 @@ function loop(now: number) {
   if (settings.numbers) syncSliderNumbers();
   if (shadowsChanged()) renderer.shadowMap.needsUpdate = true;
   composer.render();
+  watchSpeed(now);
 }
 
 // ---------------------------------------------------------------------------
 // boot
 
+$<HTMLInputElement>('#ao').checked = gtao.enabled;
 world.creatures.forEach((s, i) => (creatures[i] = makeCreature(s)));
+
 activate(world.active);
 commit();
 renderUI();
@@ -3867,4 +4163,4 @@ resize();
 requestAnimationFrame(loop);
 
 // handy for poking at the scene from the dev-tools console
-if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, get drawState() { return drawState; }, openFile, selectAttachment } });
+if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, renderer, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, get drawState() { return drawState; }, openFile, selectAttachment } });

@@ -59,13 +59,12 @@ const biped: RigDef = {
   name: 'Biped',
   icon: '🧍',
   headId: 'head',
+  // one bone per limb: short and stout (Split a bone in Rig mode for elbows and knees)
   bones: [
-    { id: 'body', name: 'Body', start: [0, 0.92, 0], end: [0, 1.45, 0], side: X, width: 0.72, anchor: true },
-    { id: 'head', name: 'Head', parent: 'body', start: [0, 1.46, 0], end: [0, 2.0, 0], side: X, width: 0.56 },
-    { id: 'arm', name: 'Upper arm', parent: 'body', start: [0.3, 1.36, 0], end: [0.58, 1.08, 0], side: Y, width: 0.19, mirror: true },
-    { id: 'forearm', name: 'Forearm', parent: 'arm', start: [0.58, 1.08, 0], end: [0.8, 0.8, 0], side: Y, width: 0.17, mirror: true },
-    { id: 'thigh', name: 'Thigh', parent: 'body', start: [0.17, 0.95, 0], end: [0.19, 0.52, 0], side: X, width: 0.24, mirror: true },
-    { id: 'shin', name: 'Shin', parent: 'thigh', start: [0.19, 0.52, 0], end: [0.2, 0.07, 0], side: X, width: 0.2, mirror: true },
+    { id: 'body', name: 'Body', start: [0, 0.44, 0], end: [0, 1.0, 0], side: X, width: 0.82, anchor: true },
+    { id: 'head', name: 'Head', parent: 'body', start: [0, 1.01, 0], end: [0, 1.56, 0], side: X, width: 0.6 },
+    { id: 'arm', name: 'Arm', parent: 'body', start: [0.34, 0.88, 0], end: [0.58, 0.58, 0], side: Y, width: 0.22, widthEnd: 0.2, mirror: true },
+    { id: 'leg', name: 'Leg', parent: 'body', start: [0.2, 0.48, 0], end: [0.21, 0.12, 0], side: X, width: 0.29, widthEnd: 0.27, mirror: true },
   ],
 };
 
@@ -75,13 +74,13 @@ const quadruped: RigDef = {
   icon: '🐕',
   headId: 'head',
   bones: [
-    { id: 'body', name: 'Body', start: [0, 0.9, -0.55], end: [0, 0.95, 0.55], side: Y, width: 0.6, anchor: true },
-    { id: 'head', name: 'Head', parent: 'body', start: [0, 1.05, 0.5], end: [0, 1.4, 0.92], side: Y, width: 0.46 },
-    { id: 'tail', name: 'Tail', parent: 'body', start: [0, 1.0, -0.6], end: [0, 1.3, -1.02], side: Y, width: 0.13 },
-    { id: 'frontLeg', name: 'Front leg', parent: 'body', start: [0.2, 0.82, 0.38], end: [0.22, 0.44, 0.42], side: Z, width: 0.2, mirror: true },
-    { id: 'frontPaw', name: 'Front paw', parent: 'frontLeg', start: [0.22, 0.44, 0.42], end: [0.22, 0.06, 0.46], side: Z, width: 0.17, mirror: true },
-    { id: 'backLeg', name: 'Back leg', parent: 'body', start: [0.2, 0.82, -0.4], end: [0.22, 0.44, -0.46], side: Z, width: 0.24, mirror: true },
-    { id: 'backPaw', name: 'Back paw', parent: 'backLeg', start: [0.22, 0.44, -0.46], end: [0.22, 0.06, -0.4], side: Z, width: 0.17, mirror: true },
+    { id: 'body', name: 'Body', start: [0, 0.64, -0.46], end: [0, 0.68, 0.46], side: Y, width: 0.66, anchor: true },
+    { id: 'head', name: 'Head', parent: 'body', start: [0, 0.78, 0.42], end: [0, 1.12, 0.8], side: Y, width: 0.52 },
+    { id: 'tail', name: 'Tail', parent: 'body', start: [0, 0.72, -0.52], end: [0, 0.98, -0.86], side: Y, width: 0.14 },
+    { id: 'frontLeg', name: 'Front leg', parent: 'body', start: [0.21, 0.56, 0.32], end: [0.22, 0.12, 0.35], side: Z, width: 0.24, widthEnd: 0.22, mirror: true },
+    { id: 'backLeg', name: 'Back leg', parent: 'body', start: [0.21, 0.56, -0.34], end: [0.22, 0.12, -0.36], side: Z, width: 0.26, widthEnd: 0.23, mirror: true },
+
+
   ],
 };
 

@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { bvhFor, exactDistance, sharedNormals } from './distance';
 import { buildSkin, paintSkin, type SkinPart } from './skin';
-import { buildInflatedGeometry, defaultOutline, type Solid, type Vec2 } from './inflate';
+import { buildInflatedGeometry, defaultOutline, getMeshDetail, type Solid, type Vec2 } from './inflate';
 import {
   castsShadow,
+  isTextured,
   setFuzzMask,
   setOpacity,
   makeFuzzShells,
@@ -107,8 +108,14 @@ export interface CreatureState {
 export interface Placement {
   x: number;
   z: number;
-  /** rotation about the vertical axis, radians */
+  /** rotation about the vertical axis, radians (kept alongside `quat` for older files) */
   yaw: number;
+  /** height off the floor (default 0) */
+  y?: number;
+  /** full 3D turn as a quaternion; when missing, just `yaw` */
+  quat?: [number, number, number, number];
+  /** overall size (default 1) */
+  scale?: number;
 }
 
 /** A settled seamless skin and what it was built from. */
@@ -588,17 +595,26 @@ export class Creature {
 
   applyPlacement() {
     const p = this.state.placement ?? { x: 0, z: 0, yaw: 0 };
-    this.root.position.set(p.x, 0, p.z);
-    this.root.rotation.set(0, p.yaw, 0);
+    this.root.position.set(p.x, p.y ?? 0, p.z);
+    if (p.quat) this.root.quaternion.set(...p.quat);
+    else this.root.rotation.set(0, p.yaw, 0);
+    this.root.scale.setScalar(p.scale ?? 1);
   }
 
   /** Read the placement back from the root (after a gizmo drag). */
   capturePlacement() {
-    this.state.placement = {
-      x: Math.round(this.root.position.x * 1000) / 1000,
-      z: Math.round(this.root.position.z * 1000) / 1000,
-      yaw: Math.round(this.root.rotation.y * 10000) / 10000,
+    const r = (v: number, k = 1000) => Math.round(v * k) / k;
+    const q = this.root.quaternion;
+    const upright = Math.abs(q.x) < 1e-5 && Math.abs(q.z) < 1e-5;
+    const p: Placement = {
+      x: r(this.root.position.x),
+      z: r(this.root.position.z),
+      yaw: r(new THREE.Euler().setFromQuaternion(q, 'YXZ').y, 10000),
     };
+    if (Math.abs(this.root.position.y) > 1e-4) p.y = r(this.root.position.y);
+    if (!upright) p.quat = q.toArray().map((v) => r(v, 1e5)) as [number, number, number, number];
+    if (Math.abs(this.root.scale.x - 1) > 1e-4) p.scale = r(this.root.scale.x);
+    this.state.placement = p;
   }
 
   /** Remove from the scene and free per-creature GPU resources. */
@@ -627,7 +643,7 @@ export class Creature {
         colorJitter: style === 'lowpoly' ? k.variation : undefined,
         lumps: style === 'clay' ? k.lumps : 0,
       };
-      const geoKey = JSON.stringify([outline, geoOpts]);
+      const geoKey = JSON.stringify([outline, geoOpts, getMeshDetail()]);
       const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1) + bendKey(bendOf(b.def, b.length));
       if (key === b.meshKey) continue;
       b.meshKey = key;
@@ -653,7 +669,7 @@ export class Creature {
       // fold thin parts over themselves, which confuses inside/outside
       if (geoOpts.lumps) {
         const smoothOpts = { ...geoOpts, lumps: 0 };
-        const smoothKey = JSON.stringify([outline, smoothOpts]);
+        const smoothKey = JSON.stringify([outline, smoothOpts, getMeshDetail()]);
         mesh.userData.skinGeo = () => {
           const st = cachedGeometry(smoothKey, () => buildInflatedGeometry(outline, { ...smoothOpts, seed: hashString(b.src) }));
           return bd.theta ? cachedGeometry(smoothKey + bendKey(bd), () => bendGeometry(st, bd)) : st;
@@ -661,7 +677,8 @@ export class Creature {
       }
       mesh.userData.opacity = p.opacity ?? 1;
       mesh.castShadow = castsShadow(style);
-      mesh.receiveShadow = true;
+      // (soft shadows also draw receivers into the shadow map: glass mustn't block the light)
+      mesh.receiveShadow = castsShadow(style);
       mesh.userData.boneId = b.def.id;
       if (style === 'toon' && k.ink > 0) {
         const ink = new THREE.Mesh(geo, makeOutlineMaterial(k.ink));
@@ -701,14 +718,18 @@ export class Creature {
       if (!bone) continue;
       alive.add(a.id);
       const twinBone = a.mirror ? this.twinOf(bone) : null;
-      // felt fuzz is sized for the attachment's scale, so a big rescale rebuilds it
-      // (unless the item opts out, and lets its fuzz scale along with it)
-      const felt = a.thing.scaleMaterial !== false && a.thing.pieces.some((p) => p.style === 'felt');
-      const unit = felt ? Math.round(Math.cbrt(Math.abs(a.scale[0] * a.scale[1] * a.scale[2])) * 20) / 20 || 1 : 1;
-      const key = JSON.stringify([a.thing.pieces, a.thing.ownMaterial, a.thing.materialSettings, a.thing.bend, a.thing.bendMode, a.bone, twinBone?.def.id, this.state.materialSettings, unit]);
+      // an item that inherits its material takes the material of the part it's on
+      const part = this.state.parts[bone.src];
+      const wearer = { style: part?.style ?? this.state.style, settingsFor: (st: StyleId) => this.settingsFor(st) };
+      const styles = a.thing.inherit ? [wearer.style] : a.thing.pieces.map((p) => p.style);
+      // felt fuzz and toon ink are sized for the attachment's scale, so a big
+      // rescale rebuilds them (unless the item opts out, and lets them scale along with it)
+      const sized = a.thing.scaleMaterial !== false && styles.some((s) => s === 'felt' || s === 'toon');
+      const unit = sized ? Math.round(Math.cbrt(Math.abs(a.scale[0] * a.scale[1] * a.scale[2])) * 20) / 20 || 1 : 1;
+      const key = JSON.stringify([a.thing.pieces, a.thing.ownMaterial, a.thing.inherit, a.thing.materialSettings, a.thing.bend, a.thing.bendMode, a.bone, twinBone?.def.id, this.state.materialSettings, wearer.style, unit, getMeshDetail()]);
       let rec = this.attached.get(a.id);
       if (!rec || rec.key !== key) {
-        const settings = (st: StyleId) => this.settingsFor(st);
+        const settings = wearer;
         if (rec && rec.bone === bone && rec.twinBone === twinBone) {
           // same place: swap the contents but keep the groups (the gizmo may hold one)
           for (const g of [rec.main, rec.twin]) {
@@ -848,7 +869,8 @@ export class Creature {
     // with colour blending, parts of one material merge whatever their colour
     const blend = on && !!s.mergeColors;
     const kc = blend ? (s.colorBlend ?? 0.12) : 0;
-    this.group.updateMatrixWorld(true);
+    this.root.updateMatrixWorld(true);
+    this.rootInv.copy(this.root.matrixWorld).invert();
 
     const groups = new Map<string, BoneRT[]>();
     for (const b of this.list) {
@@ -951,6 +973,7 @@ export class Creature {
     const version = this.skinVersion;
     this.skinState = 'building';
     this.root.updateMatrixWorld(true);
+    this.rootInv.copy(this.root.matrixWorld).invert();
     const toGroup = this.group.matrixWorld.clone().invert();
     const kMax = s.mergeRadius ?? 0.1;
     const blend = !!s.mergeColors;
@@ -982,11 +1005,13 @@ export class Creature {
       const k = this.settingsFor(style);
       const minR = Math.min(...joined.map(radius));
       const lowPoly = style === 'lowpoly';
-      const textured = style === 'clay' || style === 'felt' || style === 'patchwork';
+      const textured = isTextured(style);
       // low-poly keeps its own parts (and fast joins) unless the setting says otherwise
       if (lowPoly && !seamlessLowPoly) continue;
       // low-poly is built smooth like the rest, then re-faceted to each part's own facet size
-      const h = Math.min(0.02, Math.max(0.006, minR / 2.5));
+      // a coarser grid with less mesh detail (Settings > Performance)
+      const h = Math.min(0.02, Math.max(0.006, minR / 2.5)) / Math.sqrt(getMeshDetail());
+
       const parts: SkinPart[] = joined.map((b) => {
         const geo = ((b.mesh!.userData.skinGeo as (() => THREE.BufferGeometry) | undefined)?.() ?? b.mesh!.userData.baseGeo) as THREE.BufferGeometry;
         return {
@@ -1104,7 +1129,7 @@ export class Creature {
       if (sk.painted) mat.color.setRGB(1, 1, 1);
     }
     mesh.material = mat;
-    mesh.castShadow = castsShadow(style);
+    mesh.castShadow = mesh.receiveShadow = castsShadow(style);
     if (style === 'toon' && k.ink > 0) {
       const ink = new THREE.Mesh(geo, makeOutlineMaterial(k.ink));
       ink.raycast = () => {};
@@ -1146,11 +1171,20 @@ export class Creature {
     return surfaceColor(style, p.color, this.settingsFor(style));
   }
 
+  /**
+   * A part's mesh relative to the creature's placement (root), so merging
+   * works the same however the creature is moved, turned or resized.
+   */
+  private rootInv = new THREE.Matrix4();
+  private rel(o: THREE.Object3D): THREE.Matrix4 {
+    return this.rootInv.clone().multiply(o.matrixWorld);
+  }
+
   private near(a: BoneRT, b: BoneRT, k: number): boolean {
     const ga = a.mesh!.userData.baseGeo as THREE.BufferGeometry;
     const gb = b.mesh!.userData.baseGeo as THREE.BufferGeometry;
-    const ca = ga.boundingSphere!.center.clone().applyMatrix4(a.mesh!.matrixWorld);
-    const cb = gb.boundingSphere!.center.clone().applyMatrix4(b.mesh!.matrixWorld);
+    const ca = ga.boundingSphere!.center.clone().applyMatrix4(this.rel(a.mesh!));
+    const cb = gb.boundingSphere!.center.clone().applyMatrix4(this.rel(b.mesh!));
     return ca.distanceTo(cb) < ga.boundingSphere!.radius + gb.boundingSphere!.radius + k;
   }
 
@@ -1171,7 +1205,8 @@ export class Creature {
     // top), so dragging the fade slider only redoes colours, not the shape.
     const reach = kc > 0 ? Math.max(kc, Math.min(0.4, 2 * kc)) : 0;
 
-    const toWorld = b.mesh!.matrixWorld;
+    // "world" here is the creature's own placement space (see rel)
+    const toWorld = this.rel(b.mesh!);
     const toLocal = toWorld.clone().invert();
     const rotW = new THREE.Matrix3().setFromMatrix4(toWorld);
     const rotL = new THREE.Matrix3().setFromMatrix4(toLocal);
@@ -1181,7 +1216,8 @@ export class Creature {
       const solid = g.userData.solid as Solid;
       // keep fillets in proportion: a thin antenna shouldn't get a huge blob
       const k = Math.max(0.005, Math.min(kMax, 0.6 * Math.min(rA, maxR(solid))));
-      const inv = o.mesh!.matrixWorld.clone().invert();
+      const oWorld = this.rel(o.mesh!);
+      const inv = oWorld.clone().invert();
       const colorKey = this.state.parts[o.src].color.toLowerCase();
       return {
         solid,
@@ -1190,7 +1226,7 @@ export class Creature {
         normals: sharedNormals(g),
         k,
         inv,
-        rot: new THREE.Matrix3().setFromMatrix4(o.mesh!.matrixWorld),
+        rot: new THREE.Matrix3().setFromMatrix4(oWorld),
         box: g.boundingBox!.clone().expandByScalar(Math.max(k, reach)),
         color: this.shownColor(o),
         // same-coloured neighbours don't tint
@@ -1219,7 +1255,8 @@ export class Creature {
     const r6 = (v: number) => v.toFixed(6);
     const shapeKey = [
       base.uuid, kMax, ...toWorld.elements.map(r6),
-      ...nbrs.flatMap((o) => [o.def.id, (o.mesh!.userData.baseGeo as THREE.BufferGeometry).uuid, ...o.mesh!.matrixWorld.elements.map(r6)]),
+      ...nbrs.flatMap((o) => [o.def.id, (o.mesh!.userData.baseGeo as THREE.BufferGeometry).uuid, ...this.rel(o.mesh!).elements.map(r6)]),
+
     ].join(',');
     const cache = out.userData.fade as { key: string; reach: number; f: Float32Array } | undefined;
     const n = others.length;
@@ -1408,11 +1445,43 @@ export class Creature {
     const src = id ? this.bones.get(id)?.src : null;
     for (const b of this.list) {
       const m = b.mesh?.material as THREE.MeshStandardMaterial | undefined;
-      if (!m || !('emissive' in m)) continue;
-      if (b.src === src && k > 0) m.emissive.setRGB(1, 0.42, 0.29).multiplyScalar(0.45 * k);
-      else m.emissive.setScalar(0);
+      if (m && 'emissive' in m) {
+        if (b.src === src && k > 0) m.emissive.setRGB(1, 0.42, 0.29).multiplyScalar(0.45 * k);
+        else m.emissive.setScalar(0);
+      }
+      // A part under a seamless skin is hidden, so its own glow can't be
+      // seen: glow a copy of its surface, puffed out a touch, over the skin.
+      let hl = this.highlights.get(b);
+      const on = !!b.mesh && !b.mesh.visible && b.src === src && k > 0;
+      if (!on) {
+        if (hl) hl.visible = false;
+        continue;
+      }
+      if (!hl) {
+        hl = new THREE.Mesh(b.mesh!.geometry, this.highlightMat);
+        hl.raycast = () => {};
+        hl.renderOrder = 5;
+        this.highlights.set(b, hl);
+      }
+      if (hl.parent !== b.pivot) b.pivot.add(hl);
+      hl.geometry = b.mesh!.geometry;
+      hl.position.copy(b.mesh!.position);
+      hl.quaternion.copy(b.mesh!.quaternion);
+      hl.scale.copy(b.mesh!.scale);
+      hl.visible = true;
     }
+    this.highlightMat.opacity = 0.8 * Math.max(0, k);
   }
+
+  private highlights = new Map<BoneRT, THREE.Mesh>();
+  private highlightMat = (() => {
+    const m = new THREE.MeshBasicMaterial({ color: 0xff9a70, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+    m.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', 'vec3 transformed = position + normal * 0.012;');
+    };
+    return m;
+  })();
+
 
   private updateGuide(b: BoneRT, on: boolean) {
     b.guide.clear();

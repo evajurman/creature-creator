@@ -37,7 +37,7 @@
           <div class="creature-actions">
             <button id="cr-add" class="ghost" title="Add a new creature to the scene">＋ New</button>
             <button id="cr-dup" class="ghost" title="Copy this creature">⧉ Copy</button>
-            <button id="cr-place" class="ghost" title="Slide or turn this creature on the floor">✥ Place</button>
+            <button id="cr-place" class="ghost" title="Move, turn or resize this creature anywhere in the scene">✥ Arrange</button>
             <button id="cr-del" class="ghost" title="Remove this creature from the scene">🗑</button>
           </div>
         </div>
@@ -163,10 +163,14 @@
         </section>
 
         <section id="stuff-panel" hidden>
-          <h3>Workbench</h3>
+          <h3>My stuff</h3>
+          <p class="muted small">Everything you make here is saved as you go. Pick something to change it.</p>
+          <div id="thing-list" class="thing-list"></div>
+
+          <h3 class="editing-head">Editing <span id="thing-saved" class="saved-badge"></span></h3>
           <input id="thing-name" class="text wide" type="text" placeholder="Name this thing" maxlength="40" />
           <button id="piece-draw" class="primary">✏️ Draw a piece <kbd>D</kbd></button>
-          <p class="muted small">Draw pieces on the board. The blue crosshair is where it attaches to a body part.</p>
+          <p class="muted small">Draw on the board; the blue crosshair is where it attaches to a body part. Right-drag or hold <kbd>Space</kbd> to pan.</p>
           <div id="pieces" class="parts"></div>
           <div class="card thing-bend" id="thing-bend-card">
             <div class="sub-title">Bend the whole thing</div>
@@ -203,14 +207,13 @@
             </div>
           </div>
 
-          <div class="row">
-            <button id="thing-save" class="primary slim">💾 Save to collection</button>
-            <button id="thing-new" class="ghost">New</button>
+          <div class="row thing-actions-row" id="thing-actions">
+            <button id="thing-dup" class="ghost" title="Make a copy of this thing to change">⧉ Copy</button>
+            <button id="thing-download" class="ghost" title="Download as a .stuff file">⬇ Download</button>
+            <button id="thing-delete" class="ghost" title="Remove from My stuff">🗑 Delete</button>
           </div>
-
-          <h3>Collection</h3>
-          <div id="thing-list" class="thing-list"></div>
         </section>
+
 
         <section id="pose-panel" hidden>
           <h3>Posing</h3>
@@ -239,10 +242,14 @@
         </div>
         <div id="place-bar" class="draw-bar attach-bar" hidden>
           <span id="place-name" class="attach-name"></span>
-          <button data-place="translate" class="seg-btn" title="Slide along the floor">✥ Move</button>
-          <button data-place="rotate" class="seg-btn" title="Turn to face another way">⟳ Turn</button>
+          <button data-place="translate" class="seg-btn" title="Move anywhere: along the floor or up into the air (W)">✥ Move</button>
+          <button data-place="rotate" class="seg-btn" title="Turn any way, even tip over (E)">⟳ Rotate</button>
+          <button data-place="scale" class="seg-btn" title="Make the whole creature bigger or smaller (R)">⤢ Scale</button>
+          <button id="place-floor" class="seg-btn" title="Lower (or raise) it so it rests on the floor">⬇ Floor</button>
+          <button id="place-reset" class="seg-btn" title="Stand it upright on the floor at its normal size">↺ Reset</button>
           <button id="place-done">Done</button>
         </div>
+
         <div id="attach-bar" class="draw-bar attach-bar" hidden>
           <span id="attach-name" class="attach-name"></span>
           <button data-gizmo="translate" class="seg-btn" title="Move (W)">✥ Move</button>
@@ -287,7 +294,15 @@
           </div>
           <label class="check" id="set-seamless-lp-row" title="Low-poly parts look their best faceted on their own; a seamless skin re-facets them as one"><input id="set-seamless-lp" type="checkbox" /> Also apply to low-poly material</label>
           <p class="muted small">Seamless joins rebuild blended parts as one skin while you're not changing anything.</p>
+          <div class="pop-sub">Performance</div>
+          <div class="seg" id="set-quality">
+            <button data-quality="high" title="Smoothest shapes, softest shadows, full-size picture">High</button>
+            <button data-quality="balanced" title="Fewer triangles and a slightly softer picture">Balanced</button>
+            <button data-quality="fast" title="For slower computers (like a MacBook Air): far fewer triangles, simpler fuzz and shadows, no ambient occlusion">Fast</button>
+          </div>
+          <p class="muted small">If dragging and posing feel slow or jumpy, try Fast.</p>
         </div>
+
         <div id="backdrop" class="popover" hidden>
           <div class="pop-title">Backdrop</div>
           <div id="backdrops" class="swatches"></div>

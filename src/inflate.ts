@@ -3,6 +3,18 @@ import * as THREE from 'three';
 
 export type Vec2 = [number, number];
 
+/**
+ * How finely smooth shapes are meshed: 1 = full detail, lower = fewer
+ * triangles (faster on slow computers; see Settings > Performance).
+ */
+let meshDetail = 1;
+export function setMeshDetail(d: number) {
+  meshDetail = d;
+}
+export function getMeshDetail() {
+  return meshDetail;
+}
+
 export interface InflateOptions {
   /** 1 = round cross-section, <1 flatter, >1 puffier */
   thickness: number;
@@ -171,8 +183,10 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   const area = Math.max(Math.abs(signedArea(outline)), size * size * 0.002);
 
   const facet = opts.facetScale ?? 1;
-  let s = opts.lowPoly ? Math.sqrt(area / 45) * facet : Math.sqrt(area / 650);
-  s = Math.max(s, opts.lowPoly ? (size * facet) / 14 : size / 90);
+  // triangle count goes with 1 / s^2, so detail d keeps about d of them
+  const coarse = opts.lowPoly ? 1 : 1 / Math.sqrt(meshDetail);
+  let s = opts.lowPoly ? Math.sqrt(area / 45) * facet : Math.sqrt(area / 650) * coarse;
+  s = Math.max(s, opts.lowPoly ? (size * facet) / 14 : (size / 90) * coarse);
 
   const boundary = cleanOutline(outline, s);
   const bb = bounds(boundary);

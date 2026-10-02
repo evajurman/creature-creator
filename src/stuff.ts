@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { bounds, buildInflatedGeometry, cleanOutline, type Vec2 } from './inflate';
+import { bounds, buildInflatedGeometry, cleanOutline, getMeshDetail, type Vec2 } from './inflate';
 import {
   castsShadow,
+  inkNormals,
   makeFuzzShells,
   makeMaterial,
   makeOutlineMaterial,
@@ -50,7 +51,12 @@ export interface Thing {
   pieces: Piece[];
   /** small preview image (data URL) for the collection */
   thumb?: string;
-  /** true = uses its own material settings below instead of the creature's */
+  /**
+   * true = takes the material of whatever wears it (type and settings: the
+   * body part it's attached to), instead of each piece's own
+   */
+  inherit?: boolean;
+  /** true = uses its own material settings below instead of the creature's (when not inheriting) */
   ownMaterial?: boolean;
   /** false = felt fuzz grows and shrinks with the item's scale (default: it keeps its real length) */
   scaleMaterial?: boolean;
@@ -96,7 +102,7 @@ function tidy(loop: Vec2[]): Vec2[] {
 }
 
 export function pieceGeometry(p: Piece): THREE.BufferGeometry {
-  const key = JSON.stringify([p.outline, p.holes, p.kind, p.thickness, p.round, p.z, p.hollow, p.open, p.style === 'lowpoly', p.style === 'clay']);
+  const key = JSON.stringify([p.outline, p.holes, p.kind, p.thickness, p.round, p.z, p.hollow, p.open, p.style === 'lowpoly', p.style === 'clay', p.kind === 'puffy' ? getMeshDetail() : 1]);
   const hit = geoCache.get(key);
   if (hit) return hit;
   if (geoCache.size > 120) geoCache.clear();
@@ -142,26 +148,47 @@ export function pieceGeometry(p: Piece): THREE.BufferGeometry {
   return g;
 }
 
+/** Who's wearing (or showing) a thing: their material, for items that inherit it. */
+export interface Wearer {
+  /** the material of the body part it's on */
+  style: StyleId;
+  settingsFor: (s: StyleId) => StyleSettings;
+}
+
+/** The material a piece is actually shown in, and with which settings. */
+export function pieceLook(thing: Thing, p: Piece, wearer: Wearer): { style: StyleId; k: StyleSettings } {
+  if (thing.inherit) return { style: wearer.style, k: wearer.settingsFor(wearer.style) };
+  const k = thing.ownMaterial ? styleSettings(p.style, thing.materialSettings?.[p.style]) : wearer.settingsFor(p.style);
+  return { style: p.style, k };
+}
+
 /**
  * Build the meshes for a thing. Pieces are tagged with userData.pieceId.
- * `unit` is how much the thing will be scaled up, so felt fuzz keeps its real length.
+ * `unit` is how much the thing will be scaled up, so felt fuzz and toon ink
+ * keep their real size.
  */
-export function buildThing(thing: Thing, settingsFor: (s: StyleId) => StyleSettings, unit = 1): THREE.Group {
+export function buildThing(thing: Thing, wearer: Wearer, unit = 1): THREE.Group {
   const group = new THREE.Group();
   const bend = thingBend(thing);
-  for (const p of thing.pieces) {
+  for (const raw of thing.pieces) {
+    const { style, k } = pieceLook(thing, raw, wearer);
+    // low-poly and clay shape the mesh itself
+    const p = style === raw.style ? raw : { ...raw, style };
     const geo = bend ? bentGeometry(pieceGeometry(p), bend) : pieceGeometry(p);
-    const k = thing.ownMaterial ? styleSettings(p.style, thing.materialSettings?.[p.style]) : settingsFor(p.style);
-    const mesh = new THREE.Mesh(geo, makeMaterial(p.style, p.color, k));
-    mesh.castShadow = castsShadow(p.style);
-    mesh.receiveShadow = true;
+    const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
+    // soft (VSM) shadows draw receivers into the shadow map too: a glass jar
+    // would block the light from whatever's inside it
+    mesh.castShadow = mesh.receiveShadow = castsShadow(style);
     mesh.userData.pieceId = p.id;
-    if (p.style === 'toon' && k.ink > 0) {
-      const ink = new THREE.Mesh(geo, makeOutlineMaterial(k.ink));
+    if (style === 'toon' && k.ink > 0) {
+      // flat and turned pieces have hard edges: an outline along smoothed
+      // normals stays in one piece. Ink width is in world units, like the body's.
+      const ink = new THREE.Mesh(inkNormals(geo), makeOutlineMaterial(k.ink / unit, true));
       ink.raycast = () => {};
       mesh.add(ink);
     }
-    if (p.style === 'felt') {
+    if (style === 'felt') {
+
       for (const shell of makeFuzzShells(geo, p.color, k, 8, unit)) mesh.add(shell);
       if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, 7, k.hairs * 0.6, false, unit));
     }
@@ -368,8 +395,11 @@ function writeCollection(list: Thing[]): boolean {
 
 /** Add or replace (by id). Returns false if browser storage is full. */
 export function putThing(thing: Thing): boolean {
-  const list = collection().filter((t) => t.id !== thing.id);
-  list.push(structuredClone(thing));
+  // replaced where it is, so the collection keeps its order
+  const list = collection();
+  const i = list.findIndex((t) => t.id === thing.id);
+  if (i >= 0) list[i] = structuredClone(thing);
+  else list.push(structuredClone(thing));
   return writeCollection(list);
 }
 

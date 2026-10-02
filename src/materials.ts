@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork';
+export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork' | 'knit';
 
 export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'clay', name: 'Clay', desc: 'Hand-moulded, fingerprinted' },
@@ -10,7 +10,13 @@ export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'toon', name: 'Toon', desc: 'Cel-shaded with ink lines' },
   { id: 'glass', name: 'Glass', desc: 'Clear or frosted, refracts' },
   { id: 'patchwork', name: 'Patchwork', desc: 'Stitched fabric patches' },
+  { id: 'knit', name: 'Knitted', desc: 'Cosy knitted yarn' },
 ];
+
+/** Materials whose textures are laid out on the creature's rest pose. */
+export function isTextured(style: StyleId) {
+  return style === 'clay' || style === 'felt' || style === 'patchwork' || style === 'knit';
+}
 
 /** A per-material slider. `geometry` ones change the mesh itself, not just the shader. */
 export interface StyleParam {
@@ -58,6 +64,12 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
     { key: 'prints', label: 'Prints', min: 0, max: 1, step: 0.01, value: 0.6 },
     { key: 'stitches', label: 'Stitching', min: 0, max: 1, step: 0.01, value: 0.8 },
     { key: 'puff', label: 'Quilting', min: 0, max: 3, step: 0.05, value: 1 },
+  ],
+  knit: [
+    { key: 'size', label: 'Stitch size', min: 0.3, max: 4, step: 0.05, value: 1 },
+    { key: 'puff', label: 'Yarn depth', min: 0, max: 3, step: 0.05, value: 1 },
+    { key: 'stripes', label: 'Stripes', min: 0, max: 1, step: 0.01, value: 0 },
+    { key: 'fluff', label: 'Fluffiness', min: 0, max: 1.5, step: 0.01, value: 0.45 },
   ],
   toon: [
     { key: 'ink', label: 'Ink width', min: 0, max: 0.04, step: 0.001, value: 0.012 },
@@ -501,6 +513,104 @@ function getPatchwork(variety: number, prints: number, stitches: number) {
   return out;
 }
 
+// Knitted: rows of V-shaped stockinette stitches. Like patchwork, the colour
+// map is a gain around mid-grey, so the yarn takes the part's own colour.
+const knitTex = new Map<string, { map: THREE.Texture; bump: THREE.Texture }>();
+
+function getKnit(stripes: number) {
+  const key = stripes.toFixed(2);
+  const hit = knitTex.get(key);
+  if (hit) return hit;
+  if (knitTex.size > 8) knitTex.clear();
+  const size = 512;
+  const cols = 16;
+  const rows = 24; // stripes come in bands of 3 rows, so this still tiles
+  const w = size / cols, h = size / rows;
+  const bumpC = document.createElement('canvas');
+  bumpC.width = bumpC.height = size;
+  const b = bumpC.getContext('2d')!;
+  b.fillStyle = 'rgb(18,18,18)';
+  b.fillRect(0, 0, size, size);
+  // each stitch is two plump legs leaning apart into a V
+  const legs: { x: number; y: number; a: number }[] = [];
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const cx = (i + 0.5) * w, cy = (j + 0.5) * h;
+      for (const side of [-1, 1]) legs.push({ x: cx + side * w * 0.21, y: cy, a: side * 0.5 });
+    }
+  }
+  const leg = (l: { x: number; y: number; a: number }, fn: () => void) => {
+    for (const dx of [-size, 0, size]) for (const dy of [-size, 0, size]) {
+      b.save();
+      b.translate(l.x + dx, l.y + dy);
+      b.rotate(l.a);
+      b.scale(w * 0.29, h * 0.95);
+      fn();
+      b.restore();
+    }
+  };
+  // 'lighten': where legs overlap, the higher yarn wins
+  b.globalCompositeOperation = 'lighten';
+  for (const l of legs) {
+    leg(l, () => {
+      const g = b.createRadialGradient(0, -0.1, 0, 0, 0, 1);
+      g.addColorStop(0, 'rgb(235,235,235)');
+      g.addColorStop(0.55, 'rgb(190,190,190)');
+      g.addColorStop(0.85, 'rgb(110,110,110)');
+      g.addColorStop(1, 'rgb(18,18,18)');
+      b.fillStyle = g;
+      b.beginPath();
+      b.arc(0, 0, 1, 0, Math.PI * 2);
+      b.fill();
+    });
+  }
+  // the plies twisting round each leg: fine slanted grooves
+  b.globalCompositeOperation = 'source-over';
+  b.strokeStyle = 'rgba(0,0,0,0.22)';
+  for (const l of legs) {
+    leg(l, () => {
+      b.beginPath();
+      b.arc(0, 0, 0.92, 0, Math.PI * 2);
+      b.clip();
+      b.lineWidth = 0.07;
+      for (let k = -1.4; k <= 1.4; k += 0.32) {
+        b.beginPath();
+        b.moveTo(-1, k - 0.5);
+        b.lineTo(1, k + 0.5);
+        b.stroke();
+      }
+    });
+  }
+  // a little fibre grain over everything
+  const grain = tileNoise(size, 64, 2, 13);
+  const bi = b.getImageData(0, 0, size, size);
+  for (let i = 0; i < grain.length; i++) {
+    const v = bi.data[i * 4] + (grain[i] - 0.5) * 30;
+    bi.data[i * 4] = bi.data[i * 4 + 1] = bi.data[i * 4 + 2] = v;
+  }
+  b.putImageData(bi, 0, 0);
+
+  // colour gain: yarn tops a touch lighter, the gaps between stitches darker;
+  // stripes lighten every other band of three rows
+  const mapC = document.createElement('canvas');
+  mapC.width = mapC.height = size;
+  const m = mapC.getContext('2d')!;
+  const mi = m.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    const band = Math.floor(y / h / 3) % 2 === 1 ? 1 + 0.55 * stripes : 1;
+    for (let x = 0; x < size; x++) {
+      const k = (y * size + x) * 4;
+      const gain = (0.55 + 0.55 * (bi.data[k] / 255)) * band;
+      mi.data[k] = mi.data[k + 1] = mi.data[k + 2] = Math.min(255, Math.round(gain * 127.5));
+      mi.data[k + 3] = 255;
+    }
+  }
+  m.putImageData(mi, 0, 0);
+  const out = { map: wrapTexture(mapC), bump: wrapTexture(bumpC) };
+  knitTex.set(key, out);
+  return out;
+}
+
 const toonGradients = new Map<string, THREE.DataTexture>();
 /** Stepped lighting ramp: `bands` flat tones from the shadow tone up to full light. */
 function getToonGradient(bands: number, shadow: number) {
@@ -810,12 +920,39 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
         { tiling: 0.8 / k.size, hard: { stitches: k.stitches }, mapGain: 2 },
       );
     }
+    case 'knit': {
+      const t = getKnit(k.stripes);
+      return triplanar(
+        new THREE.MeshPhysicalMaterial({
+          color: c,
+          roughness: 0.95,
+          metalness: 0,
+          map: t.map,
+          bumpMap: t.bump,
+          bumpScale: 2.6 * k.puff,
+          // soft wool sheen at grazing angles
+          sheen: 0.9,
+          sheenRoughness: 0.45,
+          sheenColor: c.clone().lerp(new THREE.Color('#ffffff'), 0.55),
+        }),
+        // one projection per spot, so stitches never ghost over each other;
+        // where it switches reads as a sewn seam (without patchwork's thread)
+        { tiling: 1.5 / k.size, hard: { stitches: 0 }, mapGain: 2, rim: k.fluff },
+      );
+    }
   }
+}
+
+/** Share of felt fuzz shells actually drawn (lower = faster; see Settings > Performance). */
+let fuzzQuality = 1;
+export function setFuzzQuality(q: number) {
+  fuzzQuality = q;
 }
 
 /** Concentric fuzz shells for felt: a halo of curly fibres standing off the surface. */
 export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, settings: StyleSettings, layers = 12, unit = 1): THREE.Mesh[] {
   const f = getFelt();
+  layers = Math.max(3, Math.round(layers * fuzzQuality));
   // unit = how much the mesh is scaled up in the world; fuzz keeps its world length
   const height = settings.fuzz / unit;
   if (height <= 0) return [];
@@ -998,16 +1135,59 @@ export function castsShadow(style: StyleId) {
   return style !== 'glass';
 }
 
-/** Inverted-hull ink outline for the toon style. */
-export function makeOutlineMaterial(width = 0.012): THREE.Material {
+/**
+ * Inverted-hull ink outline for the toon style. With `smooth`, the hull is
+ * pushed out along the geometry's `inkNormal` attribute (see inkNormals), so
+ * shapes with hard edges get one unbroken outline instead of split shards.
+ */
+export function makeOutlineMaterial(width = 0.012, smooth = false): THREE.Material {
   const m = new THREE.MeshBasicMaterial({ color: 0x2b2024, side: THREE.BackSide });
+  if (smooth) m.defines = { INK_NORMAL: '' };
   m.onBeforeCompile = (shader) => {
     shader.uniforms.outlineWidth = { value: width };
-    shader.vertexShader = 'uniform float outlineWidth;\n' + shader.vertexShader.replace(
-      '#include <begin_vertex>',
-      'vec3 transformed = position + normal * outlineWidth;',
-    );
+    shader.vertexShader =
+      'uniform float outlineWidth;\n#ifdef INK_NORMAL\nattribute vec3 inkNormal;\n#endif\n' +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#ifdef INK_NORMAL
+           vec3 transformed = position + inkNormal * outlineWidth;
+         #else
+           vec3 transformed = position + normal * outlineWidth;
+         #endif`,
+      );
   };
   m.userData.ink = true;
   return m;
+}
+
+/**
+ * Give a geometry an `inkNormal` attribute: the normals averaged over every
+ * vertex at the same spot, so creased corners (split vertices) push the ink
+ * hull out together and it stays closed. Done once per geometry.
+ */
+export function inkNormals(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  if (geo.getAttribute('inkNormal')) return geo;
+  const pos = geo.getAttribute('position');
+  const nor = geo.getAttribute('normal');
+  if (!pos || !nor) return geo;
+  const key = (i: number) => `${Math.round(pos.getX(i) * 1e4)},${Math.round(pos.getY(i) * 1e4)},${Math.round(pos.getZ(i) * 1e4)}`;
+  const sums = new Map<string, THREE.Vector3>();
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const k = key(i);
+    let s = sums.get(k);
+    if (!s) sums.set(k, (s = new THREE.Vector3()));
+    s.add(v.fromBufferAttribute(nor, i));
+  }
+  const out = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    v.copy(sums.get(key(i))!);
+    if (v.lengthSq() < 1e-10) v.fromBufferAttribute(nor, i);
+    v.normalize();
+    out[i * 3] = v.x;
+    out[i * 3 + 1] = v.y;
+    out[i * 3 + 2] = v.z;
+  }
+  geo.setAttribute('inkNormal', new THREE.BufferAttribute(out, 3));
+  return geo;
 }
