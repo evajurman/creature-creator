@@ -103,6 +103,8 @@ export interface CreatureState {
   workbench?: Thing;
   /** where the creature stands in a multi-creature scene: floor position and facing */
   placement?: Placement;
+  /** settle onto the floor after every bend or resize (default on; lifting the creature turns it off) */
+  keepFloor?: boolean;
 }
 
 export interface Placement {
@@ -216,10 +218,15 @@ const planeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: tru
 const startMat = new THREE.MeshBasicMaterial({ color: 0x8b5cf6, depthTest: false, transparent: true });
 // handle/guide materials are shared by every creature: never dispose them with one
 const bendMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, depthTest: false, transparent: true });
-for (const m of [tipMat, tipHoverMat, rootMat, lineMat, outlineLineMat, planeMat, startMat, bendMat]) m.userData.shared = true;
+// the size gizmo around the selected part
+const sizerMat = new THREE.MeshBasicMaterial({ color: 0x14b8a6, depthTest: false, transparent: true });
+const sizerLineMat = new THREE.LineDashedMaterial({ color: 0x14b8a6, depthTest: false, transparent: true, opacity: 0.8, dashSize: 0.035, gapSize: 0.025 });
+for (const m of [tipMat, tipHoverMat, rootMat, lineMat, outlineLineMat, planeMat, startMat, bendMat, sizerMat, sizerLineMat]) m.userData.shared = true;
 const tipGeo = new THREE.SphereGeometry(0.032, 16, 12);
 const startGeo = new THREE.BoxGeometry(0.055, 0.055, 0.055);
 const bendGeo = new THREE.OctahedronGeometry(0.042);
+const arrowGeo = new THREE.ConeGeometry(0.034, 0.075, 16);
+const cornerGeo = new THREE.BoxGeometry(0.05, 0.05, 0.05);
 
 // ---------------------------------------------------------------------------
 // bendy bones: the bone's local frame (X = side, Y = along the bone, Z = out
@@ -375,34 +382,6 @@ function restFrame(def: ExpandedBone) {
   return { length, world: new THREE.Matrix4().makeBasis(side, dir, normal).setPosition(start) };
 }
 
-/** Where a bone's (possibly curved) tip sits in the rest pose. */
-export function bentTip(def: ExpandedBone): THREE.Vector3 {
-  const { length, world } = restFrame(def);
-  const [x, y, z] = bendPoint(bendOf(def, length), 0, length, 0);
-  return new THREE.Vector3(x, y, z).applyMatrix4(world);
-}
-
-/**
- * The end point that puts a bendy bone's curved tip at `target`, keeping its
- * bend. The tip lies off the straight line from start to end, so moving the
- * end by the pointer's motion would send the tip somewhere else.
- */
-export function endForTip(def: ExpandedBone, target: THREE.Vector3): THREE.Vector3 {
-  const start = new THREE.Vector3(...def.start);
-  const want = target.clone().sub(start);
-  let end = new THREE.Vector3(...def.end);
-  if (want.lengthSq() < 1e-8) return end;
-  // the tip's chord scales with the bone and turns with it; the drawing side
-  // re-squares against each new direction, so settle it in a few passes
-  for (let i = 0; i < 8; i++) {
-    const tip = bentTip({ ...def, end: end.toArray() as V3 }).sub(start);
-    if (tip.lengthSq() < 1e-10) break;
-    const q = new THREE.Quaternion().setFromUnitVectors(tip.clone().normalize(), want.clone().normalize());
-    const len = end.distanceTo(start) * (want.length() / tip.length());
-    end = end.sub(start).applyQuaternion(q).setLength(len).add(start);
-  }
-  return end;
-}
 const rootGeo = new THREE.BoxGeometry(0.07, 0.07, 0.07);
 
 export class Creature {
@@ -430,8 +409,10 @@ export class Creature {
   lastChange = performance.now();
   /** eye spots in head-local space, for keeping felt fuzz off them */
   private eyeSpots: FuzzSpot[] = [];
-  /** rig editing shows the rest pose and joint handles */
-  private rigMode = false;
+  /** the size gizmo: a dashed box round the selected part with grips to stretch and fatten it */
+  private sizer = new THREE.Group();
+  private sizerBox: THREE.LineLoop;
+  readonly sizerHandles: THREE.Mesh[] = [];
   private attached = new Map<string, { key: string; main: THREE.Group; twin: THREE.Group | null; bone: BoneRT; twinBone: BoneRT | null }>();
 
   constructor(state: CreatureState) {
@@ -445,6 +426,21 @@ export class Creature {
     this.rootHandle.userData.handle = 'root';
     this.list[0].pivot.parent!.add(this.rootHandle);
     this.rootHandle.position.copy(this.list[0].pivot.position);
+    this.sizerBox = new THREE.LineLoop(new THREE.BufferGeometry(), sizerLineMat);
+    this.sizerBox.renderOrder = 999;
+    this.sizer.add(this.sizerBox);
+    // [kind, sign]: 'len' stretches along the bone, 'wid' fattens it, 'size' does both
+    for (const [kind, sign] of [['len', 1], ['wid', -1], ['wid', 1], ['size', -1], ['size', 1]] as const) {
+      const h = new THREE.Mesh(kind === 'size' ? cornerGeo : arrowGeo, sizerMat);
+      if (kind === 'wid') h.rotation.z = (-sign * Math.PI) / 2;
+      if (kind === 'size') h.rotation.z = Math.PI / 4;
+      h.renderOrder = 1000;
+      h.userData.kind = kind;
+      h.userData.sign = sign;
+      this.sizerHandles.push(h);
+      this.sizer.add(h);
+    }
+    this.sizer.visible = false;
     this.sync();
   }
 
@@ -555,7 +551,6 @@ export class Creature {
       let local = b.parent ? b.parent.restWorld.clone().invert().multiply(world) : world.clone();
       if (b.parent) local = bendChild(bendOf(b.parent.def, b.parent.length), local);
       local.decompose(b.pivot.position, b.restQuat, new THREE.Vector3());
-      b.pivot.quaternion.copy(b.restQuat);
       b.restWorld = world;
       b.def = def;
       if (b.mesh) b.mesh.scale.y = length / b.length;
@@ -568,13 +563,10 @@ export class Creature {
     }
     this.rootHandle.position.copy(this.list[0].pivot.position);
     this.updateRestFrames();
-    this.mergeDirty = true;
-  }
-
-  setRigMode(on: boolean) {
-    this.rigMode = on;
-    if (on) this.invalidateSkin();
+    // reshaping keeps the pose: bones stay bent the way they were
     this.applyPose();
+    this.mergeDirty = true;
+    this.updateSizer();
   }
 
   settingsFor(style: StyleId): StyleSettings {
@@ -700,6 +692,7 @@ export class Creature {
     this.syncEyes();
     this.syncAttachments();
     this.refreshHighlight();
+    this.updateSizer();
   }
 
   // -------------------------------------------------------------------------
@@ -816,12 +809,11 @@ export class Creature {
     const before = this.list.map((b) => b.pivot.quaternion.clone());
     const pos = this.group.position.clone();
     for (const b of this.list) {
-      const q = this.rigMode ? null : this.state.pose[b.def.id];
+      const q = this.state.pose[b.def.id];
       b.pivot.quaternion.copy(b.restQuat);
       if (q) b.pivot.quaternion.multiply(new THREE.Quaternion(...q));
     }
-    if (this.rigMode) this.group.position.set(0, 0, 0);
-    else this.group.position.set(...this.state.rootOffset);
+    this.group.position.set(...this.state.rootOffset);
     if (!this.group.position.equals(pos) || this.list.some((b, i) => !b.pivot.quaternion.equals(before[i]))) this.mergeDirty = true;
   }
 
@@ -969,7 +961,7 @@ export class Creature {
   /** Build seamless skins for every merged group. Resolves false if interrupted. */
   async settle(): Promise<boolean> {
     const s = this.state;
-    if (this.skinState !== 'none' || !(s.merge ?? true) || !seamlessOn(s) || this.rigMode || this.drawFocus) return false;
+    if (this.skinState !== 'none' || !(s.merge ?? true) || !seamlessOn(s) || this.drawFocus) return false;
     const version = this.skinVersion;
     this.skinState = 'building';
     this.root.updateMatrixWorld(true);
@@ -1517,6 +1509,7 @@ export class Creature {
       b.mesh!.castShadow = !dim && castsShadow(style);
       for (const c of b.mesh!.children) c.visible = !id;
     }
+    this.updateSizer();
     this.eyes.visible = !id;
     for (const rec of this.attached.values()) {
       rec.main.visible = !id;
@@ -1533,11 +1526,69 @@ export class Creature {
     for (const b of this.list) {
       b.tip.visible = v;
       b.line.visible = v;
-      b.startHandle.visible = v && this.rigMode && b.attach;
-      // the bend handle only on the selected bone (the twin follows by symmetry)
-      b.bendHandle.visible = v && this.rigMode && b === sel;
+      // the slide and bend grips only on the selected bone (the twin follows by symmetry)
+      b.startHandle.visible = v && b === sel && b.attach;
+      b.bendHandle.visible = v && b === sel;
     }
-    this.rootHandle.visible = v && !this.rigMode;
+    this.rootHandle.visible = v;
+    this.updateSizer();
+  }
+
+  private boingAt = 0;
+  private boingMeshes: [THREE.Mesh, THREE.Vector3][] = [];
+
+  /** A quick squash-and-stretch wobble on a part (and its twin), e.g. after resizing it. */
+  boing(id: string) {
+    this.endBoing();
+    this.boingMeshes = this.linked(id).flatMap((b) => (b.mesh ? [[b.mesh, b.mesh.scale.clone()] as [THREE.Mesh, THREE.Vector3]] : []));
+    this.boingAt = performance.now();
+  }
+
+  private endBoing() {
+    for (const [m, s] of this.boingMeshes) m.scale.copy(s);
+    this.boingMeshes = [];
+  }
+
+  /** Advance the wobble; true while it's still moving. */
+  tickBoing(now: number): boolean {
+    if (!this.boingMeshes.length) return false;
+    const t = (now - this.boingAt) / 420;
+    if (t >= 1) {
+      this.endBoing();
+      return true;
+    }
+    const w = Math.sin(t * Math.PI * 3) * (1 - t) * 0.09;
+    for (const [m, s] of this.boingMeshes) m.scale.set(s.x * (1 - w * 0.6), s.y * (1 + w), s.z * (1 - w * 0.6));
+    return true;
+  }
+
+  /** Fit the size gizmo round the selected part, as it's shown right now. */
+  updateSizer() {
+    const b = this.selected ? this.bones.get(this.selected) : null;
+    const geo = b?.mesh?.userData.baseGeo as THREE.BufferGeometry | undefined;
+    this.sizer.visible = !!b && !!geo && this.skeletonShown && !this.drawFocus;
+    if (!b || !geo || !this.sizer.visible) return;
+    if (this.sizer.parent !== b.pivot) b.pivot.add(this.sizer);
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    const sc = b.mesh!.scale;
+    const pad = 0.025;
+    const x0 = bb.min.x * sc.x - pad;
+    const x1 = bb.max.x * sc.x + pad;
+    const y0 = bb.min.y * sc.y - pad;
+    const y1 = bb.max.y * sc.y + pad;
+    const pts = [new THREE.Vector3(x0, y0, 0), new THREE.Vector3(x1, y0, 0), new THREE.Vector3(x1, y1, 0), new THREE.Vector3(x0, y1, 0)];
+    this.sizerBox.geometry.dispose();
+    this.sizerBox.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+    this.sizerBox.computeLineDistances();
+    const cy = (y0 + y1) / 2;
+    for (const h of this.sizerHandles) {
+      h.userData.handle = b.def.id;
+      const sign = h.userData.sign as number;
+      if (h.userData.kind === 'len') h.position.set((x0 + x1) / 2, y1 + 0.07, 0);
+      else if (h.userData.kind === 'wid') h.position.set(sign < 0 ? x0 - 0.06 : x1 + 0.06, cy, 0);
+      else h.position.set(sign < 0 ? x0 : x1, y1, 0);
+    }
   }
 
   setHandleHover(obj: THREE.Object3D | null) {
@@ -1546,11 +1597,13 @@ export class Creature {
       b.startHandle.material = b.startHandle === obj ? tipHoverMat : startMat;
       b.bendHandle.material = b.bendHandle === obj ? tipHoverMat : bendMat;
     }
+    for (const h of this.sizerHandles) h.material = h === obj ? tipHoverMat : sizerMat;
+    // whatever's under the pointer swells a little, so it's clear what you'll grab
+    for (const h of [this.rootHandle, ...this.sizerHandles, ...this.list.flatMap((b) => [b.tip, b.startHandle, b.bendHandle])]) h.scale.setScalar(h === obj ? 1.45 : 1);
   }
 
   handles(): THREE.Object3D[] {
-    if (this.rigMode) return [...this.list.map((b) => b.bendHandle), ...this.list.map((b) => b.startHandle), ...this.list.map((b) => b.tip)];
-    return [this.rootHandle, ...this.list.map((b) => b.tip)];
+    return [...this.sizerHandles, ...this.list.map((b) => b.bendHandle), ...this.list.map((b) => b.startHandle), this.rootHandle, ...this.list.map((b) => b.tip)];
   }
 
   meshes(): THREE.Object3D[] {
@@ -1575,7 +1628,7 @@ export class Creature {
   }
 
   /** Drag a bone tip toward `target`, optionally bending up to `chain` ancestors (CCD IK). */
-  dragTip(id: string, target: THREE.Vector3, ik: boolean) {
+  dragTip(id: string, target: THREE.Vector3, ik: boolean): BoneRT[] {
     const b = this.bones.get(id)!;
     const chain: BoneRT[] = [b];
     if (ik) {
@@ -1594,6 +1647,32 @@ export class Creature {
         this.aimBone(j, tipPos, target);
       }
     }
+    return chain;
+  }
+
+  /**
+   * Give the other side the mirror image of these bones' pose. Works in the
+   * creature's own space: each bone's turn away from its rest pose is
+   * reflected across the centre plane and applied to its twin.
+   */
+  mirrorPose(bones: BoneRT[]) {
+    const groupQ = this.group.getWorldQuaternion(new THREE.Quaternion());
+    const inGroup = (o: THREE.Object3D) => groupQ.clone().invert().multiply(o.getWorldQuaternion(new THREE.Quaternion()));
+    const restQ = (b: BoneRT) => new THREE.Quaternion().setFromRotationMatrix(b.restGroup);
+    // parents first, so each twin is set against its parent's new pose
+    const ordered = [...bones].sort((a, b) => this.list.indexOf(a) - this.list.indexOf(b));
+    for (const b of ordered) {
+      const twin = this.twinOf(b);
+      if (!twin) continue;
+      this.group.updateMatrixWorld(true);
+      const turn = inGroup(b.pivot).multiply(restQ(b).invert());
+      const mirrored = new THREE.Quaternion(turn.x, -turn.y, -turn.z, turn.w);
+      const want = mirrored.multiply(restQ(twin));
+      const parentQ = inGroup(twin.pivot.parent!);
+      twin.pivot.quaternion.copy(parentQ.invert().multiply(want));
+      twin.pivot.updateMatrixWorld(true);
+    }
+    this.mergeDirty = true;
   }
 }
 

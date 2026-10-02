@@ -331,6 +331,38 @@ export function moveJoint(rig: RigState, sceneId: string, kind: 'start' | 'end',
 }
 
 /**
+ * Resize a bone in the rest pose: `kLen` stretches it along its length (from
+ * its base), `kWidth` fattens its default shape. Limbs hanging off it keep
+ * their place on it: one on the tip rides the tip, one halfway up stays halfway.
+ */
+export function scaleBone(rig: RigState, sceneId: string, kLen: number, kWidth: number) {
+  const f = findDef(rig, sceneId);
+  if (!f) return;
+  const d = f.def;
+  const axis = sub3(d.end, d.start);
+  const len = len3(axis);
+  if (len < 1e-6) return;
+  const u = scale3(axis, 1 / len);
+  d.end = round3(add3(d.start, scale3(axis, kLen)));
+  const r3 = (v: number) => Math.round(v * 1000) / 1000;
+  d.width = r3(Math.max(0.01, d.width * kWidth));
+  if (d.widthEnd !== undefined) d.widthEnd = r3(Math.max(0.01, d.widthEnd * kWidth));
+  const kids = (id: string) => rig.bones.filter((b) => b.parent === id);
+  const shiftTree = (b: BoneDef, by: V3) => {
+    b.start = round3(add3(b.start, by));
+    b.end = round3(add3(b.end, by));
+    for (const k of kids(b.id)) shiftTree(k, by);
+  };
+  for (const c of kids(d.id)) {
+    const rel = sub3(c.start, d.start);
+    const t = rel[0] * u[0] + rel[1] * u[1] + rel[2] * u[2];
+    const lateral = sub3(rel, scale3(u, t));
+    const next = add3(add3(d.start, scale3(u, t * kLen)), scale3(lateral, kWidth));
+    shiftTree(c, sub3(next, c.start));
+  }
+}
+
+/**
  * Sprout a new limb from the side of a bone: two segments, or a single bone
  * with `segments: 1`. With `symmetric`, it comes as a mirrored pair.
  */

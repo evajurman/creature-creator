@@ -393,6 +393,11 @@ function writeCollection(list: Thing[]): boolean {
   }
 }
 
+/** Empty My stuff. */
+export function clearCollection() {
+  writeCollection([]);
+}
+
 /** Add or replace (by id). Returns false if browser storage is full. */
 export function putThing(thing: Thing): boolean {
   // replaced where it is, so the collection keeps its order
@@ -411,7 +416,8 @@ export function removeThing(id: string) {
 // files: JSON with a small header so the app can tell what it's opening
 
 export const FILE_FORMAT = 'creature-creator';
-export const FILE_VERSION = 1;
+/** 2: a .creature file holds a whole bundle (creatures, stuff, body plans, backdrop) */
+export const FILE_VERSION = 2;
 
 export type FileKind = 'creature' | 'scene' | 'stuff' | 'collection';
 

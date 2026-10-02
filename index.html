@@ -13,17 +13,16 @@
       <header class="topbar">
         <div class="brand"><span class="logo">🦎</span> Creature Creator</div>
         <div class="modes" role="tablist">
-          <button data-mode="build" class="active" title="Build (1)">✏️ Build</button>
-          <button data-mode="rig" title="Rig (2)">🦴 Rig</button>
-          <button data-mode="pose" title="Pose (3)">🤸 Pose</button>
-          <button data-mode="stuff" title="Stuff (4)">🗡 Stuff</button>
+          <button data-mode="shape" class="active" title="Shape: draw, stretch, grow and pose your creature (1)">✋ Shape</button>
+          <button data-mode="look" title="Look: colours, materials, eyes and stuff to wear (2)">🎨 Look</button>
+          <button data-mode="stuff" title="Stuff: make things to wear and carry (3)">📦 Stuff</button>
         </div>
         <div class="spacer"></div>
         <div class="tools">
           <button id="file-btn" title="Save and open files">📁 File</button>
           <button id="undo" title="Undo (Ctrl+Z)">↶</button>
           <button id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
-          <button id="backdrop-btn" title="Backdrop &amp; lighting">🎨 Backdrop</button>
+          <button id="backdrop-btn" title="Backdrop &amp; lighting">🌄 Backdrop</button>
           <button id="spin" title="Turntable">⟳ Spin</button>
           <button id="shot" title="Save a picture">📷 Photo</button>
           <button id="new" title="Start over">✨ New</button>
@@ -41,45 +40,89 @@
             <button id="cr-del" class="ghost" title="Remove this creature from the scene">🗑</button>
           </div>
         </div>
-        <section id="build-panel">
+        <section id="plan-sec">
           <h3>Body plan</h3>
           <div id="rigs" class="rigs"></div>
+          <details class="fine">
+            <summary>Save this body plan</summary>
+            <div class="row">
+              <input id="rig-name" class="text" type="text" placeholder="Name" maxlength="40" />
+              <button id="rig-save" class="ghost">💾 Save</button>
+            </div>
+            <div id="saved-rig-list" class="saved-rigs"></div>
+          </details>
+        </section>
 
+        <section id="parts-sec">
           <h3>Parts</h3>
           <div id="parts" class="parts"></div>
+        </section>
 
+        <section id="shape-panel">
           <div class="card" id="part-card">
-            <div class="card-title" id="part-title">Body</div>
+            <input id="rig-title" class="text wide card-title-input" type="text" maxlength="40" placeholder="Part name" title="Rename this part" />
+            <p class="muted small" id="rig-pair-note"></p>
             <button id="draw" class="primary">✏️ Draw shape <kbd>D</kbd></button>
-            <p class="muted small">Or double-click a part. Draw a closed outline; it inflates like a balloon.</p>
+            <p class="muted small">Or double-click a part. Draw a closed outline; it puffs up like a balloon.</p>
             <label class="slider">
               <span>Thickness</span>
               <input id="thickness" type="range" min="0.1" max="4.5" step="0.01" />
               <span class="ends"><em>flat</em><em>chubby</em></span>
             </label>
+            <button id="reset-shape" class="ghost">Reset shape</button>
+
+            <div class="sub-title rig-sub">Grow</div>
+            <div class="rig-actions">
+              <button id="rig-add" class="ghost" title="Sprout a two-segment limb from the side of this part">➕ Limb</button>
+              <button id="rig-bone" class="ghost" title="Sprout a single piece from the side of this part">🦴 Bone</button>
+              <button id="rig-extend" class="ghost" title="Add a segment on the end of this part">↗ Extend</button>
+              <button id="rig-split" class="ghost" title="Split this part in the middle into two jointed halves">✂ Split</button>
+              <button id="rig-dup" class="ghost" title="Copy this limb and everything attached to it">⧉ Copy</button>
+              <button id="rig-del" class="ghost" title="Remove this part and everything attached to it">🗑 Delete</button>
+              <button id="rig-unlink" class="ghost" title="Let the left and right sides be shaped separately">⛓ Unlink pair</button>
+              <button id="rig-eyes" class="ghost" title="Put the eyes on this part">👀 Eyes here</button>
+            </div>
+
+            <details class="fine">
+              <summary>Fine-tune</summary>
+              <label class="slider"><span>Base width</span><input id="rig-w0" type="range" min="0.02" max="1.2" step="0.005" /></label>
+              <label class="slider"><span>Tip width</span><input id="rig-w1" type="range" min="0.02" max="1.2" step="0.005" /></label>
+              <p class="muted small" id="rig-drawn-note" hidden>This part has a drawing, so these widths only show if you Reset shape.</p>
+              <label class="slider" title="Turn the part about its own length: its drawing turns too, e.g. to make wings go side to side instead of up and down">
+                <span>Roll</span><input id="rig-roll" type="range" min="-180" max="180" step="1" />
+                <span class="ends"><em>turn one way</em><em>the other</em></span></label>
+              <label class="check"><input id="rig-bendy" type="checkbox" /> Bendy: curve into an arc</label>
+              <label class="slider" id="rig-bend-row"><span>Bend</span><input id="rig-bend" type="range" min="-1" max="1" step="0.01" />
+                <span class="ends"><em>one way</em><em>the other</em></span></label>
+              <label class="slider" id="rig-bend-dir-row"><span>Direction</span><input id="rig-bend-dir" type="range" min="-180" max="180" step="1" />
+                <span class="ends"><em>sideways</em><em>forward / back</em></span></label>
+            </details>
+          </div>
+
+          <h3>Pose</h3>
+          <div class="row">
+            <button id="reset-pose" class="ghost" title="Straighten every joint back out">🧍 Stand up straight</button>
+            <button id="drop-floor" class="ghost" title="Move the whole creature so its lowest point touches the floor">⬇ Floor</button>
+          </div>
+          <label class="check" title="Dragging a hand bends the elbow and shoulder too"><input id="ik" type="checkbox" checked /> Pull whole limbs</label>
+          <label class="check" title="After you bend or resize something, the creature settles back onto the floor (if it was standing on it)"><input id="keep-floor" type="checkbox" checked /> Keep feet on the floor</label>
+
+        </section>
+
+        <section id="look-panel" hidden>
+          <div class="card" id="look-card">
+            <div class="card-title" id="part-title">Body</div>
             <label class="slider">
               <span>Opacity</span>
               <input id="opacity" type="range" min="0.05" max="1" step="0.01" />
               <span class="ends"><em>see-through</em><em>solid</em></span>
             </label>
-            <button id="reset-shape" class="ghost">Reset shape</button>
             <div class="attach-sec">
               <div class="sub-title">Stuff on this part</div>
               <div id="attach-list" class="parts"></div>
               <button id="attach-add" class="ghost">📎 Attach stuff…</button>
             </div>
           </div>
-
-          <h3>Blending</h3>
-          <label class="slider wide-label" title="How smoothly touching parts of the same material flow into each other. 0 keeps them separate.">
-            <span>Blend parts</span><input id="merge-radius" type="range" min="0" max="0.25" step="0.005" />
-            <span class="ends"><em>off</em><em>smooth</em></span></label>
-          <label class="slider wide-label" id="color-blend-row" title="Also merge touching parts of different colours, fading one colour into the other. 0 keeps colours apart.">
-            <span>Blend colours</span><input id="color-blend" type="range" min="0" max="0.4" step="0.005" />
-            <span class="ends"><em>off</em><em>soft fade</em></span></label>
-          <label class="check seamless-row" id="seamless-row" title="For this creature: after you stop changing its shape, blended parts are rebuilt as one continuous skin with no seams">
-            <input id="seamless" type="checkbox" checked /> <span>✨ Seamless joins <span class="muted">(smooths blended parts when idle)</span></span>
-          </label>
 
           <h3>Colour</h3>
           <div id="swatches" class="swatches"></div>
@@ -114,52 +157,17 @@
             <div class="swatches eye-swatches" id="eye-swatches"></div>
             <label class="color-pick"><input id="eye-color" type="color" /> Eye colour</label>
           </div>
-        </section>
 
-        <section id="rig-panel" hidden>
-          <h3>Skeleton</h3>
-          <p class="muted small">Drag the <b class="dot orange"></b> joints to reshape bones; everything further along the limb follows. Drag a <b class="dot purple square"></b> square to move a whole limb, e.g. slide the arms up or down.</p>
-          <label class="check" title="Keep the skeleton symmetric: new bones come in pairs, centre bones stay on the centre line">
-            <input id="rig-sym" type="checkbox" checked /> <span id="rig-lock-icon">🔒</span> Lock symmetry
+          <h3>Blending</h3>
+          <label class="slider wide-label" title="How smoothly touching parts of the same material flow into each other. 0 keeps them separate.">
+            <span>Blend parts</span><input id="merge-radius" type="range" min="0" max="0.25" step="0.005" />
+            <span class="ends"><em>off</em><em>smooth</em></span></label>
+          <label class="slider wide-label" id="color-blend-row" title="Also merge touching parts of different colours, fading one colour into the other. 0 keeps colours apart.">
+            <span>Blend colours</span><input id="color-blend" type="range" min="0" max="0.4" step="0.005" />
+            <span class="ends"><em>off</em><em>soft fade</em></span></label>
+          <label class="check seamless-row" id="seamless-row" title="For this creature: after you stop changing its shape, blended parts are rebuilt as one continuous skin with no seams">
+            <input id="seamless" type="checkbox" checked /> <span>✨ Seamless joins <span class="muted">(smooths blended parts when idle)</span></span>
           </label>
-
-          <div class="card">
-            <input id="rig-title" class="text wide card-title-input" type="text" maxlength="40" placeholder="Bone name" title="Rename this bone" />
-            <p class="muted small" id="rig-pair-note"></p>
-            <div class="rig-actions">
-              <button id="rig-bone" class="ghost" title="Add a single bone from the side of this part">🦴 Add bone</button>
-              <button id="rig-add" class="ghost" title="Sprout a two-segment limb from the side of this part">➕ Add limb</button>
-              <button id="rig-extend" class="ghost" title="Add a segment on the end of this part">↗ Extend</button>
-              <button id="rig-split" class="ghost" title="Split this bone in the middle into two jointed halves">✂ Split</button>
-              <button id="rig-dup" class="ghost" title="Copy this limb and everything attached to it">⧉ Duplicate</button>
-              <button id="rig-del" class="ghost" title="Remove this part and everything attached to it">🗑 Delete</button>
-              <button id="rig-unlink" class="ghost" title="Let the left and right sides be edited separately">⛓ Unlink pair</button>
-              <button id="rig-eyes" class="ghost" title="Put the eyes on this part">👀 Eyes here</button>
-            </div>
-
-            <div class="sub-title rig-sub">Default shape</div>
-            <label class="slider"><span>Base width</span><input id="rig-w0" type="range" min="0.02" max="1.2" step="0.005" /></label>
-            <label class="slider"><span>Tip width</span><input id="rig-w1" type="range" min="0.02" max="1.2" step="0.005" /></label>
-            <label class="slider" title="Turn the bone about the line from its base to its tip: its drawing turns too, e.g. to make wings go side to side instead of up and down">
-              <span>Roll</span><input id="rig-roll" type="range" min="-180" max="180" step="1" />
-              <span class="ends"><em>turn one way</em><em>the other</em></span></label>
-            <p class="muted small" id="rig-drawn-note" hidden>This part has a drawing, so these widths only show if you Reset shape in Build.</p>
-
-            <div class="sub-title rig-sub">Bend</div>
-            <label class="check"><input id="rig-bendy" type="checkbox" /> Bendy: curve this bone into an arc</label>
-            <label class="slider" id="rig-bend-row"><span>Bend</span><input id="rig-bend" type="range" min="-1" max="1" step="0.01" />
-              <span class="ends"><em>one way</em><em>the other</em></span></label>
-            <label class="slider" id="rig-bend-dir-row"><span>Direction</span><input id="rig-bend-dir" type="range" min="-180" max="180" step="1" />
-              <span class="ends"><em>sideways</em><em>forward / back</em></span></label>
-            <p class="muted small">Or drag the <b class="dot green diamond"></b> diamond on the selected bone to bend it any way.</p>
-          </div>
-
-          <h3>Save rig</h3>
-          <div class="row">
-            <input id="rig-name" class="text" type="text" placeholder="Rig name" maxlength="40" />
-            <button id="rig-save" class="ghost">💾 Save</button>
-          </div>
-          <div id="saved-rig-list" class="saved-rigs"></div>
         </section>
 
         <section id="stuff-panel" hidden>
@@ -215,16 +223,6 @@
         </section>
 
 
-        <section id="pose-panel" hidden>
-          <h3>Posing</h3>
-          <p class="muted">Drag the <b class="dot orange"></b> joints to bend limbs. Drag the <b class="dot blue square"></b> handle to move the whole creature. Drag empty space to spin the camera, scroll to zoom.</p>
-          <label class="check"><input id="ik" type="checkbox" checked /> Pull whole limbs (IK)</label>
-          <label class="check"><input id="skeleton-build" type="checkbox" /> Show skeleton in Build mode</label>
-          <div class="row">
-            <button id="drop-floor" class="ghost" title="Move the whole creature so its lowest point touches the floor">⬇ Drop to floor</button>
-            <button id="reset-pose" class="ghost">Reset pose</button>
-          </div>
-        </section>
       </aside>
 
       <main class="viewport" id="viewport">
@@ -232,6 +230,18 @@
         <canvas id="overlay"></canvas>
         <div id="hint" class="hint"></div>
         <div id="settle-badge" class="settle-badge" hidden>Smoothing joins…</div>
+        <div id="shape-bar" class="shape-bar">
+          <label id="mirror-pill" class="pill-toggle" title="Both sides change together: shaping and posing (M)">
+            <input id="rig-sym" type="checkbox" checked /> 🪞 Mirror <kbd>M</kbd>
+          </label>
+          <div class="legend" id="shape-legend">
+            <span><b class="dot orange"></b> bend</span>
+            <span><b class="dot teal tri"></b> stretch</span>
+            <span><b class="dot purple square"></b> slide</span>
+            <span><b class="dot green diamond"></b> curve</span>
+            <span><b class="dot blue square"></b> move</span>
+          </div>
+        </div>
         <div id="view-bar" class="view-bar" aria-label="Camera views">
           <button data-view="front" title="View from the front">Front</button>
           <button data-view="left" title="View from the left">Left</button>
@@ -272,16 +282,22 @@
         </div>
         <div id="file-pop" class="popover" hidden>
           <div class="pop-title">Files</div>
-          <input id="creature-name" class="text wide" type="text" placeholder="Creature name" maxlength="60" />
-          <button id="file-save-creature" class="ghost wide">💾 Save this creature (.creature)</button>
-          <input id="scene-name" class="text wide" type="text" placeholder="Scene name" maxlength="60" />
-          <button id="file-save-scene" class="ghost wide">🎬 Save whole scene (.scene)</button>
-          <button id="file-save-collection" class="ghost wide">📦 Export collection (.collection)</button>
-          <button id="file-open" class="ghost wide" title="A .creature replaces the current creature; a .scene replaces the scene">📂 Open…</button>
-          <button id="file-add" class="ghost wide" title="Bring the creatures from a .creature or .scene file into this scene">➕ Add creatures from file…</button>
+          <input id="creature-name" class="text wide" type="text" placeholder="This creature's name" maxlength="60" />
+          <button id="file-save" class="ghost wide" title="Everything: your creatures, your stuff, body plans and the backdrop">💾 Save (.creature)</button>
+          <button id="file-open" class="ghost wide" title="Pick what to bring in from a save">📂 Open…</button>
           <button id="export" class="ghost wide" title="Every creature in the scene as a 3D model">⬇ Download 3D model (.glb)</button>
-          <p class="muted small">Creature and scene files include any stuff being worn. Collections hold your saved stuff and rigs.</p>
-          <input id="file-input" type="file" accept=".creature,.scene,.stuff,.collection,.json" multiple hidden />
+          <p class="muted small">A save holds everything. When you open one, you choose what to bring in.</p>
+          <input id="file-input" type="file" accept=".creature,.scene,.stuff,.collection,.json" hidden />
+        </div>
+        <div id="load-pop" class="popover load-pop" hidden>
+          <div class="pop-title"><span id="load-title">Open</span> <button id="load-close" class="link">close</button></div>
+          <p class="muted small" id="load-note" hidden>Add it to your scene, or replace everything in the scene with it?</p>
+          <label class="check load-all" id="load-all-row"><input id="load-all" type="checkbox" checked /> Everything</label>
+          <div id="load-list" class="load-list"></div>
+          <div class="load-actions">
+            <button id="load-add" class="primary" title="Bring these in alongside what's already here">➕ Add to scene</button>
+            <button id="load-replace" class="ghost" title="Swap the creatures in your scene for these">↺ Replace scene</button>
+          </div>
         </div>
         <div id="settings-pop" class="popover" hidden>
           <div class="pop-title">Settings</div>

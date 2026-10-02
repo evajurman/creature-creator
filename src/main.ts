@@ -12,10 +12,8 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { FullScreenQuad, Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import {
   bendFromMid,
-  bentTip,
   Creature,
   defaultState,
-  endForTip,
   EYE_STYLES,
   setSeamlessLowPoly,
   setSeamlessMode,
@@ -31,6 +29,7 @@ import {
 import { bounds, clipLoop, combineLoops, getMeshDetail, pointInPolygon, setMeshDetail, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import {
   buildThing,
+  clearCollection,
   collection,
   disposeThing,
   downloadText,
@@ -54,13 +53,13 @@ import {
   deleteLimb,
   deleteSavedRig,
   duplicateLimb,
-  expandRig,
   extendBone,
   getRig,
   moveJoint,
   partIds,
   rigFromTemplate,
   saveRig,
+  scaleBone,
   savedRigs,
   splitBone,
   unlinkPair,
@@ -470,8 +469,8 @@ let state: CreatureState = world.creatures[world.active];
 const creatures: Creature[] = [];
 let creature: Creature;
 let selected = '';
-type Mode = 'build' | 'rig' | 'pose' | 'stuff';
-let mode: Mode = 'build';
+type Mode = 'shape' | 'look' | 'stuff';
+let mode: Mode = 'shape';
 let eyePair = 0;
 
 function loadWorld(): World | null {
@@ -610,7 +609,6 @@ function activate(i: number) {
   const next = creatures[i];
   const switching = creature !== next;
   if (creature && switching) {
-    creature.setRigMode(false);
     creature.setSkeletonVisible(false);
     creature.flash(null, 0);
   }
@@ -620,7 +618,6 @@ function activate(i: number) {
   state = world.creatures[i];
   creature = next;
   if (switching) deselectAttachment();
-  creature.setRigMode(mode === 'rig');
   if (!creature.bones.has(selected)) selected = creature.list[0].def.id;
   creature.select(selected);
   updateSkeletonVisibility();
@@ -634,7 +631,6 @@ function buildCreature() {
   world.creatures[i] = state;
   creatures[i] = makeCreature(state);
   creature = creatures[i];
-  creature.setRigMode(mode === 'rig');
   if (!creature.bones.has(selected)) selected = creature.list[0].def.id;
   creature.select(selected);
   updateSkeletonVisibility();
@@ -668,9 +664,10 @@ function fitShadows() {
 
 const raycaster = new THREE.Raycaster();
 const pointer = { downX: 0, downY: 0, moved: false };
+type DragKind = 'root' | 'start' | 'end' | 'bend' | 'len' | 'wid' | 'size';
 let drag: {
   id: string;
-  kind: 'root' | 'start' | 'end' | 'bend';
+  kind: DragKind;
   plane: THREE.Plane;
   offset: THREE.Vector3;
   startHit: THREE.Vector3;
@@ -682,8 +679,44 @@ let drag: {
    * pointer's motion has to be turned back before it's applied.
    */
   toDef?: THREE.Quaternion;
+  /** size gizmo: what it's measured against on screen, and the drawing before the drag */
+  sizer?: { anchor: THREE.Vector2; reach: THREE.Vector2; outline: Vec2[] | null; meshX: Map<THREE.Mesh, number> };
   moved: boolean;
 } | null = null;
+
+/** Where a point in a bone's own space lands on screen, in client pixels. */
+function toScreen(obj: THREE.Object3D, local: THREE.Vector3): THREE.Vector2 {
+  const r = canvas.getBoundingClientRect();
+  const v = obj.localToWorld(local.clone()).project(camera);
+  return new THREE.Vector2(r.left + ((v.x + 1) / 2) * r.width, r.top + ((1 - v.y) / 2) * r.height);
+}
+
+/** Height of the creature's lowest point above the floor. */
+function floorGap(): number {
+  const box = creatureBox(true);
+  return box.isEmpty() ? 0 : box.min.y;
+}
+/** where the lowest point was when a move began: raising it means the creature should float */
+let gapBefore = 0;
+const lifted = () => floorGap() > Math.max(0, gapBefore) + 0.02;
+
+/** Turn "Keep feet on the floor" on or off for this creature. */
+function setKeepFloor(on: boolean, announce = false) {
+  if ((state.keepFloor !== false) === on) return;
+  state.keepFloor = on;
+  $<HTMLInputElement>('#keep-floor').checked = on;
+  if (announce) hint(on ? 'Feet back on the floor' : 'Floating: "Keep feet on the floor" is off', 2200);
+}
+
+/** After a bend or resize, a creature that keeps its feet on the floor settles back onto it. */
+function settleOnFloor() {
+  if (state.keepFloor === false) return;
+  const box = creatureBox(true);
+  if (box.isEmpty() || Math.abs(box.min.y) < 1e-4) return;
+  const down = creature.root.worldToLocal(new THREE.Vector3(0, -box.min.y, 0)).sub(creature.root.worldToLocal(new THREE.Vector3()));
+  creature.group.position.add(down);
+  creature.capturePose();
+}
 
 canvas.addEventListener('pointerdown', (e) => {
   pointer.downX = e.clientX;
@@ -701,14 +734,29 @@ canvas.addEventListener('pointerdown', (e) => {
   const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pos);
   // the root offset lives inside the creature's placement, so work in its local space
   const offset = id === 'root' ? creature.group.position.clone().sub(creature.root.worldToLocal(pos.clone())) : new THREE.Vector3();
-  const kind = id === 'root' ? 'root' : (h.userData.kind as 'start' | 'end' | 'bend');
+  const kind: DragKind = id === 'root' ? 'root' : (h.userData.kind as DragKind);
+  // bending is posing; sliding, curving and resizing reshape the skeleton itself
+  const reshape = kind !== 'root' && kind !== 'end';
   let toDef: THREE.Quaternion | undefined;
   const b = creature.bones.get(id);
-  if (mode === 'rig' && b) {
+  if (reshape && b) {
     b.pivot.updateMatrixWorld(true);
     toDef = new THREE.Quaternion().setFromRotationMatrix(b.restWorld.clone().multiply(b.pivot.matrixWorld.clone().invert()));
   }
-  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: mode === 'rig' ? JSON.stringify(state.rig) : undefined, toDef };
+  let sizer: NonNullable<typeof drag>['sizer'];
+  if (b && (kind === 'len' || kind === 'wid' || kind === 'size')) {
+    // measure the grab against the bone's base (length), its centre line (width) or both
+    const at = h.position;
+    const from = kind === 'len' ? new THREE.Vector3(at.x, 0, 0) : kind === 'wid' ? new THREE.Vector3(0, at.y, 0) : new THREE.Vector3();
+    const anchor = toScreen(b.pivot, from);
+    const reach = toScreen(b.pivot, at.clone()).sub(anchor);
+    const meshX = new Map<THREE.Mesh, number>();
+    for (const l of creature.linked(id)) if (l.mesh) meshX.set(l.mesh, l.mesh.scale.x);
+    if (reach.lengthSq() > 4) sizer = { anchor, reach, outline: structuredClone(state.parts[b.src]?.outline ?? null), meshX };
+    creature.invalidateSkin();
+  }
+  if (kind === 'root') gapBefore = floorGap();
+  drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: reshape ? JSON.stringify(state.rig) : undefined, toDef, sizer };
   $('#viewport').style.cursor = 'grabbing';
 });
 
@@ -732,23 +780,37 @@ canvas.addEventListener('pointermove', (e) => {
       def.bendDir = Math.round((b.def.sideSign === -1 ? -dir : dir) * 1000) / 1000;
       creature.relayout(state.rig);
       creature.sync();
-    } else if (drag.rigBase && drag.kind !== 'root' && drag.kind !== 'bend') {
+    } else if (drag.sizer) {
       if (!drag.moved) return;
-      // the move in skeleton coordinates (the creature may be turned, the bone may ride a curve)
+      const sz = drag.sizer;
+      const b = creature.bones.get(drag.id);
+      if (!b) return;
+      // how far along the grip's own direction the pointer has gone: 1 = where it started
+      const k = THREE.MathUtils.clamp(new THREE.Vector2(e.clientX, e.clientY).sub(sz.anchor).dot(sz.reach) / sz.reach.lengthSq(), 0.2, 5);
+      const kLen = drag.kind === 'wid' ? 1 : k;
+      const kWid = drag.kind === 'len' ? 1 : k;
+      state.rig = JSON.parse(drag.rigBase!) as RigState;
+      scaleBone(state.rig, drag.id, kLen, kWid);
+      const part = state.parts[b.src];
+      if (part && sz.outline) part.outline = sz.outline.map(([x, y]) => [Math.round(x * kWid * 1e4) / 1e4, Math.round(y * kLen * 1e4) / 1e4] as Vec2);
+      creature.relayout(state.rig);
+      // the meshes stretch to fit until they're rebuilt on letting go
+      for (const [m, x] of sz.meshX) m.scale.x = x * kWid;
+      creature.updateSizer();
+      invalidate();
+    } else if (drag.rigBase && drag.kind === 'start') {
+      if (!drag.moved) return;
+      // slide the whole limb: the move in skeleton coordinates (the creature may be turned or posed, the bone may ride a curve)
       const d = hit.clone().sub(drag.startHit).applyQuaternion(drag.toDef ?? creature.root.quaternion.clone().invert());
       state.rig = JSON.parse(drag.rigBase) as RigState;
-      const ex = drag.kind === 'end' ? expandRig(state.rig).bones.find((x) => x.id === drag!.id) : undefined;
-      if (ex?.bendy && ex.bend) {
-        // a bendy bone's tip sits off its straight line: move the end so the tip follows the pointer
-        d.copy(endForTip(ex, bentTip(ex).add(d))).sub(new THREE.Vector3(...ex.end));
-      }
-      moveJoint(state.rig, drag.id, drag.kind, d.toArray() as V3, rigLocked());
+      moveJoint(state.rig, drag.id, 'start', d.toArray() as V3, rigLocked());
       creature.relayout(state.rig);
     } else if (drag.id === 'root') {
       creature.group.position.copy(creature.root.worldToLocal(hit).add(drag.offset));
       creature.group.position.y = Math.max(creature.group.position.y, -1);
-    } else {
-      creature.dragTip(drag.id, hit, $<HTMLInputElement>('#ik').checked);
+    } else if (drag.kind === 'end') {
+      const chain = creature.dragTip(drag.id, hit, $<HTMLInputElement>('#ik').checked);
+      if (rigLocked()) creature.mirrorPose(chain);
     }
     return;
   }
@@ -770,12 +832,20 @@ canvas.addEventListener('pointerup', (e) => {
         // rebuild meshes at their new lengths and re-seat the pose
         if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
         buildCreature();
+        settleOnFloor();
+        creature.boing(d.id);
         commit();
       }
       selectPart(d.id);
       return;
     }
     creature.capturePose();
+    if (d.moved) {
+      // lifting the whole creature up means it's meant to float
+      if (d.kind === 'root') {
+        if (lifted()) setKeepFloor(false, true);
+      } else settleOnFloor();
+    }
     commit();
     return;
   }
@@ -805,7 +875,7 @@ canvas.addEventListener('pointerup', (e) => {
     hint(`Now editing ${creatureLabel(other.index)}`, 1600);
     return;
   }
-  if (mode === 'build') {
+  if (mode === 'look') {
     const att = pickAttachment(e.clientX, e.clientY);
     if (att) {
       const a = state.attachments?.find((x) => x.id === att);
@@ -828,7 +898,7 @@ canvas.addEventListener('dblclick', (e) => {
   const id = pickPart(e.clientX, e.clientY);
   if (!id) return;
   selectPart(id);
-  if (mode !== 'build') setMode('build');
+  if (mode !== 'shape') setMode('shape');
   enterDraw();
 });
 
@@ -896,7 +966,8 @@ function pickHandle(x: number, y: number): THREE.Object3D | null {
 }
 
 function handlesVisible() {
-  return !drawState && mode !== 'stuff' && (mode !== 'build' || $<HTMLInputElement>('#skeleton-build').checked);
+  // Arrange has its own handles at the creature's feet
+  return !drawState && !placing && mode === 'shape';
 }
 
 function updateSkeletonVisibility() {
@@ -998,6 +1069,10 @@ function dropToFloor() {
   const box = creatureBox(true);
   if (box.isEmpty()) return;
   if (Math.abs(box.min.y) < 1e-4) {
+    if (state.keepFloor === false) {
+      setKeepFloor(true);
+      commit();
+    }
     hint('Already on the floor', 1500);
     return;
   }
@@ -1005,6 +1080,7 @@ function dropToFloor() {
   const down = creature.root.worldToLocal(new THREE.Vector3(0, -box.min.y, 0)).sub(creature.root.worldToLocal(new THREE.Vector3()));
   creature.group.position.add(down);
   creature.capturePose();
+  setKeepFloor(true);
   commit();
   hint('Dropped to the floor', 1500);
 }
@@ -2226,7 +2302,8 @@ $('#thing-dup').onclick = () => {
 };
 $('#thing-download').onclick = () => {
   const wb = workbench();
-  downloadText(`${safeFileName(wb.name, 'thing')}.stuff`, JSON.stringify(envelope('stuff', stripThumb(wb))));
+  // one kind of file: a save holding just this thing opens straight into My stuff
+  saveBundle({ creatures: [], stuff: [stripThumb(wb)], rigs: [] }, wb.name.trim() || 'thing');
 };
 $('#thing-delete').onclick = () => {
   const wb = workbench();
@@ -2276,9 +2353,13 @@ gizmo.addEventListener('objectChange', () => {
   a.scale = obj.scale.toArray() as V3;
   creature.updateTwin(a.id);
 });
+gizmo.addEventListener('mouseDown', () => {
+  if (placing) gapBefore = floorGap();
+});
 gizmo.addEventListener('mouseUp', () => {
   // a rescaled felt attachment regrows its fuzz at the new size
   if (selectedAttachment) creature.syncAttachments();
+  if (placing && gizmo.mode === 'translate' && lifted()) setKeepFloor(false, true);
   commit();
 });
 
@@ -2330,6 +2411,7 @@ function placeOnFloor() {
   if (box.isEmpty()) return;
   creature.root.position.y -= box.min.y;
   creature.capturePlacement();
+  setKeepFloor(true);
   fitShadows();
   commit();
 }
@@ -2343,6 +2425,8 @@ function startPlacing() {
   $('#place-bar').hidden = false;
   $('#place-name').textContent = creatureLabel(world.active);
   $('#cr-place').classList.add('on');
+  $('#shape-legend').hidden = true;
+  updateSkeletonVisibility();
 }
 
 function stopPlacing() {
@@ -2352,6 +2436,8 @@ function stopPlacing() {
   gizmo.setSpace('local');
   $('#place-bar').hidden = true;
   $('#cr-place').classList.remove('on');
+  $('#shape-legend').hidden = false;
+  updateSkeletonVisibility();
 }
 
 document.querySelectorAll<HTMLButtonElement>('#place-bar [data-place]').forEach((b) => {
@@ -2366,6 +2452,8 @@ $('#place-reset').onclick = () => {
   creature.root.position.y = 0;
   placeScale = 1;
   creature.capturePlacement();
+  setKeepFloor(true);
+  settleOnFloor();
   fitShadows();
   commit();
 };
@@ -2573,17 +2661,16 @@ function togglePopover(pop: string): boolean {
 $('#file-btn').onclick = () => {
   if (!togglePopover('#file-pop')) return;
   $<HTMLInputElement>('#creature-name').value = state.name ?? '';
-  $<HTMLInputElement>('#scene-name').value = world.name ?? '';
 };
 $<HTMLInputElement>('#creature-name').oninput = (e) => {
   state.name = (e.target as HTMLInputElement).value;
   renderCreatureBar();
 };
 $<HTMLInputElement>('#creature-name').onchange = () => commit();
-$<HTMLInputElement>('#scene-name').oninput = (e) => {
-  world.name = (e.target as HTMLInputElement).value;
-};
-$<HTMLInputElement>('#scene-name').onchange = () => commit();
+/** Files are named after who's in the scene: "Bimble", or "Bimble-Twin-Creature 3". */
+function sceneFileName(): string {
+  return world.creatures.map((_, i) => creatureLabel(i)).join('-');
+}
 
 /** A creature as it goes into a file (the workbench isn't part of it). */
 function forFile(s: CreatureState): CreatureState {
@@ -2591,120 +2678,267 @@ function forFile(s: CreatureState): CreatureState {
   return data;
 }
 
-$('#file-save-creature').onclick = () => {
-  downloadText(`${safeFileName(state.name ?? '', 'creature')}.creature`, JSON.stringify(envelope('creature', forFile(state))));
-};
-$('#file-save-scene').onclick = () => {
-  const data = { name: world.name, active: world.active, creatures: world.creatures.map(forFile) };
-  downloadText(`${safeFileName(world.name ?? '', 'scene')}.scene`, JSON.stringify(envelope('scene', data)));
-};
-$('#file-save-collection').onclick = () => {
-  const data = { things: collection(), rigs: savedRigs() };
-  downloadText('my-collection.collection', JSON.stringify(envelope('collection', data)));
-};
+// One kind of save: a .creature file holds everything (creatures, My stuff,
+// saved body plans and the backdrop). Opening one lets you pick what to bring in.
 
-// "open" replaces (a creature file replaces the current creature, a scene file
-// the whole scene); "add" brings the file's creatures into the current scene.
-let fileMode: 'open' | 'add' = 'open';
-$('#file-open').onclick = () => {
-  fileMode = 'open';
-  $<HTMLInputElement>('#file-input').click();
-};
-$('#file-add').onclick = () => {
-  fileMode = 'add';
-  $<HTMLInputElement>('#file-input').click();
-};
-$<HTMLInputElement>('#file-input').onchange = async (e) => {
-  const input = e.target as HTMLInputElement;
-  for (const file of Array.from(input.files ?? [])) {
-    try {
-      openFile(await file.text(), fileMode);
-    } catch (err) {
-      hint(`${file.name}: ${(err as Error).message}`, 3500, true);
-    }
-  }
-  input.value = '';
-};
-
-/** Read creatures out of a file, up to the current format, with worn stuff added to the collection. */
-function creaturesFrom(data: unknown, many: boolean): CreatureState[] {
-  const raw = many ? ((data as { creatures?: unknown[] }).creatures ?? []) : [data];
-  const list = raw.map(migrate).filter((s): s is CreatureState => !!s);
-  if (!list.length) throw new Error(many ? 'No creatures in this scene could be read.' : 'The creature in this file could not be read.');
-  const have = new Set(collection().map((t) => t.id));
-  for (const s of list) {
-    delete s.workbench; // the workbench belongs to the scene, not the file
-    for (const a of s.attachments ?? []) {
-      if (have.has(a.thing.id)) continue;
-      putThing(a.thing);
-      have.add(a.thing.id);
-    }
-  }
-  return list;
+/** The backdrop, floor, lights and depth of field. */
+interface SceneLook {
+  backdrop: string;
+  floor: typeof floorPrefs;
+  light: number;
+  dof: typeof dof;
 }
 
-function openFile(text: string, how: 'open' | 'add') {
-  const env = parseEnvelope(text);
-  if (env.kind === 'creature' || env.kind === 'scene') {
-    const incoming = creaturesFrom(env.data, env.kind === 'scene');
-    exitDraw();
-    deselectAttachment();
-    stopPlacing();
-    if (how === 'add') {
-      // keep the file's own arrangement, shifted to free floor on the right
-      const spot = freeSpot();
-      const minX = Math.min(...incoming.map((s) => s.placement?.x ?? 0));
-      for (const s of incoming) {
-        s.placement = { ...s.placement, x: spot.x + ((s.placement?.x ?? 0) - minX), z: s.placement?.z ?? 0, yaw: s.placement?.yaw ?? 0 };
+/** What a save holds. Older files (.scene, .stuff, .collection, single creatures) are read into one too. */
+interface Bundle {
+  name?: string;
+  active?: number;
+  creatures: CreatureState[];
+  stuff: Thing[];
+  rigs: RigState[];
+  look?: SceneLook;
+}
 
-        world.creatures.push(s);
-        creatures.push(makeCreature(s));
-      }
-      activate(world.creatures.length - 1);
-      commit();
-      renderUI();
-      frameAll();
-      hint(incoming.length > 1 ? `Added ${incoming.length} creatures to the scene` : `Added ${incoming[0].name || 'a creature'} to the scene`, 2200);
-    } else if (env.kind === 'scene') {
-      const data = env.data as { name?: string; active?: number };
-      for (const c of creatures) c.dispose();
-      creatures.length = 0;
-      creature = undefined as unknown as Creature; // replaced wholesale
-      world = { creatures: incoming, active: Math.min(Math.max(0, data.active ?? 0), incoming.length - 1), workbench: world.workbench, name: data.name };
-      incoming.forEach((s, i) => (creatures[i] = makeCreature(s)));
-      selected = '';
-      activate(world.active);
-      commit();
-      renderUI();
-      if (mode !== 'stuff') frameAll();
-      hint(`Opened ${data.name || 'scene'} (${incoming.length} creature${incoming.length > 1 ? 's' : ''})`, 2200);
-    } else {
-      // a creature file replaces the current creature, keeping its spot in the scene
-      const s = incoming[0];
-      s.placement = state.placement;
-      state = s;
-      selected = '';
-      buildCreature();
-      commit();
-      renderUI();
-      if (mode !== 'stuff') frameCreature(true);
-      hint(`Opened ${s.name || 'creature'}`, 2000);
-    }
-  } else if (env.kind === 'stuff') {
-    const t = env.data as Thing;
-    if (!Array.isArray(t.pieces)) throw new Error('The stuff in this file could not be read.');
-    putThing(t);
-    renderCollection();
-    hint(`Added "${t.name}" to your collection`, 2000);
-  } else if (env.kind === 'collection') {
-    const data = env.data as { things?: Thing[]; rigs?: RigState[] };
-    for (const t of data.things ?? []) putThing(t);
-    for (const r of data.rigs ?? []) saveRig(r, r.name);
-    renderCollection();
-    renderRigs();
-    renderRigPanel();
-    hint(`Added ${data.things?.length ?? 0} things and ${data.rigs?.length ?? 0} rigs to your collection`, 2500);
+function currentLook(): SceneLook {
+  return { backdrop, floor: { ...floorPrefs }, light: lightTurn, dof: { ...dof } };
+}
+
+function saveBundle(b: Bundle, name: string) {
+  downloadText(`${safeFileName(name, 'my-creatures')}.creature`, JSON.stringify(envelope('creature', b)));
+}
+
+$('#file-save').onclick = () => {
+  saveBundle(
+    { active: world.active, creatures: world.creatures.map(forFile), stuff: collection(), rigs: savedRigs(), look: currentLook() },
+    sceneFileName(),
+  );
+};
+$('#file-open').onclick = () => $<HTMLInputElement>('#file-input').click();
+$<HTMLInputElement>('#file-input').onchange = async (e) => {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    openFile(await file.text(), file.name);
+  } catch (err) {
+    hint(`${file.name}: ${(err as Error).message}`, 3500, true);
   }
+};
+
+/** Read any Creature Creator file into a bundle. */
+function bundleFrom(text: string): Bundle {
+  const env = parseEnvelope(text);
+  const d = env.data as Record<string, unknown>;
+  const creaturesOf = (raw: unknown[]) => raw.map(migrate).filter((s): s is CreatureState => !!s);
+  if (env.kind === 'creature' && Array.isArray(d.creatures)) {
+    return {
+      name: d.name as string | undefined,
+      active: d.active as number | undefined,
+      creatures: creaturesOf(d.creatures),
+      stuff: ((d.stuff as Thing[] | undefined) ?? []).filter((t) => Array.isArray(t?.pieces)),
+      rigs: (d.rigs as RigState[] | undefined) ?? [],
+      look: d.look as SceneLook | undefined,
+    };
+  }
+  if (env.kind === 'creature') return { creatures: creaturesOf([d]), stuff: [], rigs: [] };
+  if (env.kind === 'scene') return { name: d.name as string | undefined, active: d.active as number | undefined, creatures: creaturesOf((d.creatures as unknown[]) ?? []), stuff: [], rigs: [] };
+  if (env.kind === 'stuff') {
+    if (!Array.isArray(d.pieces)) throw new Error('The stuff in this file could not be read.');
+    return { creatures: [], stuff: [d as unknown as Thing], rigs: [] };
+  }
+  return { creatures: [], stuff: (d.things as Thing[] | undefined) ?? [], rigs: (d.rigs as RigState[] | undefined) ?? [] };
+}
+
+function openFile(text: string, fileName = '') {
+  const b = bundleFrom(text);
+  for (const s of b.creatures) delete s.workbench; // the workbench belongs to the scene, not the file
+  if (!b.creatures.length && !b.stuff.length && !b.rigs.length && !b.look) throw new Error('There was nothing in this file that could be read.');
+  // a single thing comes straight into My stuff; anything with a creature asks
+  // whether it joins the scene or replaces it
+  if (!b.creatures.length && b.stuff.length === 1 && !b.rigs.length) {
+    loadBundle(b, { creatures: b.creatures.map(() => true), stuff: b.stuff.map(() => true), rigs: [], look: false }, false);
+    return;
+  }
+  showLoadPicker(b, b.name?.trim() || fileName.replace(/\.[^.]+$/, ''));
+}
+
+interface LoadChoice {
+  creatures: boolean[];
+  stuff: boolean[];
+  rigs: boolean[];
+  look: boolean;
+}
+
+/** Bring the chosen parts of a bundle in: alongside what's here, or in place of the scene. */
+function loadBundle(b: Bundle, pick: LoadChoice, replace: boolean) {
+  const incoming = b.creatures.filter((_, i) => pick.creatures[i]);
+  const things = b.stuff.filter((_, i) => pick.stuff[i]);
+  const rigs = b.rigs.filter((_, i) => pick.rigs[i]);
+  exitDraw();
+  deselectAttachment();
+  stopPlacing();
+  // stuff the creatures are wearing joins My stuff, so it can be moved or worn again
+  const have = new Set(collection().map((t) => t.id));
+  for (const t of [...incoming.flatMap((s) => (s.attachments ?? []).map((a) => a.thing)), ...things]) {
+    if (have.has(t.id)) continue;
+    putThing(t);
+    have.add(t.id);
+  }
+  for (const r of rigs) saveRig(r, r.name);
+  if (pick.look && b.look) applyLook(b.look);
+
+  if (incoming.length && replace) {
+    for (const c of creatures) c.dispose();
+    creatures.length = 0;
+    creature = undefined as unknown as Creature; // replaced wholesale
+    const active = Math.max(0, incoming.indexOf(b.creatures[b.active ?? 0]));
+    world = { creatures: incoming, active, workbench: world.workbench, name: b.name };
+    incoming.forEach((s, i) => (creatures[i] = makeCreature(s)));
+    selected = '';
+    activate(world.active);
+  } else if (incoming.length) {
+    // keep the file's own arrangement, shifted to free floor on the right
+    const spot = freeSpot();
+    const minX = Math.min(...incoming.map((s) => s.placement?.x ?? 0));
+    for (const s of incoming) {
+      s.placement = { ...s.placement, x: spot.x + ((s.placement?.x ?? 0) - minX), z: s.placement?.z ?? 0, yaw: s.placement?.yaw ?? 0 };
+      world.creatures.push(s);
+      creatures.push(makeCreature(s));
+    }
+    activate(world.creatures.length - 1);
+  }
+  commit();
+  renderUI();
+  renderCollection();
+  renderRigs();
+  if (incoming.length && mode !== 'stuff') frameAll();
+
+  const bits = [
+    incoming.length === 1 ? incoming[0].name || 'a creature' : incoming.length ? `${incoming.length} creatures` : '',
+    things.length === 1 ? `"${things[0].name || 'a thing'}"` : things.length ? `${things.length} things` : '',
+    rigs.length ? `${rigs.length} body plan${rigs.length > 1 ? 's' : ''}` : '',
+    pick.look && b.look ? 'the backdrop' : '',
+  ].filter(Boolean);
+  hint(`${replace && incoming.length ? 'Opened' : 'Added'} ${bits.join(', ').replace(/, ([^,]*)$/, ' and $1')}`, 2400);
+}
+
+function applyLook(l: SceneLook) {
+  setBackdrop(l.backdrop);
+  Object.assign(floorPrefs, l.floor);
+  saveFloor();
+  applyFloor();
+  lightTurn = l.light ?? 0;
+  applyLighting();
+  try {
+    localStorage.setItem(LIGHT_KEY, JSON.stringify({ turn: lightTurn }));
+  } catch {
+    /* ignore */
+  }
+  Object.assign(dof, l.dof);
+  saveDof();
+  applyDof();
+}
+
+/** The "what do you want from this file?" picker. */
+function showLoadPicker(b: Bundle, title: string) {
+  const pick: LoadChoice = {
+    creatures: b.creatures.map(() => true),
+    stuff: b.stuff.map(() => true),
+    rigs: b.rigs.map(() => true),
+    look: !!b.look,
+  };
+  // just one thing to bring in: no checklist, only "add or replace?"
+  const single = b.creatures.length + b.stuff.length + b.rigs.length + (b.look ? 1 : 0) === 1;
+  if (single && b.creatures[0]?.name?.trim()) title = b.creatures[0].name.trim();
+  $('#load-title').textContent = title ? `Open “${title}”` : 'Open';
+  $('#load-note').hidden = !single;
+  $('#load-all-row').hidden = single;
+  $('#load-list').hidden = single;
+  const list = $('#load-list');
+  list.innerHTML = '';
+  const boxes: HTMLInputElement[] = [];
+  const sync = () => {
+    const n = [...pick.creatures, ...pick.stuff, ...pick.rigs, pick.look && !!b.look].filter(Boolean).length;
+    const all = $<HTMLInputElement>('#load-all');
+    all.checked = n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+    $<HTMLButtonElement>('#load-add').disabled = n === 0;
+    // replacing the scene needs someone to replace it with
+    $<HTMLButtonElement>('#load-replace').disabled = !pick.creatures.some(Boolean);
+  };
+  const group = (label: string) => {
+    const h = document.createElement('div');
+    h.className = 'pop-sub';
+    h.textContent = label;
+    list.append(h);
+  };
+  const row = (icon: string, name: string, get: () => boolean, set: (v: boolean) => void) => {
+    const l = document.createElement('label');
+    l.className = 'load-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = get();
+    cb.onchange = () => {
+      set(cb.checked);
+      sync();
+    };
+    boxes.push(cb);
+    const ic = document.createElement('span');
+    ic.className = 'load-icon';
+    ic.innerHTML = icon;
+    const nm = document.createElement('span');
+    nm.textContent = name;
+    l.append(cb, ic, nm);
+    list.append(l);
+  };
+  if (b.creatures.length) {
+    group('Creatures');
+    b.creatures.forEach((s, i) => {
+      const color = Object.values(s.parts)[0]?.color ?? '#ccc';
+      row(`<i class="load-dot" style="background:${color}"></i>`, s.name?.trim() || `Creature ${i + 1}`, () => pick.creatures[i], (v) => (pick.creatures[i] = v));
+    });
+  }
+  if (b.stuff.length) {
+    group('Stuff');
+    b.stuff.forEach((t, i) => {
+      const icon = t.thumb ? `<img src="${t.thumb}" alt="" />` : '📦';
+      row(icon, t.name?.trim() || 'Thing', () => pick.stuff[i], (v) => (pick.stuff[i] = v));
+    });
+  }
+  if (b.rigs.length) {
+    group('Body plans');
+    b.rigs.forEach((r, i) => row('🦴', r.name, () => pick.rigs[i], (v) => (pick.rigs[i] = v)));
+  }
+  if (b.look) {
+    group('Scene');
+    row(`<i class="load-dot" style="background:${b.look.backdrop}"></i>`, 'Backdrop & lighting', () => pick.look, (v) => (pick.look = v));
+  }
+  $<HTMLInputElement>('#load-all').onchange = (e) => {
+    const on = (e.target as HTMLInputElement).checked;
+    pick.creatures.fill(on);
+    pick.stuff.fill(on);
+    pick.rigs.fill(on);
+    pick.look = on && !!b.look;
+    for (const cb of boxes) cb.checked = on;
+    sync();
+  };
+  const close = () => ($('#load-pop').hidden = true);
+  $('#load-close').onclick = close;
+  $('#load-add').onclick = () => {
+    close();
+    loadBundle(b, pick, false);
+  };
+  $('#load-replace').onclick = () => {
+    close();
+    loadBundle(b, pick, true);
+  };
+  sync();
+  for (const [btn, p] of POPOVERS) {
+    $(p).hidden = true;
+    $(btn).classList.remove('on');
+  }
+  $('#load-pop').hidden = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -3131,13 +3365,15 @@ function setMode(m: Mode) {
   if (mode === 'stuff' && m !== 'stuff') saveWorkbenchNow();
   mode = m;
   document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => b.classList.toggle('active', b.dataset.mode === m));
-  $('#build-panel').hidden = m !== 'build';
-  $('#rig-panel').hidden = m !== 'rig';
-  $('#pose-panel').hidden = m !== 'pose';
+  $('#parts-sec').hidden = m === 'stuff';
+  $('#plan-sec').hidden = m !== 'shape';
+  $('#shape-panel').hidden = m !== 'shape';
+  $('#look-panel').hidden = m !== 'look';
+  $('#shape-bar').hidden = m !== 'shape';
   $('#stuff-panel').hidden = m !== 'stuff';
   $('#creature-bar').hidden = m === 'stuff';
   if (m === 'stuff') stopPlacing();
-  if (m !== 'build') {
+  if (m !== 'look') {
     deselectAttachment();
     $('#attach-pop').hidden = true;
   }
@@ -3153,13 +3389,12 @@ function setMode(m: Mode) {
   } else if (wasStuff) {
     frameCreature();
   }
-  creature.setRigMode(m === 'rig');
   updateSkeletonVisibility();
-  if (m === 'pose') hint('Drag the orange joints to pose', 2200);
-  if (m === 'rig') {
-    hint('Drag joints to reshape the skeleton; purple squares move a whole limb', 3200);
+  if (m === 'shape') {
+    hint('Drag the orange balls to bend · the teal arrows to stretch · double-click a part to draw it', 3600);
     renderRigPanel();
   }
+  if (m === 'look') hint('Click a part, then pick its colour and material', 2200);
 }
 
 // ---------------------------------------------------------------------------
@@ -3198,7 +3433,8 @@ function renderRigPanel() {
   $<HTMLButtonElement>('#rig-split').disabled = !b;
   $('#rig-pair-note').textContent = paired ? 'Mirrored pair: both sides move together.' : '';
   $<HTMLInputElement>('#rig-sym').checked = rigLocked();
-  $('#rig-lock-icon').textContent = rigLocked() ? '🔒' : '🔓';
+  $<HTMLInputElement>('#keep-floor').checked = state.keepFloor !== false;
+  $('#mirror-pill').classList.toggle('on', rigLocked());
   if (b) {
     $<HTMLInputElement>('#rig-w0').value = String(b.def.width);
     $<HTMLInputElement>('#rig-w1').value = String(b.def.widthEnd ?? b.def.width);
@@ -3273,16 +3509,17 @@ let rigLock = (() => {
 function rigLocked() {
   return rigLock;
 }
-$<HTMLInputElement>('#rig-sym').onchange = (e) => {
-  rigLock = (e.target as HTMLInputElement).checked;
+function setMirror(on: boolean) {
+  rigLock = on;
   try {
     localStorage.setItem(RIG_PREFS_KEY, JSON.stringify({ lock: rigLock }));
   } catch {
     /* ignore */
   }
   renderRigPanel();
-  hint(rigLock ? 'Symmetry locked: new bones come in pairs, centre bones stay centred' : 'Symmetry unlocked', 2000);
-};
+  hint(rigLock ? 'Mirror on: both sides bend, stretch and grow together' : 'Mirror off: each side on its own', 2000);
+}
+$<HTMLInputElement>('#rig-sym').onchange = (e) => setMirror((e.target as HTMLInputElement).checked);
 
 // ---- per-bone default-shape widths and bend, applied live ----
 let boneEditPending = false;
@@ -3882,12 +4119,18 @@ $<HTMLInputElement>('#eye-lift').oninput = (ev) => {
 };
 $<HTMLInputElement>('#eye-lift').onchange = () => commit();
 
-$<HTMLInputElement>('#skeleton-build').onchange = () => updateSkeletonVisibility();
 $('#reset-pose').onclick = () => {
   creature.resetPose();
+  settleOnFloor();
   commit();
+  hint('Standing up straight', 1400);
 };
 $('#drop-floor').onclick = () => dropToFloor();
+$<HTMLInputElement>('#keep-floor').onchange = (e) => {
+  setKeepFloor((e.target as HTMLInputElement).checked);
+  settleOnFloor();
+  commit();
+};
 document.querySelectorAll<HTMLButtonElement>('#view-bar [data-view]').forEach((b) => (b.onclick = () => viewFrom(b.dataset.view!)));
 
 $('#undo').onclick = undo;
@@ -3897,15 +4140,19 @@ $('#spin').onclick = () => {
   $('#spin').classList.toggle('on', controls.autoRotate);
 };
 $('#new').onclick = () => {
-  if (!confirm('Start a new creature? (You can undo this.)')) return;
+  if (!confirm('You sure you want to start fresh?')) return;
   exitDraw();
-  // a fresh creature in the same spot in the scene (named afresh too)
-  state = { ...defaultState(freshRig(state.rig)), placement: state.placement };
-
-  buildCreature();
+  stopPlacing();
+  deselectAttachment();
+  if (mode !== 'shape') setMode('shape');
+  clearCollection();
+  selectedPiece = '';
+  selected = '';
+  // a fresh scene: one biped, an empty workbench
+  restore(JSON.stringify({ creatures: [defaultState(rigFromTemplate(RIGS[0]))], active: 0 } satisfies World));
   commit();
-  renderUI();
   frameCreature(true);
+  hint('Fresh start!', 1500);
 };
 
 /** Render one clean frame without handles or guides, then restore. */
@@ -3925,8 +4172,8 @@ $('#shot').onclick = () => {
     composer.render();
     return canvas.toDataURL('image/png');
   });
-  // named after the creature (or the scene, when it has several and a name)
-  const name = world.creatures.length > 1 && world.name?.trim() ? world.name : (state.name ?? '');
+  // named after who's in the scene
+  const name = sceneFileName();
   download(url, `${safeFileName(name, 'creature')}.png`);
 };
 
@@ -4000,17 +4247,17 @@ window.addEventListener('keydown', (e) => {
       if (b) focusOnBone(b);
     } else focusOnBoard();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (k === 'd' && mode === 'build') enterDraw();
+    if (k === 'd' && mode === 'shape') enterDraw();
     else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece', hole: false });
-    else if (k === '4') setMode('stuff');
+    else if (k === '3') setMode('stuff');
+    else if (k === 'm' && mode === 'shape' && !drawState) setMirror(!rigLock);
     else if (selectedAttachment && (k === 'w' || k === 'e' || k === 'r')) {
       gizmo.setMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
       syncAttachBar();
     }
     else if (placing && (k === 'w' || k === 'e' || k === 'r')) setPlaceMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
-    else if (k === '1') setMode('build');
-    else if (k === '2') setMode('rig');
-    else if (k === '3') setMode('pose');
+    else if (k === '1') setMode('shape');
+    else if (k === '2') setMode('look');
     else if (k === 'f') {
       if (mode === 'stuff') focusOnBoard();
       else frameCreature();
@@ -4082,7 +4329,7 @@ function shadowsChanged(): boolean {
  */
 const SETTLE_AFTER_MS = 600;
 function settleWhenIdle(now: number) {
-  const busy = !!drawState || !!drag || gizmo.dragging || mode === 'rig' || mode === 'stuff';
+  const busy = !!drawState || !!drag || gizmo.dragging || mode === 'stuff';
   let building = false;
   for (const c of creatures) {
     if (c.skinState === 'building') building = true;
@@ -4129,6 +4376,7 @@ function loop(now: number) {
   if (f > -0.1) invalidate(1);
   if (mode === 'stuff') flashPiece(drawState ? 0 : Math.max(0, f));
   else creature.flash(drawState ? null : selected, Math.max(0, f));
+  if (creature.tickBoing(now)) invalidate(1);
   for (const c of creatures) if (c.updateMerge()) invalidate();
   settleWhenIdle(now);
   // skins finish building asynchronously, between frames
