@@ -30,7 +30,7 @@ export interface SkinPart {
 export interface SkinOptions {
   /** grid spacing (world units): smaller = more detail, slower */
   h: number;
-  /** width of the colour fade between differently coloured parts; 0 = one colour */
+  /** width of the color fade between differently colored parts; 0 = one color */
   colorBlend: number;
   lowPoly: boolean;
   /** clay lump strength to add back onto the finished skin (0 = none) */
@@ -590,7 +590,7 @@ interface FadeDistances {
 /**
  * Each skin vertex's distance to every part near it, remembered on the skin
  * (measured a bit wider than needed, up to the fade slider's top), so moving
- * the colour-fade slider only redoes the colours, not the distance queries.
+ * the color-fade slider only redoes the colors, not the distance queries.
  */
 function fadeDistances(geo: THREE.BufferGeometry, parts: SkinPart[], need: number): FadeDistances {
   const cached = geo.userData.fade as FadeDistances | undefined;
@@ -628,10 +628,10 @@ function fadeDistances(geo: THREE.BufferGeometry, parts: SkinPart[], need: numbe
 }
 
 /**
- * (Re)colour a skin: blended part colours near the seams (when blending and
- * the colours differ) and per-facet shading for low-poly. Returns whether
- * colours were baked in (the material should then be white). Cheap next to a
- * rebuild, so a colour-only change repaints the existing skin.
+ * (Re)color a skin: blended part colors near the seams (when blending and
+ * the colors differ) and per-facet shading for low-poly. Returns whether
+ * colors were baked in (the material should then be white). Cheap next to a
+ * rebuild, so a color-only change repaints the existing skin.
  */
 export function paintSkin(geo: THREE.BufferGeometry, parts: SkinPart[], colorBlend: number, lowPoly: boolean): boolean {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
@@ -659,7 +659,7 @@ export function paintSkin(geo: THREE.BufferGeometry, parts: SkinPart[], colorBle
           nearestD = d;
           nearest = fade.part[e];
         }
-        // 50/50 where two parts are equally close, each part's own colour away from the seam
+        // 50/50 where two parts are equally close, each part's own color away from the seam
         const w = 1 / (Math.max(d, 0) + 0.25 * kc) ** 2;
         c.r += pc.r * w;
         c.g += pc.g * w;
@@ -675,7 +675,7 @@ export function paintSkin(geo: THREE.BufferGeometry, parts: SkinPart[], colorBle
   }
 
   if (lowPoly) {
-    // per-facet shade variation, multiplied into any blended colour
+    // per-facet shade variation, multiplied into any blended color
     for (let f = 0; f < n; f += 3) {
       const k = 0.9 + ((((Math.sin(f * 12.9898) * 43758.5453) % 1) + 1) % 1) * 0.14;
       for (let j = 0; j < 9 && f * 3 + j < colors.length; j++) colors[f * 3 + j] *= k;

@@ -172,7 +172,7 @@ function applyLighting() {
 }
 
 // Invisible floor that only shows shadows and contact occlusion, so the
-// backdrop colour is seamless in every direction.
+// backdrop color is seamless in every direction.
 const shadowMat = new THREE.ShadowMaterial({ opacity: 0.55 });
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), shadowMat);
 ground.rotation.x = -Math.PI / 2;
@@ -194,7 +194,7 @@ const floorPrefs: { mode: FloorMode; style: StyleId; color: string; reflect: num
   }
 })();
 let mirror: Reflector | null = null;
-// A backdrop-coloured veil over the mirror: reflection strength fades the
+// A backdrop-colored veil over the mirror: reflection strength fades the
 // reflection toward the backdrop, so the floor stays seamless at the horizon.
 const veil = new THREE.Mesh(
   new THREE.CircleGeometry(40, 96),
@@ -323,7 +323,7 @@ function neutralTone([r, g, b]: number[]): number[] {
   return c.map((v) => v + (newPeak - v) * k);
 }
 
-/** Pre-compensate a colour so it comes out of tone mapping unchanged. */
+/** Pre-compensate a color so it comes out of tone mapping unchanged. */
 function untoned(target: THREE.Color): THREE.Color {
   const want = [target.r, target.g, target.b];
   let c = want.slice();
@@ -1918,7 +1918,7 @@ board.visible = false;
 scene.add(board);
 const boardGrid = new THREE.Group();
 {
-  // opaque lines (pre-faded colours) so glass pieces show the grid through them;
+  // opaque lines (pre-faded colors) so glass pieces show the grid through them;
   // glass only refracts opaque things
   const grid = new THREE.GridHelper(2.4, 24, 0xc4bcc0, 0xe3dacd);
   grid.rotation.x = Math.PI / 2;
@@ -2244,7 +2244,7 @@ function addPieces(shapes: { outline: Vec2[]; holes: Vec2[][] }[]) {
   flashPart();
 }
 
-/** Done redrawing a piece: it keeps its colour, material, kind and place, with the new outline. */
+/** Done redrawing a piece: it keeps its color, material, kind and place, with the new outline. */
 function replacePiece(id: string, shapes: { outline: Vec2[]; holes: Vec2[][] }[]) {
   const wb = workbench();
   const i = wb.pieces.findIndex((p) => p.id === id);
@@ -3252,12 +3252,17 @@ function renderPartCard() {
   $('#part-title').textContent = partLabel(creature.bones.get(selected)!.src);
   $<HTMLInputElement>('#thickness').value = String(p.thickness);
   $<HTMLInputElement>('#opacity').value = String(p.opacity ?? 1);
+  // parts blended into this one are one surface: they share its opacity
+  const others = creature.blendedWith(selected).filter((src) => src !== creature.bones.get(selected)!.src);
+  $('#opacity-note').hidden = !others.length;
+  $('#opacity-note').textContent = others.length ? `Blended with ${others.map(partLabel).join(', ')}: they fade together.` : '';
   $<HTMLButtonElement>('#reset-shape').disabled = !p.outline;
 }
 
 let opacityPending = false;
 $<HTMLInputElement>('#opacity').oninput = (e) => {
-  selPart().opacity = parseFloat((e.target as HTMLInputElement).value);
+  const v = parseFloat((e.target as HTMLInputElement).value);
+  for (const src of creature.blendedWith(selected)) state.parts[src].opacity = v;
   if (opacityPending) return;
   opacityPending = true;
   requestAnimationFrame(() => {
@@ -3504,7 +3509,7 @@ function renderEyes() {
   $<HTMLInputElement>('#eye-height').value = String(pair.height);
   $('#eye-sliders').style.opacity = e.enabled ? '1' : '.4';
   $<HTMLInputElement>('#eye-lift').value = String(pair.lift ?? e.lift ?? 0);
-  // finish and colour only apply to the styles made of a material
+  // finish and color only apply to the styles made of a material
   const shaped = e.enabled && (e.style === 'bead' || e.style === 'dot' || e.style === 'button');
   $('#eye-look').hidden = !shaped;
   if (shaped) {
@@ -3582,7 +3587,7 @@ function switchRig(base: string) {
   // out of date (made before the template changed)
   if (base === state.rig.base && JSON.stringify(rig.bones) === JSON.stringify(state.rig.bones)) return;
   const dirty = Object.values(state.parts).some((p) => p.outline) || Object.keys(state.pose).length > 0;
-  if (dirty && !confirm('Switch body plan? Your drawn shapes and pose will be cleared (colours and material stay).')) return;
+  if (dirty && !confirm('Switch body plan? Your drawn shapes and pose will be cleared (colors and material stay).')) return;
   const body = state.parts[creature.list[0].src].color;
   const next = defaultState(rig, body);
   // same spot in the scene, same name
@@ -3635,7 +3640,7 @@ function setMode(m: Mode) {
     hint('Drag the orange balls to bend · the teal arrows to stretch · double-click a part to draw it', 3600);
     renderRigPanel();
   }
-  if (m === 'look') hint('Click a part, then pick its colour and material', 2200);
+  if (m === 'look') hint('Click a part, then pick its color and material', 2200);
 }
 
 // ---------------------------------------------------------------------------
@@ -4310,7 +4315,7 @@ function renderMerge() {
   const on = state.merge ?? true;
   $<HTMLInputElement>('#merge-radius').value = String(on ? (state.mergeRadius ?? 0.1) : 0);
   $<HTMLInputElement>('#color-blend').value = String(state.mergeColors ? (state.colorBlend ?? 0.12) : 0);
-  // colours only blend where parts blend
+  // colors only blend where parts blend
   $('#color-blend-row').classList.toggle('off', !on);
   // per creature, only when Settings leaves it to each creature
   $('#seamless-row').hidden = settings.seamless !== 'creature';

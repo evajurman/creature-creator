@@ -222,7 +222,7 @@ export function expandRig(rig: RigState): ExpandedRig {
 
 // ---------------------------------------------------------------------------
 // Editing operations. They mutate the RigState and report which parts
-// (drawing/colour slots, keyed by scene id) should be created or copied.
+// (drawing/color slots, keyed by scene id) should be created or copied.
 
 export interface PartCopy {
   from: string;

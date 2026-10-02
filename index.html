@@ -14,7 +14,7 @@
         <div class="brand"><span class="logo">🦎</span> Creature Creator</div>
         <div class="modes" role="tablist">
           <button data-mode="shape" class="active" title="Shape: draw, stretch, grow and pose your creature (1)">✋ Shape</button>
-          <button data-mode="look" title="Look: colours, materials, eyes and stuff to wear (2)">🎨 Look</button>
+          <button data-mode="look" title="Look: colors, materials, eyes and stuff to wear (2)">🎨 Look</button>
           <button data-mode="stuff" title="Stuff: make things to wear and carry (3)">📦 Stuff</button>
         </div>
         <div class="spacer"></div>
@@ -56,6 +56,14 @@
         <section id="parts-sec">
           <h3>Parts</h3>
           <div id="parts" class="parts"></div>
+          <div class="parts-blend">
+            <label class="slider wide-label" title="How smoothly touching parts of the same material flow into each other. 0 keeps them separate.">
+              <span>Blend parts</span><input id="merge-radius" type="range" min="0" max="0.25" step="0.005" />
+              <span class="ends"><em>off</em><em>smooth</em></span></label>
+            <label class="check seamless-row" id="seamless-row" title="For this creature: after you stop changing its shape, blended parts are rebuilt as one continuous skin with no seams">
+              <input id="seamless" type="checkbox" checked /> <span>✨ Seamless joins <span class="muted">(smooths blended parts when idle)</span></span>
+            </label>
+          </div>
         </section>
 
         <section id="shape-panel">
@@ -117,6 +125,7 @@
               <input id="opacity" type="range" min="0.05" max="1" step="0.01" />
               <span class="ends"><em>see-through</em><em>solid</em></span>
             </label>
+            <p class="muted small" id="opacity-note" hidden></p>
             <div class="attach-sec">
               <div class="sub-title">Stuff on this part</div>
               <div id="attach-list" class="parts"></div>
@@ -124,12 +133,15 @@
             </div>
           </div>
 
-          <h3>Colour</h3>
+          <h3>Color</h3>
           <div id="swatches" class="swatches"></div>
           <div class="row">
             <label class="color-pick"><input id="color" type="color" /> Custom</label>
             <button id="paint-all" class="ghost">Paint whole creature</button>
           </div>
+          <label class="slider wide-label" id="color-blend-row" title="Also merge touching parts of different colors, fading one color into the other. 0 keeps colors apart.">
+            <span>Blend colors</span><input id="color-blend" type="range" min="0" max="0.4" step="0.005" />
+            <span class="ends"><em>off</em><em>soft fade</em></span></label>
 
           <h3>Material</h3>
           <div id="styles" class="styles"></div>
@@ -155,19 +167,8 @@
               <button data-finish="glass">Glass</button>
             </div>
             <div class="swatches eye-swatches" id="eye-swatches"></div>
-            <label class="color-pick"><input id="eye-color" type="color" /> Eye colour</label>
+            <label class="color-pick"><input id="eye-color" type="color" /> Eye color</label>
           </div>
-
-          <h3>Blending</h3>
-          <label class="slider wide-label" title="How smoothly touching parts of the same material flow into each other. 0 keeps them separate.">
-            <span>Blend parts</span><input id="merge-radius" type="range" min="0" max="0.25" step="0.005" />
-            <span class="ends"><em>off</em><em>smooth</em></span></label>
-          <label class="slider wide-label" id="color-blend-row" title="Also merge touching parts of different colours, fading one colour into the other. 0 keeps colours apart.">
-            <span>Blend colours</span><input id="color-blend" type="range" min="0" max="0.4" step="0.005" />
-            <span class="ends"><em>off</em><em>soft fade</em></span></label>
-          <label class="check seamless-row" id="seamless-row" title="For this creature: after you stop changing its shape, blended parts are rebuilt as one continuous skin with no seams">
-            <input id="seamless" type="checkbox" checked /> <span>✨ Seamless joins <span class="muted">(smooths blended parts when idle)</span></span>
-          </label>
         </section>
 
         <section id="stuff-panel" hidden>
@@ -312,7 +313,7 @@
           <div class="seg" id="set-seamless">
             <button data-seamless="on" title="Every creature">On</button>
             <button data-seamless="off" title="No creature: blended parts stay as fast joins">Off</button>
-            <button data-seamless="creature" title="Choose for each creature, under Blending">Per creature</button>
+            <button data-seamless="creature" title="Choose for each creature, under the parts list">Per creature</button>
           </div>
           <label class="check" id="set-seamless-lp-row" title="Low-poly parts look their best faceted on their own; a seamless skin re-facets them as one"><input id="set-seamless-lp" type="checkbox" /> Also apply to low-poly material</label>
           <p class="muted small">Seamless joins rebuild blended parts as one skin while you're not changing anything.</p>
@@ -328,7 +329,7 @@
         <div id="backdrop" class="popover" hidden>
           <div class="pop-title">Backdrop</div>
           <div id="backdrops" class="swatches"></div>
-          <label class="color-pick"><input id="backdrop-color" type="color" /> Custom colour</label>
+          <label class="color-pick"><input id="backdrop-color" type="color" /> Custom color</label>
           <div class="pop-sub">Floor</div>
           <div class="seg" id="floor-mode">
             <button data-floor="none" title="No floor: the creature floats">None</button>
@@ -342,7 +343,7 @@
           <div id="floor-material-opts" hidden>
             <div class="mini-styles" id="floor-styles"></div>
             <div class="swatches floor-swatches" id="floor-swatches"></div>
-            <label class="color-pick"><input id="floor-color" type="color" /> Floor colour</label>
+            <label class="color-pick"><input id="floor-color" type="color" /> Floor color</label>
           </div>
           <div class="pop-sub">Lighting</div>
           <label class="slider dof-slider" title="Turn the lights around the scene"><span>Turn</span><input id="light-turn" type="range" min="-180" max="180" step="1" />

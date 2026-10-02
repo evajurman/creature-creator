@@ -44,7 +44,7 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
   ],
   lowpoly: [
     { key: 'facets', label: 'Facet size', min: 0.4, max: 2.5, step: 0.05, value: 1, geometry: true },
-    { key: 'variation', label: 'Colour variation', min: 0, max: 0.5, step: 0.01, value: 0.14, geometry: true },
+    { key: 'variation', label: 'Color variation', min: 0, max: 0.5, step: 0.01, value: 0.14, geometry: true },
     { key: 'matte', label: 'Matte', min: 0.05, max: 1, step: 0.01, value: 0.85 },
   ],
   plastic: [
@@ -60,7 +60,7 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
   ],
   patchwork: [
     { key: 'size', label: 'Patch size', min: 0.3, max: 6, step: 0.05, value: 1 },
-    { key: 'variety', label: 'Colour variety', min: 0, max: 1, step: 0.01, value: 0.7 },
+    { key: 'variety', label: 'Color variety', min: 0, max: 1, step: 0.01, value: 0.7 },
     { key: 'prints', label: 'Prints', min: 0, max: 1, step: 0.01, value: 0.6 },
     { key: 'stitches', label: 'Stitching', min: 0, max: 1, step: 0.01, value: 0.8 },
     { key: 'puff', label: 'Quilting', min: 0, max: 3, step: 0.05, value: 1 },
@@ -294,7 +294,7 @@ function getFelt() {
   }
   const bump = wrapTexture(c);
 
-  // colour map: near-white so it only tints, with warm and cool fibres mixed
+  // color map: near-white so it only tints, with warm and cool fibres mixed
   // in the way dyed wool roving blends (an orange beak shows reds and yellows)
   const cm = document.createElement('canvas');
   cm.width = cm.height = size;
@@ -333,9 +333,9 @@ function getFelt() {
   return feltTex;
 }
 
-// Patchwork: fabric patches sewn together. The colour map is a "gain" around
+// Patchwork: fabric patches sewn together. The color map is a "gain" around
 // mid-grey (doubled in the shader), so patches are lighter, darker and
-// warmer or cooler versions of the part's own colour, and blending colours
+// warmer or cooler versions of the part's own color, and blending colors
 // between parts still works. The bump map puffs each patch up like a quilt
 // and sinks the seams.
 const patchworkTex = new Map<string, { map: THREE.Texture; bump: THREE.Texture }>();
@@ -358,7 +358,7 @@ function getPatchwork(variety: number, prints: number, stitches: number) {
   m.fillRect(0, 0, size, size);
   b.fillStyle = 'rgb(100,100,100)';
   b.fillRect(0, 0, size, size);
-  // a colour gain (1 = the part's own colour) as canvas rgb
+  // a color gain (1 = the part's own color) as canvas rgb
   const rgb = (g: number[], a = 1) => `rgba(${g.map((v) => Math.round(Math.min(2, Math.max(0, v)) * 127.5)).join(',')},${a})`;
 
   // cut the grid into patches: whole squares, triangles, halves, quarters
@@ -513,8 +513,8 @@ function getPatchwork(variety: number, prints: number, stitches: number) {
   return out;
 }
 
-// Knitted: rows of V-shaped stockinette stitches. Like patchwork, the colour
-// map is a gain around mid-grey, so the yarn takes the part's own colour.
+// Knitted: rows of V-shaped stockinette stitches. Like patchwork, the color
+// map is a gain around mid-grey, so the yarn takes the part's own color.
 const knitTex = new Map<string, { map: THREE.Texture; bump: THREE.Texture }>();
 
 function getKnit(stripes: number) {
@@ -590,7 +590,7 @@ function getKnit(stripes: number) {
   }
   b.putImageData(bi, 0, 0);
 
-  // colour gain: yarn tops a touch lighter, the gaps between stitches darker;
+  // color gain: yarn tops a touch lighter, the gaps between stitches darker;
   // stripes lighten every other band of three rows
   const mapC = document.createElement('canvas');
   mapC.width = mapC.height = size;
@@ -642,7 +642,7 @@ interface TriOptions {
    * overlaps). Where it switches, a seam is sewn, with this much stitching.
    */
   hard?: { stitches: number };
-  /** the colour map is a gain around mid-grey: multiplied by 2 */
+  /** the color map is a gain around mid-grey: multiplied by 2 */
   mapGain?: number;
 }
 
@@ -823,9 +823,9 @@ export function setTextureSpace(root: THREE.Object3D, rest: THREE.Matrix4 | 'att
 // ---------------------------------------------------------------------------
 
 /**
- * The colour a material shows for a part's colour: glass is only tinted by
- * it (full tint strength = the plain colour). Used wherever colours get baked
- * into a mesh (blended colours), so baking doesn't change the look.
+ * The color a material shows for a part's color: glass is only tinted by
+ * it (full tint strength = the plain color). Used wherever colors get baked
+ * into a mesh (blended colors), so baking doesn't change the look.
  */
 export function surfaceColor(style: StyleId, color: string, k: StyleSettings): THREE.Color {
   const c = new THREE.Color(color);
@@ -988,7 +988,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
   const r = rng(seed);
   const pos = geo.getAttribute('position');
   const nor = geo.getAttribute('normal');
-  // blended skins carry per-vertex colours: each wisp takes the colour where it grows
+  // blended skins carry per-vertex colors: each wisp takes the color where it grows
   const vcol = tintFromGeometry ? (geo.getAttribute('color') as THREE.BufferAttribute | undefined) : undefined;
   const rootCol = new THREE.Color();
   const index = geo.getIndex();

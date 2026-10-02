@@ -403,7 +403,7 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
   if (opts.lowPoly) {
     geo = geo.toNonIndexed();
     geo.computeVertexNormals();
-    // A little per-facet colour variation reads nicely as papercraft.
+    // A little per-facet color variation reads nicely as papercraft.
     const count = geo.getAttribute('position').count;
     const colors = new Float32Array(count * 3);
     for (let f = 0; f < count; f += 3) {

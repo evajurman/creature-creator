@@ -486,3 +486,4 @@ details.fine[open] > summary { margin-bottom: 6px; }
 .piece-pick i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); flex: none; }
 .piece-icon { width: 30px; height: 28px; border-radius: 8px; display: grid; place-items: center; opacity: .7; }
 .piece-icon:hover { opacity: 1; background: rgba(127,127,127,.18); }
+.parts-blend { margin-top: 10px; }

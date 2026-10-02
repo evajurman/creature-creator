@@ -57,7 +57,7 @@ export interface EyesState {
   pairs: EyePair[];
   /** bead / dot / button: what they're made of ('body' = the head's own material) */
   finish?: EyeFinish;
-  /** bead / dot / button colour */
+  /** bead / dot / button color */
   color?: string;
   /** legacy: one stand-off for every pair (now per pair) */
   lift?: number;
@@ -86,13 +86,13 @@ export interface CreatureState {
   pose: Record<string, [number, number, number, number]>;
   rootOffset: V3;
   eyes: EyesState;
-  /** Smoothly fuse touching parts that share a colour and material. */
+  /** Smoothly fuse touching parts that share a color and material. */
   merge?: boolean;
   /** Fillet size for merging, in world units. */
   mergeRadius?: number;
-  /** merge parts of the same material even when their colours differ, blending the colours */
+  /** merge parts of the same material even when their colors differ, blending the colors */
   mergeColors?: boolean;
-  /** width of the colour fade at blended joins, in world units */
+  /** width of the color fade at blended joins, in world units */
   colorBlend?: number;
   /** rebuild merged groups as one seamless skin when left idle (default on; see setSeamlessMode) */
   seamless?: boolean;
@@ -126,9 +126,9 @@ interface SkinEntry {
   members: BoneRT[];
   parts: SkinPart[];
   lowPoly: boolean;
-  /** colours were baked into the geometry */
+  /** colors were baked into the geometry */
   painted: boolean;
-  /** colours the paint was made with */
+  /** colors the paint was made with */
   colorKey: string;
   /** the look it was last dressed in (see dressSkin) */
   lookKey?: string;
@@ -136,7 +136,7 @@ interface SkinEntry {
 
 export interface BoneRT {
   def: ExpandedBone;
-  /** id of the part whose drawing/colour this bone uses */
+  /** id of the part whose drawing/color this bone uses */
   src: string;
   pivot: THREE.Object3D;
   parent: BoneRT | null;
@@ -836,7 +836,7 @@ export class Creature {
   }
 
   // -------------------------------------------------------------------------
-  // merging: parts with the same colour and material are fused with a smooth
+  // merging: parts with the same color and material are fused with a smooth
   // union. Each vertex near a neighbouring part is moved onto the blended
   // surface (a fillet) and its normal is blended too, so the seam disappears.
 
@@ -845,7 +845,7 @@ export class Creature {
     if (!this.mergeDirty) return false;
     this.mergeDirty = false;
     // Only shape changes invalidate the settled skin; a look-only change
-    // (material sliders, opacity, colours while blending, eyes...) just
+    // (material sliders, opacity, colors while blending, eyes...) just
     // re-dresses it.
     const key = this.skinShapeKey();
     if (key !== this.skinKey) {
@@ -858,7 +858,7 @@ export class Creature {
     const s = this.state;
     const on = s.merge ?? true;
     const k = s.mergeRadius ?? 0.1;
-    // with colour blending, parts of one material merge whatever their colour
+    // with color blending, parts of one material merge whatever their color
     const blend = on && !!s.mergeColors;
     const kc = blend ? (s.colorBlend ?? 0.12) : 0;
     this.root.updateMatrixWorld(true);
@@ -891,7 +891,7 @@ export class Creature {
           g.userData = { base };
           b.mesh!.userData.mergeGeo = g;
         }
-        // only paint colours when a neighbour actually has a different colour
+        // only paint colors when a neighbour actually has a different color
         const myColor = s.parts[b.src].color.toLowerCase();
         const paint = blend && nbrs.some((o) => s.parts[o.src].color.toLowerCase() !== myColor);
         this.fuse(b, base, g, nbrs, k, paint ? kc : 0);
@@ -906,8 +906,8 @@ export class Creature {
   }
 
   /**
-   * Swap in base or fused geometry. When `painted`, colour comes from the
-   * per-vertex colours baked by fuse(), so materials switch to white * vertex colour.
+   * Swap in base or fused geometry. When `painted`, color comes from the
+   * per-vertex colors baked by fuse(), so materials switch to white * vertex color.
    */
   private setMeshGeometry(b: BoneRT, g: THREE.BufferGeometry, painted: boolean) {
     const mesh = b.mesh!;
@@ -916,7 +916,7 @@ export class Creature {
     for (const c of mesh.children) if (c instanceof THREE.Mesh) c.geometry = g;
     const part = this.state.parts[b.src];
     const lowPoly = (part.style ?? this.state.style) === 'lowpoly';
-    // body + fuzz shells (stray-hair lines keep their own per-hair colours)
+    // body + fuzz shells (stray-hair lines keep their own per-hair colors)
     const mats = [mesh.material, ...mesh.children.filter((c) => c instanceof THREE.Mesh).map((c) => (c as THREE.Mesh).material)];
     for (const m of mats as THREE.MeshStandardMaterial[]) {
       if (!m || !('color' in m) || m.userData?.ink) continue;
@@ -925,8 +925,8 @@ export class Creature {
         m.vertexColors = want;
         m.needsUpdate = true;
       }
-      // back to the colour the material was made with (not the plain part
-      // colour: glass, say, is only tinted by it), or white under baked colours
+      // back to the color the material was made with (not the plain part
+      // color: glass, say, is only tinted by it), or white under baked colors
       m.userData.baseColor ??= m.color.clone();
       if (painted) m.color.setRGB(1, 1, 1);
       else m.color.copy(m.userData.baseColor as THREE.Color);
@@ -971,7 +971,7 @@ export class Creature {
     const blend = !!s.mergeColors;
     const kc = blend ? (s.colorBlend ?? 0.12) : 0;
 
-    // same groups as the fast merge: one material (and one colour unless blending)
+    // same groups as the fast merge: one material (and one color unless blending)
     const groups = new Map<string, BoneRT[]>();
     for (const b of this.list) {
       if (!b.mesh) continue;
@@ -1055,7 +1055,7 @@ export class Creature {
 
   /**
    * What a skin's shape depends on. Anything else (material sliders that
-   * don't reshape, opacity, eyes, stuff, colours while blending) only needs
+   * don't reshape, opacity, eyes, stuff, colors while blending) only needs
    * the existing skin re-dressed, not rebuilt.
    */
   private skinShapeKey(): string {
@@ -1074,13 +1074,13 @@ export class Creature {
       Object.entries(s.parts).map(([id, p]) => {
         const style = p.style ?? s.style;
         const k = this.settingsFor(style);
-        // clay lumps and low-poly facet size change the shape; with blending off, colour changes the groups
+        // clay lumps and low-poly facet size change the shape; with blending off, color changes the groups
         return [id, p.outline, p.thickness, style, style === 'clay' ? k.lumps : 0, style === 'lowpoly' ? k.facets : 0, blend ? '' : p.color.toLowerCase()];
       }),
     ]);
   }
 
-  /** Give a skin the current look: colours, material, felt fuzz, toon ink, opacity. */
+  /** Give a skin the current look: colors, material, felt fuzz, toon ink, opacity. */
   private dressSkin(sk: SkinEntry) {
     const s = this.state;
     const part = s.parts[sk.members[0].src];
@@ -1088,7 +1088,7 @@ export class Creature {
     const k = this.settingsFor(style);
     const kc = s.mergeColors ? (s.colorBlend ?? 0.12) : 0;
 
-    // repaint only if the colours (or the fade width) changed
+    // repaint only if the colors (or the fade width) changed
     sk.parts.forEach((p, i) => p.color.copy(this.shownColor(sk.members[i])));
     const colorKey = JSON.stringify([sk.parts.map((p) => p.color.getHex()), kc]);
     if (colorKey !== sk.colorKey) {
@@ -1130,7 +1130,7 @@ export class Creature {
     if (style === 'felt') {
       for (const shell of makeFuzzShells(geo, part.color, k)) {
         if (sk.painted) {
-          // fuzz takes the skin's blended colours, not the first part's
+          // fuzz takes the skin's blended colors, not the first part's
           const sm = shell.material as THREE.MeshStandardMaterial;
           sm.vertexColors = true;
           sm.color.setRGB(1, 1, 1);
@@ -1158,7 +1158,7 @@ export class Creature {
     }
   }
 
-  /** A part's colour as its material shows it (see surfaceColor). */
+  /** A part's color as its material shows it (see surfaceColor). */
   private shownColor(b: BoneRT): THREE.Color {
     const p = this.state.parts[b.src];
     const style = p.style ?? this.state.style;
@@ -1174,6 +1174,34 @@ export class Creature {
     return this.rootInv.clone().multiply(o.matrixWorld);
   }
 
+  /**
+   * The parts blended into one with this one: same material (and color,
+   * unless colors blend), touching through a chain. A seamless skin shows
+   * them as one surface, so they share one opacity. Returns part (drawing) ids.
+   */
+  blendedWith(id: string): string[] {
+    const start = this.bones.get(id);
+    if (!start?.mesh) return start ? [start.src] : [];
+    const s = this.state;
+    const blend = !!s.mergeColors;
+    const k = Math.max(s.mergeRadius ?? 0.1, blend ? (s.colorBlend ?? 0.12) : 0);
+    if (!(s.merge ?? true) || k <= 0) return [start.src];
+    const key = (b: BoneRT) => {
+      const p = s.parts[b.src];
+      return (p.style ?? s.style) + (blend ? '' : p.color.toLowerCase());
+    };
+    this.root.updateMatrixWorld(true);
+    this.rootInv.copy(this.root.matrixWorld).invert();
+    const same = this.list.filter((b) => b.mesh && key(b) === key(start));
+    const seen = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      const a = queue.pop()!;
+      for (const b of same) if (!seen.has(b) && this.near(a, b, k)) (seen.add(b), queue.push(b));
+    }
+    return [...new Set([...seen].map((b) => b.src))];
+  }
+
   private near(a: BoneRT, b: BoneRT, k: number): boolean {
     const ga = a.mesh!.userData.baseGeo as THREE.BufferGeometry;
     const gb = b.mesh!.userData.baseGeo as THREE.BufferGeometry;
@@ -1184,7 +1212,7 @@ export class Creature {
 
   /**
    * Fuse this part's surface into its neighbours (smooth-min fillet) and,
-   * when `kc` > 0, bake a colour gradient that meets 50/50 at the seam.
+   * when `kc` > 0, bake a color gradient that meets 50/50 at the seam.
    */
   private fuse(b: BoneRT, base: THREE.BufferGeometry, out: THREE.BufferGeometry, nbrs: BoneRT[], kMax: number, kc: number) {
     const solidA = base.userData.solid as Solid;
@@ -1195,8 +1223,8 @@ export class Creature {
     };
     const rA = maxR(solidA);
     const own = this.shownColor(b);
-    // Colour fades are measured a bit wider than asked (up to the slider's
-    // top), so dragging the fade slider only redoes colours, not the shape.
+    // Color fades are measured a bit wider than asked (up to the slider's
+    // top), so dragging the fade slider only redoes colors, not the shape.
     const reach = kc > 0 ? Math.max(kc, Math.min(0.4, 2 * kc)) : 0;
 
     // "world" here is the creature's own placement space (see rel)
@@ -1223,7 +1251,7 @@ export class Creature {
         rot: new THREE.Matrix3().setFromMatrix4(oWorld),
         box: g.boundingBox!.clone().expandByScalar(Math.max(k, reach)),
         color: this.shownColor(o),
-        // same-coloured neighbours don't tint
+        // same-colored neighbours don't tint
         tints: kc > 0 && colorKey !== myKey,
       };
     });
@@ -1244,7 +1272,7 @@ export class Creature {
     const grad = new THREE.Vector3(), gw = new THREE.Vector3(), gsum = new THREE.Vector3();
     const col = new THREE.Color();
 
-    // What the fused shape depends on: if only the colour fade changed since
+    // What the fused shape depends on: if only the color fade changed since
     // last time, just repaint from the remembered distances.
     const r6 = (v: number) => v.toFixed(6);
     const shapeKey = [
@@ -1260,7 +1288,7 @@ export class Creature {
         const o = others[j];
         const f = fAt(j);
         if (o.tints && f < kc) {
-          // 50/50 at the seam, fading to our own colour kc away from it
+          // 50/50 at the seam, fading to our own color kc away from it
           const t = Math.min(1, Math.max(0, 1 - f / kc));
           col.lerp(o.color, 0.5 * t * t * (3 - 2 * t));
         }
@@ -1700,7 +1728,7 @@ const glossyBlack = () => new THREE.MeshPhysicalMaterial({ color: 0x1b1720, roug
  */
 function realSphere(sx: number, sy: number, sz: number): THREE.BufferGeometry {
   const g = sphereGeo.clone().scale(sx, sy, sz);
-  // low-poly materials read per-vertex colour
+  // low-poly materials read per-vertex color
   g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(g.getAttribute('position').count * 3).fill(1), 3));
   return g;
 }
@@ -1713,10 +1741,10 @@ function eyeMaterial(finish: EyeFinish, color: string, headStyle: StyleId, headS
     case 'matte':
       return new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
     case 'glass':
-      // a coloured glass marble: strong tint so the colour reads
+      // a colored glass marble: strong tint so the color reads
       return makeMaterial('glass', color, { ...styleSettings('glass'), ...(headStyle === 'glass' ? headSettings : {}), tint: 0.85 });
     default:
-      // glass: tinted strongly, or a dark eye colour barely shows through clear glass
+      // glass: tinted strongly, or a dark eye color barely shows through clear glass
       return makeMaterial(headStyle, color, headStyle === 'glass' ? { ...headSettings, tint: Math.max(headSettings.tint, 0.85) } : headSettings);
   }
 }
