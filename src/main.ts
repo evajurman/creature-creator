@@ -9,6 +9,7 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { FullScreenQuad, Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import {
   bendFromMid,
   bentTip,
@@ -45,7 +46,7 @@ import {
   type Piece,
   type Thing,
 } from './stuff';
-import { STYLE_PARAMS, STYLES, makeMaterial, setGlassEnvironment, styleSettings, type StyleId } from './materials';
+import { FUR_LAYER, STYLE_PARAMS, STYLES, makeMaterial, setGlassEnvironment, styleSettings, type StyleId } from './materials';
 import {
   RIGS,
   addLimb,
@@ -314,28 +315,85 @@ camera.position.set(2.8, 2.0, 4.4);
 // Post-processing: MSAA scene render, ground-truth ambient occlusion for the
 // creases where parts meet and contact shadows on the floor, then tone mapping.
 const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
-composer.addPass(new RenderPass(scene, camera));
+
+// Felt fuzz and ambient occlusion: AO darkens whatever pixels it lands on,
+// and the fuzz halo sticks out past the body's edge over the floor's contact
+// shadow, so it would come out with dark smudges along the silhouette. With AO
+// on, the fuzz (shells and stray hairs, flagged `fx`) is hidden for the scene
+// and AO passes and drawn afterwards, on top, by furPass.
+let furHidden: THREE.Object3D[] = [];
+function hideFur() {
+  scene.traverseVisible((o) => {
+    if (o.userData.fx) furHidden.push(o);
+  });
+  for (const o of furHidden) o.visible = false;
+}
+function showFur() {
+  for (const o of furHidden) o.visible = true;
+  furHidden = [];
+}
+
+const scenePass = new RenderPass(scene, camera);
+const scenePassRender = scenePass.render.bind(scenePass);
+scenePass.render = (...args: Parameters<RenderPass['render']>) => {
+  if (furPass.enabled) hideFur();
+  scenePassRender(...args);
+};
+composer.addPass(scenePass);
 const gtao = new GTAOPass(scene, camera, 1, 1);
 gtao.updateGtaoMaterial({ radius: 0.28, distanceExponent: 1.6, thickness: 1.2, scale: 1.3, samples: 16 });
 gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
 gtao.blendIntensity = 1.0;
-// GTAO's normal/depth pass draws every mesh with one override material, so felt
-// fuzz shells lose their offset and land exactly on the surface they cover:
-// twelve redundant copies. Hide them for that pass (the result is identical).
-const gtaoRender = gtao.render.bind(gtao);
-gtao.render = (...args: Parameters<GTAOPass['render']>) => {
-  const shells: THREE.Object3D[] = [];
-  scene.traverseVisible((o) => {
-    if (o.userData.fx && o instanceof THREE.Mesh) shells.push(o);
-  });
-  shells.forEach((o) => (o.visible = false));
-  try {
-    gtaoRender(...args);
-  } finally {
-    shells.forEach((o) => (o.visible = true));
-  }
-};
 composer.addPass(gtao);
+
+/**
+ * Draws the fuzz over the AO'd image. The image's own depth was lost when AO
+ * wrote it out, so AO's depth (the scene without fuzz) is copied in first:
+ * fuzz behind the body stays hidden.
+ */
+class FurPass extends Pass {
+  private depthCopy = new FullScreenQuad(
+    new THREE.ShaderMaterial({
+      uniforms: { tDepth: { value: null } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform sampler2D tDepth; varying vec2 vUv; void main() { gl_FragDepth = texture2D(tDepth, vUv).x; }',
+      depthTest: true,
+      depthWrite: true,
+      depthFunc: THREE.AlwaysDepth,
+      colorWrite: false,
+    }),
+  );
+
+  constructor() {
+    super();
+    this.needsSwap = false;
+  }
+
+  render(renderer: THREE.WebGLRenderer, _writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget) {
+    const fur = furHidden;
+    showFur();
+    if (!fur.length) return;
+    renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
+    const autoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    (this.depthCopy.material as THREE.ShaderMaterial).uniforms.tDepth.value = gtao.depthTexture;
+    this.depthCopy.render(renderer);
+    // only the fuzz: no backdrop (it would paint over everything), lights kept
+    const background = scene.background;
+    scene.background = null;
+    const mask = camera.layers.mask;
+    camera.layers.set(FUR_LAYER);
+    renderer.render(scene, camera);
+    camera.layers.mask = mask;
+    scene.background = background;
+    renderer.autoClear = autoClear;
+  }
+}
+const furPass = new FurPass();
+composer.addPass(furPass);
+// lights have to share the fuzz's layer to light it
+for (const l of [hemi, key, fill, rim]) l.layers.enable(FUR_LAYER);
 // optional macro-photo depth of field, focused on whatever the camera orbits
 const bokeh = new BokehPass(scene, camera, { focus: 5, aperture: 0.004, maxblur: 0.012 });
 bokeh.enabled = false;
@@ -3373,6 +3431,8 @@ $<HTMLInputElement>('#floor-color').oninput = (e) => {
 $<HTMLInputElement>('#floor-color').onchange = () => renderFloorUI();
 $<HTMLInputElement>('#ao').onchange = (e) => {
   gtao.enabled = (e.target as HTMLInputElement).checked;
+  // without AO the fuzz is simply drawn with everything else
+  furPass.enabled = gtao.enabled;
 };
 // ---------------------------------------------------------------------------
 // depth of field: focus follows the orbit target, nudged by `offset`
@@ -3604,7 +3664,9 @@ $('#shot').onclick = () => {
     composer.render();
     return canvas.toDataURL('image/png');
   });
-  download(url, 'creature.png');
+  // named after the creature (or the scene, when it has several and a name)
+  const name = world.creatures.length > 1 && world.name?.trim() ? world.name : (state.name ?? '');
+  download(url, `${safeFileName(name, 'creature')}.png`);
 };
 
 $('#export').onclick = () => {

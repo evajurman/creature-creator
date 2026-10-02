@@ -10,6 +10,7 @@ import {
   makeMaterial,
   makeOutlineMaterial,
   makeStrayHairs,
+  setTextureSpace,
   styleSettings,
   surfaceColor,
   type StyleId,
@@ -144,6 +145,8 @@ export interface BoneRT {
   attach: boolean;
   line: THREE.Line;
   guide: THREE.Group;
+  /** the bone's frame in the rest pose, relative to the creature: where its textures are laid out */
+  restGroup: THREE.Matrix4;
 }
 
 const DEFAULT_COLORS = ['#7cc6a4', '#f6a5b5', '#8fb8ec', '#f7c873', '#b9a3e3'];
@@ -515,9 +518,20 @@ export class Creature {
         attach,
         line,
         guide,
+        restGroup: new THREE.Matrix4(),
       };
       this.bones.set(def.id, rt);
       this.list.push(rt);
+    }
+    this.updateRestFrames();
+  }
+
+  /** Recompute every bone's rest-pose frame (in place: materials hold on to them). */
+  private updateRestFrames() {
+    const one = new THREE.Vector3(1, 1, 1);
+    for (const b of this.list) {
+      b.restGroup.compose(b.pivot.position, b.restQuat, one);
+      if (b.parent) b.restGroup.premultiply(b.parent.restGroup);
     }
   }
 
@@ -546,6 +560,7 @@ export class Creature {
       b.line.geometry = new THREE.BufferGeometry().setFromPoints(bonePoints(bd));
     }
     this.rootHandle.position.copy(this.list[0].pivot.position);
+    this.updateRestFrames();
     this.mergeDirty = true;
   }
 
@@ -659,6 +674,8 @@ export class Creature {
         if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, hashString(b.def.id), k.hairs));
       }
       setOpacity(mesh, p.opacity ?? 1);
+      // textures (and fuzz) are laid out in the rest pose and bend with the bones
+      setTextureSpace(mesh, b.restGroup);
       b.pivot.add(mesh);
       b.mesh = mesh;
     }
@@ -965,6 +982,7 @@ export class Creature {
       const k = this.settingsFor(style);
       const minR = Math.min(...joined.map(radius));
       const lowPoly = style === 'lowpoly';
+      const textured = style === 'clay' || style === 'felt' || style === 'patchwork';
       // low-poly keeps its own parts (and fast joins) unless the setting says otherwise
       if (lowPoly && !seamlessLowPoly) continue;
       // low-poly is built smooth like the rest, then re-faceted to each part's own facet size
@@ -974,6 +992,8 @@ export class Creature {
         return {
           geo,
           toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
+          // textured materials lay their textures out in the rest pose
+          toRest: textured ? b.restGroup.clone().multiply(b.mesh!.matrix) : undefined,
           color: this.shownColor(b),
           k: Math.max(0.005, Math.min(kMax, 0.6 * radius(b))),
           facet: geo.userData.facet as number | undefined,
@@ -1103,6 +1123,8 @@ export class Creature {
       if (k.hairs > 0) mesh.add(makeStrayHairs(geo, part.color, 11, k.hairs, sk.painted));
     }
     setOpacity(mesh, part.opacity ?? 1);
+    // laid out from the rest positions the skin was built with
+    if (geo.getAttribute('restPos')) setTextureSpace(mesh, 'attributes');
 
     // parts may have been rebuilt (new meshes) by the look change: keep them hidden
     for (const b of sk.members) if (b.mesh) b.mesh.visible = false;

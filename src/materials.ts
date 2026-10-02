@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass';
+export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork';
 
 export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'clay', name: 'Clay', desc: 'Hand-moulded, fingerprinted' },
@@ -9,6 +9,7 @@ export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'plastic', name: 'Toy', desc: 'Glossy vinyl toy' },
   { id: 'toon', name: 'Toon', desc: 'Cel-shaded with ink lines' },
   { id: 'glass', name: 'Glass', desc: 'Clear or frosted, refracts' },
+  { id: 'patchwork', name: 'Patchwork', desc: 'Stitched fabric patches' },
 ];
 
 /** A per-material slider. `geometry` ones change the mesh itself, not just the shader. */
@@ -51,6 +52,13 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
     { key: 'thick', label: 'Thickness', min: 0, max: 1, step: 0.01, value: 0.08 },
     { key: 'ior', label: 'Refraction', min: 1, max: 2.2, step: 0.01, value: 1.45 },
   ],
+  patchwork: [
+    { key: 'size', label: 'Patch size', min: 0.3, max: 6, step: 0.05, value: 1 },
+    { key: 'variety', label: 'Colour variety', min: 0, max: 1, step: 0.01, value: 0.7 },
+    { key: 'prints', label: 'Prints', min: 0, max: 1, step: 0.01, value: 0.6 },
+    { key: 'stitches', label: 'Stitching', min: 0, max: 1, step: 0.01, value: 0.8 },
+    { key: 'puff', label: 'Quilting', min: 0, max: 3, step: 0.05, value: 1 },
+  ],
   toon: [
     { key: 'ink', label: 'Ink width', min: 0, max: 0.04, step: 0.001, value: 0.012 },
     { key: 'bands', label: 'Shade steps', min: 2, max: 6, step: 1, value: 3 },
@@ -59,6 +67,9 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
 };
 
 export type StyleSettings = Record<string, number>;
+
+/** Felt fuzz is also on this layer, so it can be drawn on its own after ambient occlusion. */
+export const FUR_LAYER = 1;
 
 let glassEnv: THREE.Texture | null = null;
 /** The reflection environment glass uses (set once by the app). */
@@ -310,6 +321,186 @@ function getFelt() {
   return feltTex;
 }
 
+// Patchwork: fabric patches sewn together. The colour map is a "gain" around
+// mid-grey (doubled in the shader), so patches are lighter, darker and
+// warmer or cooler versions of the part's own colour, and blending colours
+// between parts still works. The bump map puffs each patch up like a quilt
+// and sinks the seams.
+const patchworkTex = new Map<string, { map: THREE.Texture; bump: THREE.Texture }>();
+
+function getPatchwork(variety: number, prints: number, stitches: number) {
+  const key = [variety, prints, stitches].map((v) => v.toFixed(2)).join();
+  const hit = patchworkTex.get(key);
+  if (hit) return hit;
+  if (patchworkTex.size > 12) patchworkTex.clear();
+  const size = 1024;
+  const cells = 4;
+  const cs = size / cells;
+  const r = rng(31);
+  const mapC = document.createElement('canvas');
+  const bumpC = document.createElement('canvas');
+  mapC.width = mapC.height = bumpC.width = bumpC.height = size;
+  const m = mapC.getContext('2d')!;
+  const b = bumpC.getContext('2d')!;
+  m.fillStyle = 'rgb(128,128,128)';
+  m.fillRect(0, 0, size, size);
+  b.fillStyle = 'rgb(100,100,100)';
+  b.fillRect(0, 0, size, size);
+  // a colour gain (1 = the part's own colour) as canvas rgb
+  const rgb = (g: number[], a = 1) => `rgba(${g.map((v) => Math.round(Math.min(2, Math.max(0, v)) * 127.5)).join(',')},${a})`;
+
+  // cut the grid into patches: whole squares, triangles, halves, quarters
+  type Poly = [number, number][];
+  const patches: Poly[] = [];
+  for (let j = 0; j < cells; j++) {
+    for (let i = 0; i < cells; i++) {
+      const x0 = i * cs, y0 = j * cs, x1 = x0 + cs, y1 = y0 + cs;
+      const xm = x0 + cs / 2, ym = y0 + cs / 2;
+      const t = r();
+      if (t < 0.4) patches.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+      else if (t < 0.6) {
+        if (r() < 0.5) patches.push([[x0, y0], [x1, y0], [x1, y1]], [[x0, y0], [x1, y1], [x0, y1]]);
+        else patches.push([[x0, y0], [x1, y0], [x0, y1]], [[x1, y0], [x1, y1], [x0, y1]]);
+      } else if (t < 0.8) {
+        if (r() < 0.5) patches.push([[x0, y0], [x1, y0], [x1, ym], [x0, ym]], [[x0, ym], [x1, ym], [x1, y1], [x0, y1]]);
+        else patches.push([[x0, y0], [xm, y0], [xm, y1], [x0, y1]], [[xm, y0], [x1, y0], [x1, y1], [xm, y1]]);
+      } else {
+        for (const [ax, ay] of [[x0, y0], [xm, y0], [x0, ym], [xm, ym]]) patches.push([[ax, ay], [ax + cs / 2, ay], [ax + cs / 2, ay + cs / 2], [ax, ay + cs / 2]]);
+      }
+    }
+  }
+  const path = (ctx: CanvasRenderingContext2D, p: Poly) => {
+    ctx.beginPath();
+    p.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+  };
+
+  for (const p of patches) {
+    // the fabric: lighter or darker, and nudged warmer or cooler
+    const bright = 1 + (r() - 0.5) * 0.75 * variety;
+    const fabric = [0, 1, 2].map(() => bright * (1 + (r() - 0.5) * 0.55 * variety));
+    m.save();
+    path(m, p);
+    m.clip();
+    m.fillStyle = rgb(fabric);
+    m.fillRect(0, 0, size, size);
+    const xs = p.map((q) => q[0]), ys = p.map((q) => q[1]);
+    const bx = Math.min(...xs), by = Math.min(...ys), bw = Math.max(...xs) - bx, bh = Math.max(...ys) - by;
+    if (r() < prints) {
+      // a print in a lighter or darker shade (or cream) of the fabric
+      const ink = r() < 0.3 ? [1.75, 1.7, 1.55] : fabric.map((v) => v * (r() < 0.5 ? 0.62 : 1.4));
+      m.fillStyle = m.strokeStyle = rgb(ink, 0.85);
+      const kind = Math.floor(r() * 4);
+      if (kind === 0) {
+        // polka dots
+        const step = 16 + r() * 18, rad = step * (0.15 + r() * 0.15);
+        for (let y = by; y < by + bh + step; y += step) {
+          for (let x = bx + ((y - by) / step) % 2 * step / 2; x < bx + bw + step; x += step) {
+            m.beginPath();
+            m.arc(x, y, rad, 0, Math.PI * 2);
+            m.fill();
+          }
+        }
+      } else if (kind === 1) {
+        // stripes, straight or slanted
+        const step = 10 + r() * 18;
+        m.lineWidth = step * (0.25 + r() * 0.3);
+        const ang = [0, Math.PI / 2, Math.PI / 4][Math.floor(r() * 3)];
+        const cx = bx + bw / 2, cy = by + bh / 2, reach = Math.hypot(bw, bh);
+        for (let o = -reach; o < reach; o += step) {
+          m.beginPath();
+          m.moveTo(cx + Math.cos(ang) * o - Math.sin(ang) * reach, cy + Math.sin(ang) * o + Math.cos(ang) * reach);
+          m.lineTo(cx + Math.cos(ang) * o + Math.sin(ang) * reach, cy + Math.sin(ang) * o - Math.cos(ang) * reach);
+          m.stroke();
+        }
+      } else if (kind === 2) {
+        // gingham: see-through bands both ways, darker where they cross
+        const step = 14 + r() * 14;
+        m.fillStyle = rgb(ink, 0.45);
+        for (let x = bx; x < bx + bw; x += step * 2) m.fillRect(x, by, step, bh);
+        for (let y = by; y < by + bh; y += step * 2) m.fillRect(bx, y, bw, step);
+      } else {
+        // little flowers: five petals round a contrasting middle
+        const n = Math.round((bw * bh) / 1400);
+        for (let k = 0; k < n; k++) {
+          const fx = bx + r() * bw, fy = by + r() * bh, pr = 3 + r() * 4;
+          m.fillStyle = rgb(ink, 0.9);
+          for (let q = 0; q < 5; q++) {
+            const a = (q / 5) * Math.PI * 2;
+            m.beginPath();
+            m.arc(fx + Math.cos(a) * pr, fy + Math.sin(a) * pr, pr * 0.75, 0, Math.PI * 2);
+            m.fill();
+          }
+          m.fillStyle = rgb([1.8, 1.6, 0.9], 0.9);
+          m.beginPath();
+          m.arc(fx, fy, pr * 0.6, 0, Math.PI * 2);
+          m.fill();
+        }
+      }
+    }
+    m.restore();
+
+    // quilting: each patch puffs up towards its middle
+    const cx = xs.reduce((a, v) => a + v, 0) / p.length, cy = ys.reduce((a, v) => a + v, 0) / p.length;
+    const g = b.createRadialGradient(cx, cy, 0, cx, cy, Math.max(bw, bh) * 0.7);
+    g.addColorStop(0, 'rgb(200,200,200)');
+    g.addColorStop(1, 'rgb(110,110,110)');
+    b.save();
+    path(b, p);
+    b.clip();
+    b.fillStyle = g;
+    b.fillRect(bx, by, bw, bh);
+    b.restore();
+  }
+
+  // seams: sunk and a touch darker, with dashed thread stitched just inside
+  for (const p of patches) {
+    path(m, p);
+    m.strokeStyle = 'rgba(70,70,70,0.6)';
+    m.lineWidth = 3;
+    m.stroke();
+    path(b, p);
+    b.strokeStyle = 'rgb(20,20,20)';
+    b.lineWidth = 7;
+    b.stroke();
+  }
+  if (stitches > 0) {
+    m.setLineDash([7, 6]);
+    b.setLineDash([7, 6]);
+    for (const p of patches) {
+      // the outline pulled 9px towards the patch's middle
+      const cx = p.reduce((a, q) => a + q[0], 0) / p.length, cy = p.reduce((a, q) => a + q[1], 0) / p.length;
+      const inner = p.map(([x, y]): [number, number] => {
+        const d = Math.hypot(cx - x, cy - y) || 1;
+        return [x + ((cx - x) / d) * 11, y + ((cy - y) / d) * 11];
+      });
+      path(m, inner);
+      m.strokeStyle = `rgba(242,238,226,${0.9 * stitches})`;
+      m.lineWidth = 2.2;
+      m.stroke();
+      path(b, inner);
+      b.strokeStyle = `rgba(235,235,235,${stitches})`;
+      b.lineWidth = 2.5;
+      b.stroke();
+    }
+  }
+  // a fine woven grain over everything
+  const bi = b.getImageData(0, 0, size, size);
+  const gr = rng(77);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const k = (y * size + x) * 4;
+      const weave = ((x >> 1) + (y >> 1)) % 2 ? 4 : -4;
+      const v = bi.data[k] + weave + (gr() - 0.5) * 6;
+      bi.data[k] = bi.data[k + 1] = bi.data[k + 2] = v;
+    }
+  }
+  b.putImageData(bi, 0, 0);
+  const out = { map: wrapTexture(mapC), bump: wrapTexture(bumpC) };
+  patchworkTex.set(key, out);
+  return out;
+}
+
 const toonGradients = new Map<string, THREE.DataTexture>();
 /** Stepped lighting ramp: `bands` flat tones from the shadow tone up to full light. */
 function getToonGradient(bands: number, shadow: number) {
@@ -336,15 +527,30 @@ interface TriOptions {
   shell?: { offset: number; level: number; hair: THREE.Texture; hairTiling: number };
   /** Grazing-angle glow, faking light scattering through loose fibres. */
   rim?: number;
+  /**
+   * One projection per spot instead of a blend of three (patches, not ghosted
+   * overlaps). Where it switches, a seam is sewn, with this much stitching.
+   */
+  hard?: { stitches: number };
+  /** the colour map is a gain around mid-grey: multiplied by 2 */
+  mapGain?: number;
 }
 
 const TRI_COMMON = /* glsl */ `
 varying vec3 vTriPos;
 varying vec3 vTriNormal;
+varying vec3 vMaskPos;
 uniform float triTiling;
 vec3 triWeights() {
+#ifdef TRI_HARD
+  // whichever side the surface mostly faces
+  vec3 a = abs(normalize(vTriNormal));
+  if (a.x >= a.y && a.x >= a.z) return vec3(1.0, 0.0, 0.0);
+  return a.y >= a.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+#else
   vec3 w = pow(abs(normalize(vTriNormal)), vec3(4.0));
   return w / (w.x + w.y + w.z);
+#endif
 }
 vec4 triS(sampler2D t, vec3 p, float k) {
   vec3 w = triWeights();
@@ -356,6 +562,12 @@ float triH(sampler2D t, vec3 p, float k) { return triS(t, p, k).x; }
 function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.triTiling = { value: o.tiling };
+    // where the texture is laid out: the creature's rest pose (see setTextureSpace)
+    shader.uniforms.triRest = { value: (mat.userData.triRest as THREE.Matrix4 | undefined) ?? new THREE.Matrix4() };
+    if (o.hard) {
+      shader.defines = { ...shader.defines, TRI_HARD: '' };
+      shader.uniforms.seamStitches = { value: o.hard.stitches };
+    }
     shader.uniforms.rimStrength = { value: o.rim ?? 0 };
     if (o.shell) {
       shader.uniforms.shellOffset = { value: o.shell.offset };
@@ -366,15 +578,30 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
       shader.uniforms.eyeMask = { value: (mat.userData.eyeMask ??= emptyMask()) };
     }
     shader.vertexShader =
-      'varying vec3 vTriPos;\nvarying vec3 vTriNormal;\nuniform float shellOffset;\n' +
+      `varying vec3 vTriPos;
+       varying vec3 vTriNormal;
+       varying vec3 vMaskPos;
+       uniform float shellOffset;
+       uniform mat4 triRest;
+       #ifdef TRI_REST_ATTR
+         attribute vec3 restPos;
+         attribute vec3 restNormal;
+       #endif
+      ` +
       shader.vertexShader.replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
-         vTriPos = position;
-         vTriNormal = normal;
+         #ifdef TRI_REST_ATTR
+           vTriPos = restPos;
+           vTriNormal = restNormal;
+         #else
+           vTriPos = (triRest * vec4(position, 1.0)).xyz;
+           vTriNormal = mat3(triRest) * normal;
+         #endif
+         vMaskPos = position;
          ${o.shell ? 'transformed += normal * shellOffset;' : ''}`,
       );
-    let fs = TRI_COMMON + 'uniform float rimStrength;\n' + shader.fragmentShader;
+    let fs = TRI_COMMON + 'uniform float rimStrength;\nuniform float seamStitches;\n' + shader.fragmentShader;
     fs = fs.replace(
       '#include <bumpmap_pars_fragment>',
       /* glsl */ `
@@ -402,7 +629,30 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
       /* glsl */ `
       #ifdef USE_MAP
         vec4 sampledDiffuseColor = triS(map, vTriPos, triTiling);
+        sampledDiffuseColor.rgb *= ${(o.mapGain ?? 1).toFixed(2)};
         diffuseColor *= sampledDiffuseColor;
+      #endif
+      #ifdef TRI_HARD
+      {
+        // Sew the line where the projection switches, like the seams in the
+        // texture. How far we are from it: the gap between the two biggest
+        // normal components, over how fast that gap changes across the surface.
+        vec3 a = abs(normalize(vTriNormal));
+        float m1 = max(a.x, max(a.y, a.z));
+        float m3 = min(a.x, min(a.y, a.z));
+        float gap = m1 - (a.x + a.y + a.z - m1 - m3);
+        float perPx = 1024.0 * triTiling; // texture pixels per unit
+        float d = gap * length(fwidth(vTriPos)) / max(fwidth(gap), 1e-5) * perPx;
+        // dark seam, like the texture's
+        diffuseColor.rgb *= mix(1.0, 0.72, 1.0 - smoothstep(1.5, 2.5, d));
+        // dashed thread just beside it (7 on, 6 off), running along the seam:
+        // the seam between two faces runs along the third axis
+        vec3 p = vTriPos * perPx;
+        float along = a.x == m3 ? p.x : (a.y == m3 ? p.y : p.z);
+        float dash = step(6.0, mod(along, 13.0));
+        float band = smoothstep(9.5, 10.5, d) * (1.0 - smoothstep(12.0, 13.0, d));
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * 1.85, band * dash * seamStitches);
+      }
       #endif`,
     );
     if (o.rim) {
@@ -427,7 +677,7 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
          vec4 fibre = triS(hairMap, vTriPos, hairTiling);
          if (fibre.r < shellLevel) discard;
          for (int i = 0; i < 8; i++) {
-           if (eyeMask[i].w > 0.0 && distance(vTriPos, eyeMask[i].xyz) < eyeMask[i].w) discard;
+           if (eyeMask[i].w > 0.0 && distance(vMaskPos, eyeMask[i].xyz) < eyeMask[i].w) discard;
          }`,
       );
       // deeper fibres sit in shadow, tips catch the light; each fibre gets a warm/cool tint
@@ -439,8 +689,25 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
     }
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => `tri-${o.shell ? 'shell' : 'base'}-${o.rim ? 'rim' : 'norim'}`;
+  mat.customProgramCacheKey = () => `tri-${o.shell ? 'shell' : 'base'}-${o.rim ? 'rim' : 'norim'}-${o.mapGain ?? 1}-${o.hard ? 'hard' : 'soft'}`;
   return mat;
+}
+
+/**
+ * Where a mesh's textures are laid out, for every triplanar material on it
+ * (fuzz shells included). Body parts pass their bone's rest-pose frame, so
+ * every part shares one texture space that then bends and turns with the
+ * pose like real fabric; a seamless skin carries rest positions per vertex
+ * instead (restPos / restNormal attributes). Call before the first render.
+ */
+export function setTextureSpace(root: THREE.Object3D, rest: THREE.Matrix4 | 'attributes') {
+  root.traverse((o) => {
+    const mats = (o as THREE.Mesh).material;
+    for (const m of Array.isArray(mats) ? mats : mats ? [mats] : []) {
+      if (rest === 'attributes') m.defines = { ...m.defines, TRI_REST_ATTR: '' };
+      else m.userData.triRest = rest;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +792,24 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
     }
     case 'toon':
       return new THREE.MeshToonMaterial({ color: c, gradientMap: getToonGradient(Math.round(k.bands), k.shadow) });
+    case 'patchwork': {
+      const p = getPatchwork(k.variety, k.prints, k.stitches);
+      return triplanar(
+        new THREE.MeshPhysicalMaterial({
+          color: c,
+          roughness: 0.92,
+          metalness: 0,
+          map: p.map,
+          bumpMap: p.bump,
+          bumpScale: 2.2 * k.puff,
+          // cotton catches a soft sheen at grazing angles
+          sheen: 0.5,
+          sheenRoughness: 0.6,
+          sheenColor: c.clone().lerp(new THREE.Color('#ffffff'), 0.5),
+        }),
+        { tiling: 0.8 / k.size, hard: { stitches: k.stitches }, mapGain: 2 },
+      );
+    }
   }
 }
 
@@ -555,6 +840,7 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, setting
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     mesh.userData.fx = true;
+    mesh.layers.enable(FUR_LAYER);
     out.push(mesh);
   }
   return out;
@@ -642,6 +928,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
   const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }));
   lines.raycast = () => {};
   lines.userData.fx = true;
+  lines.layers.enable(FUR_LAYER);
   // for setFuzzMask: where each wisp grows from, and the untouched positions
   lines.userData.hairRoots = Float32Array.from(roots);
   lines.userData.hairVerts = 18; // 9 segments x 2 ends

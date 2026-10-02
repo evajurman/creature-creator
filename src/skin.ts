@@ -23,6 +23,8 @@ export interface SkinPart {
   k: number;
   /** low-poly: this part's facet size */
   facet?: number;
+  /** part local space -> the creature's rest pose, where textures are laid out */
+  toRest?: THREE.Matrix4;
 }
 
 export interface SkinOptions {
@@ -421,6 +423,59 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     geo.computeVertexNormals();
   }
   if (await breathe()) return null;
+
+  // 5. where each vertex sat in the rest pose, so textures are laid out there
+  // (and bend with the pose) rather than being projected onto today's pose.
+  // Near a joint the parts' answers are blended, like skinning in reverse.
+  if (parts.every((p) => p.toRest)) {
+    const P = geo.getAttribute('position') as THREE.BufferAttribute;
+    const N = geo.getAttribute('normal') as THREE.BufferAttribute;
+    const toRest = parts.map((p) => p.toRest!.clone().multiply(p.toSkin.clone().invert()));
+    const turn = toRest.map((m) => new THREE.Matrix3().setFromMatrix4(m));
+    const blendW = Math.max(kMax, 2 * h);
+    const rp = new Float32Array(P.count * 3), rn = new Float32Array(P.count * 3);
+    const ds = new Float32Array(prepared.length);
+    const acc = new THREE.Vector3(), accN = new THREE.Vector3(), tmp = new THREE.Vector3(), nv = new THREE.Vector3();
+    for (let v = 0; v < P.count; v++) {
+      pt.fromBufferAttribute(P, v);
+      nv.fromBufferAttribute(N, v);
+      let dmin = Infinity, nearest = 0;
+      for (let i = 0; i < prepared.length; i++) {
+        const pp = prepared[i];
+        ds[i] = Infinity;
+        if (!pp.box.containsPoint(pt)) continue;
+        q.copy(pt).applyMatrix4(pp.fromSkin);
+        ds[i] = Math.abs(exactDistance(pp.geo, pp.bvh, pp.normals, q, band, grad));
+        if (ds[i] < dmin) {
+          dmin = ds[i];
+          nearest = i;
+        }
+      }
+      acc.set(0, 0, 0);
+      accN.set(0, 0, 0);
+      let wsum = 0;
+      for (let i = 0; i < prepared.length; i++) {
+        if (!Number.isFinite(ds[i])) continue;
+        const w = Math.max(0, 1 - (ds[i] - dmin) / blendW) ** 2;
+        if (w <= 0) continue;
+        acc.addScaledVector(tmp.copy(pt).applyMatrix4(toRest[i]), w);
+        accN.addScaledVector(tmp.copy(nv).applyMatrix3(turn[i]), w);
+        wsum += w;
+      }
+      if (wsum <= 0) {
+        acc.copy(pt).applyMatrix4(toRest[nearest]);
+        accN.copy(nv).applyMatrix3(turn[nearest]);
+        wsum = 1;
+      }
+      acc.divideScalar(wsum);
+      accN.normalize();
+      rp.set([acc.x, acc.y, acc.z], v * 3);
+      rn.set([accN.x, accN.y, accN.z], v * 3);
+      if ((v & 1023) === 0 && (await breathe())) return null;
+    }
+    geo.setAttribute('restPos', new THREE.BufferAttribute(rp, 3));
+    geo.setAttribute('restNormal', new THREE.BufferAttribute(rn, 3));
+  }
   geo.userData.painted = paintSkin(geo, parts, opts.colorBlend, opts.lowPoly);
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
