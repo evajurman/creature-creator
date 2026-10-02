@@ -62,6 +62,8 @@ export interface EyesState {
   color?: string;
   /** legacy: one stand-off for every pair (now per pair) */
   lift?: number;
+  /** radians: the eyes turned round the head, on top of the head's own roll (they stick to the face) */
+  turn?: number;
 }
 
 /** A piece of stuff stuck onto a body part, positioned in that bone's frame. */
@@ -1391,7 +1393,7 @@ export class Creature {
   private syncEyes() {
     const head = this.bones.get(this.rig.headId);
     const e = this.state.eyes;
-    const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length, this.state.materialSettings]);
+    const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length, this.state.materialSettings, head?.def.roll]);
     if (key === this.eyesKey) return;
     this.eyesKey = key;
     this.mergeDirty = true;
@@ -1413,6 +1415,13 @@ export class Creature {
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(up.dot(forward)) > 0.9) up.set(0, 0, -1);
     up.addScaledVector(forward, -up.dot(forward)).normalize();
+    // the eyes stick to the face: a rolled head carries them round, and Facing turns them further
+    const turn = (head.def.roll ?? 0) * (head.def.sideSign === -1 ? -1 : 1) + (e.turn ?? 0);
+    if (turn) {
+      const axis = new THREE.Vector3(0, 1, 0).transformDirection(toWorld);
+      forward.applyAxisAngle(axis, turn);
+      up.applyAxisAngle(axis, turn);
+    }
     const right = new THREE.Vector3().crossVectors(up, forward);
     const localForward = forward.clone().transformDirection(toLocal);
 

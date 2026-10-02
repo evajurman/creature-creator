@@ -96,9 +96,6 @@
               <label class="slider"><span>Base width</span><input id="rig-w0" type="range" min="0.02" max="1.2" step="0.005" /></label>
               <label class="slider"><span>Tip width</span><input id="rig-w1" type="range" min="0.02" max="1.2" step="0.005" /></label>
               <p class="muted small" id="rig-drawn-note" hidden>This part has a drawing, so these widths only show if you Reset shape.</p>
-              <label class="slider" title="Turn the part about its own length: its drawing turns too, e.g. to make wings go side to side instead of up and down">
-                <span>Roll</span><input id="rig-roll" type="range" min="-180" max="180" step="1" />
-                <span class="ends"><em>turn one way</em><em>the other</em></span></label>
               <label class="check"><input id="rig-bendy" type="checkbox" /> Bendy: curve into an arc</label>
               <label class="slider" id="rig-bend-row"><span>Bend</span><input id="rig-bend" type="range" min="-1" max="1" step="0.01" />
                 <span class="ends"><em>one way</em><em>the other</em></span></label>
@@ -157,6 +154,9 @@
             <label class="slider"><span>Height</span><input id="eye-height" type="range" min="0.05" max="0.95" step="0.01" /></label>
             <label class="slider" title="How far this pair stands off the face"><span>Stand-off</span><input id="eye-lift" type="range" min="0" max="1" step="0.01" />
               <span class="ends"><em>on the face</em><em>lifted</em></span></label>
+            <label class="slider" title="Turn the eyes round the head. They stick to the face, so rolling the head turns them too"><span>Facing</span><input id="eye-turn" type="range" min="-180" max="180" step="1" />
+              <span class="ends"><em>one way</em><em>the other</em></span></label>
+            <button id="eye-front" class="ghost" title="Turn the eyes back to the creature's front, even if the head is rolled">◎ Face front</button>
           </div>
           <div id="eye-look">
             <div class="sub-title">Bead, dot &amp; button look</div>

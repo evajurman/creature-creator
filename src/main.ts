@@ -695,6 +695,46 @@ let drag: {
   moved: boolean;
 } | null = null;
 
+/**
+ * A pose is kept relative to a part's rest axes, which a roll turns: turn it
+ * back the other way so a bent limb stays where it was and only spins about
+ * its length. `rest` and `pose` are from before the roll.
+ */
+function keepPoseThroughRoll(rest: Map<string, THREE.Quaternion>, pose: CreatureState['pose']) {
+  for (const [lid, before] of rest) {
+    const q = pose[lid];
+    const l = creature.bones.get(lid);
+    if (!q || !l) continue;
+    const d = before.clone().invert().multiply(l.restQuat);
+    const kept = d.clone().invert().multiply(new THREE.Quaternion(...q)).multiply(d);
+    state.pose[lid] = kept.toArray() as [number, number, number, number];
+  }
+  creature.applyPose();
+}
+
+/** Double-clicking a roll grip: straighten the part's roll (and its twin's). */
+function resetRoll(id: string) {
+  const b = creature.bones.get(id);
+  const def = b && state.rig.bones.find((d) => d.id === b.def.baseId);
+  if (!b || !def) return;
+  if (!def.roll) {
+    hint('Already straight', 1200);
+    return;
+  }
+  const rest = new Map(creature.linked(id).map((l) => [l.def.id, l.restQuat.clone()] as const));
+  const pose = structuredClone(state.pose);
+  def.roll = 0;
+  creature.relayout(state.rig);
+  keepPoseThroughRoll(rest, pose);
+  if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
+  buildCreature();
+  settleOnFloor();
+  creature.boing(id);
+  commit();
+  selectPart(id);
+  hint('Roll straightened', 1400);
+}
+
 /** Where a point in a bone's own space lands on screen, in client pixels. */
 function toScreen(obj: THREE.Object3D, local: THREE.Vector3): THREE.Vector2 {
   const r = canvas.getBoundingClientRect();
@@ -820,17 +860,7 @@ canvas.addEventListener('pointermove', (e) => {
       r = Math.atan2(Math.sin(r), Math.cos(r));
       def.roll = Math.round(r * 1000) / 1000;
       creature.relayout(state.rig);
-      // a pose is kept relative to the part's rest axes, which just turned: turn it back
-      // the other way so a bent limb stays where it was and only spins about its length
-      for (const [lid, before] of rl.rest) {
-        const q = rl.pose[lid];
-        const l = creature.bones.get(lid);
-        if (!q || !l) continue;
-        const d = before.clone().invert().multiply(l.restQuat);
-        const kept = d.clone().invert().multiply(new THREE.Quaternion(...q)).multiply(d);
-        state.pose[lid] = kept.toArray() as [number, number, number, number];
-      }
-      creature.applyPose();
+      keepPoseThroughRoll(rl.rest, rl.pose);
       invalidate();
     } else if (drag.sizer) {
       if (!drag.moved) return;
@@ -945,6 +975,14 @@ canvas.addEventListener('pointerup', (e) => {
 });
 
 canvas.addEventListener('dblclick', (e) => {
+  // double-click a roll grip to straighten the part
+  if (handlesVisible()) {
+    const h = pickHandle(e.clientX, e.clientY);
+    if (h?.userData.kind === 'roll') {
+      resetRoll(h.userData.handle as string);
+      return;
+    }
+  }
   if (mode === 'stuff') {
     const id = drawState ? null : pickPiece(e.clientX, e.clientY);
     if (id) {
@@ -3558,6 +3596,7 @@ function renderEyes() {
   $<HTMLInputElement>('#eye-height').value = String(pair.height);
   $('#eye-sliders').style.opacity = e.enabled ? '1' : '.4';
   $<HTMLInputElement>('#eye-lift').value = String(pair.lift ?? e.lift ?? 0);
+  $<HTMLInputElement>('#eye-turn').value = String(Math.round(((e.turn ?? 0) * 180) / Math.PI));
   // finish and color only apply to the styles made of a material
   const shaped = e.enabled && (e.style === 'bead' || e.style === 'dot' || e.style === 'button');
   $('#eye-look').hidden = !shaped;
@@ -3734,7 +3773,6 @@ function renderRigPanel() {
     $<HTMLInputElement>('#rig-w0').value = String(b.def.width);
     $<HTMLInputElement>('#rig-w1').value = String(b.def.widthEnd ?? b.def.width);
     $('#rig-drawn-note').hidden = !state.parts[b.src]?.outline;
-    $<HTMLInputElement>('#rig-roll').value = String(Math.round(((b.def.roll ?? 0) * 180) / Math.PI));
     $<HTMLInputElement>('#rig-bendy').checked = !!b.def.bendy;
     $<HTMLInputElement>('#rig-bend').value = String(b.def.bend ?? 0);
     $<HTMLInputElement>('#rig-bend-dir').value = String(Math.round(((b.def.bendDir ?? 0) * 180) / Math.PI));
@@ -3843,9 +3881,7 @@ $<HTMLInputElement>('#rig-w1').oninput = (e) => editBone((d) => (d.widthEnd = ro
 $<HTMLInputElement>('#rig-bend').oninput = (e) => editBone((d) => (d.bend = round3n((e.target as HTMLInputElement).value)));
 $<HTMLInputElement>('#rig-bend-dir').oninput = (e) =>
   editBone((d) => (d.bendDir = Math.round(parseFloat((e.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000));
-$<HTMLInputElement>('#rig-roll').oninput = (e) =>
-  editBone((d) => (d.roll = Math.round(parseFloat((e.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000));
-for (const id of ['#rig-w0', '#rig-w1', '#rig-roll', '#rig-bend', '#rig-bend-dir']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
+for (const id of ['#rig-w0', '#rig-w1', '#rig-bend', '#rig-bend-dir']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
 $<HTMLInputElement>('#rig-bendy').onchange = (e) => {
   const on = (e.target as HTMLInputElement).checked;
   editBone((d) => {
@@ -4413,6 +4449,26 @@ $<HTMLInputElement>('#eye-lift').oninput = (ev) => {
   creature.sync();
 };
 $<HTMLInputElement>('#eye-lift').onchange = () => commit();
+$<HTMLInputElement>('#eye-turn').oninput = (ev) => {
+  state.eyes.turn = Math.round(parseFloat((ev.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000;
+  creature.sync();
+};
+$<HTMLInputElement>('#eye-turn').onchange = () => commit();
+$('#eye-front').onclick = () => {
+  // undo the head's roll too, so the eyes look where the creature faces
+  const head = creature.bones.get(state.rig.headId);
+  const roll = (head?.def.roll ?? 0) * (head?.def.sideSign === -1 ? -1 : 1);
+  const turn = Math.round(-roll * 1000) / 1000 || 0;
+  if ((state.eyes.turn ?? 0) === turn) {
+    hint('Already facing front', 1200);
+    return;
+  }
+  state.eyes.turn = turn;
+  creature.sync();
+  commit();
+  renderEyes();
+  hint('Eyes facing front', 1400);
+};
 
 $('#reset-pose').onclick = () => {
   creature.resetPose();
