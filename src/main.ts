@@ -674,11 +674,12 @@ let drag: {
   /** rig mode: skeleton at the start of the drag, so each move re-applies from scratch */
   rigBase?: string;
   /**
-   * rig mode: turns a world-space move into the bone's own skeleton space. A
-   * bone hanging off a bendy one is shown turned along the curve, so the
-   * pointer's motion has to be turned back before it's applied.
+   * reshaping: turns a world-space move into skeleton space. The bone's base
+   * rides its parent, so this undoes everything above it (the parent's pose,
+   * a bendy parent's curve, the creature's turn and size) but not the bone's
+   * own bend.
    */
-  toDef?: THREE.Quaternion;
+  toDef?: THREE.Matrix3;
   /** size gizmo: what it's measured against on screen, and the drawing before the drag */
   sizer?: { anchor: THREE.Vector2; reach: THREE.Vector2; outline: Vec2[] | null; meshX: Map<THREE.Mesh, number> };
   moved: boolean;
@@ -737,11 +738,13 @@ canvas.addEventListener('pointerdown', (e) => {
   const kind: DragKind = id === 'root' ? 'root' : (h.userData.kind as DragKind);
   // bending is posing; sliding, curving and resizing reshape the skeleton itself
   const reshape = kind !== 'root' && kind !== 'end';
-  let toDef: THREE.Quaternion | undefined;
+  let toDef: THREE.Matrix3 | undefined;
   const b = creature.bones.get(id);
   if (reshape && b) {
     b.pivot.updateMatrixWorld(true);
-    toDef = new THREE.Quaternion().setFromRotationMatrix(b.restWorld.clone().multiply(b.pivot.matrixWorld.clone().invert()));
+    // where the bone would be in the scene if it weren't bent itself
+    const unbent = b.pivot.parent!.matrixWorld.clone().multiply(new THREE.Matrix4().compose(b.pivot.position, b.restQuat, new THREE.Vector3(1, 1, 1)));
+    toDef = new THREE.Matrix3().setFromMatrix4(b.restWorld.clone().multiply(unbent.invert()));
   }
   let sizer: NonNullable<typeof drag>['sizer'];
   if (b && (kind === 'len' || kind === 'wid' || kind === 'size')) {
@@ -801,7 +804,8 @@ canvas.addEventListener('pointermove', (e) => {
     } else if (drag.rigBase && drag.kind === 'start') {
       if (!drag.moved) return;
       // slide the whole limb: the move in skeleton coordinates (the creature may be turned or posed, the bone may ride a curve)
-      const d = hit.clone().sub(drag.startHit).applyQuaternion(drag.toDef ?? creature.root.quaternion.clone().invert());
+      const d = hit.clone().sub(drag.startHit);
+      if (drag.toDef) d.applyMatrix3(drag.toDef);
       state.rig = JSON.parse(drag.rigBase) as RigState;
       moveJoint(state.rig, drag.id, 'start', d.toArray() as V3, rigLocked());
       creature.relayout(state.rig);
