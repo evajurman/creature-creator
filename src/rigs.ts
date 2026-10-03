@@ -108,12 +108,15 @@ const serpent: RigDef = {
   name: 'Serpent',
   icon: 'fa-regular fa-snake',
   headId: 'head',
-  // three bendy segments curving opposite ways make the S
+  // three bendy segments on the ground curving opposite ways make the S; a
+  // neck rises off the front of the body, so dragging the head lifts and
+  // curls it (the drag bends the neck too, stopping at the anchored body)
   bones: [
-    { id: 'seg1', name: 'Neck', start: [0, 0.2, 0.55], end: [0, 0.2, -0.3], side: X, width: 0.34, anchor: true, bendy: true, bend: 0.16 },
-    { id: 'head', name: 'Head', parent: 'seg1', start: [0, 0.24, 0.5], end: [0, 0.3, 1.02], side: X, width: 0.42 },
-    { id: 'seg2', name: 'Body', parent: 'seg1', start: [0, 0.2, -0.3], end: [0, 0.19, -1.15], side: X, width: 0.32, widthEnd: 0.26, bendy: true, bend: -0.3 },
-    { id: 'seg3', name: 'Tail', parent: 'seg2', start: [0, 0.19, -1.15], end: [0, 0.16, -1.85], side: X, width: 0.24, widthEnd: 0.08, bendy: true, bend: 0.26 },
+    { id: 'body', name: 'Body', start: [0, 0.2, 0.3], end: [0, 0.2, -0.5], side: X, width: 0.34, anchor: true, bendy: true, bend: 0.16 },
+    { id: 'neck', name: 'Neck', parent: 'body', start: [0, 0.21, 0.28], end: [0, 0.36, 0.74], side: X, width: 0.31, widthEnd: 0.29, bendy: true, bend: 0 },
+    { id: 'head', name: 'Head', parent: 'neck', start: [0, 0.36, 0.72], end: [0, 0.4, 1.18], side: X, width: 0.42 },
+    { id: 'tail', name: 'Tail', parent: 'body', start: [0, 0.2, -0.5], end: [0, 0.19, -1.2], side: X, width: 0.32, widthEnd: 0.26, bendy: true, bend: -0.3 },
+    { id: 'tip', name: 'Tail tip', parent: 'tail', start: [0, 0.19, -1.2], end: [0, 0.16, -1.85], side: X, width: 0.24, widthEnd: 0.08, bendy: true, bend: 0.26 },
   ],
 };
 
