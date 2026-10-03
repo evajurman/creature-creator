@@ -1344,6 +1344,47 @@ interface DrawState {
   side: boolean;
   /** a body part's shapes in the other view (front or side), kept while this one is drawn */
   other: Vec2[][];
+  /** a body part: what its two views show of the creature (its own plane, then the one turned a quarter round) */
+  views?: [BoneView, BoneView];
+  /** symmetry in the turned view (on when that view looks the creature in the face) */
+  sideSym: boolean;
+}
+
+type ViewKind = 'front' | 'side' | 'top';
+interface BoneView {
+  kind: ViewKind;
+  /** left and right on the drawing are the creature's left and right */
+  mirrored: boolean;
+}
+const VIEW_NAMES: Record<ViewKind, { name: string; icon: string }> = {
+  front: { name: 'Front', icon: 'fa-regular fa-user' },
+  side: { name: 'Side', icon: 'fa-regular fa-person-walking' },
+  top: { name: 'Top', icon: 'fa-regular fa-arrow-down-to-line' },
+};
+
+/**
+ * What a body part's two drawing planes show of the creature. The part's own
+ * plane depends on how its bone lies (a quadruped's body is drawn as its
+ * profile), so each view is named by the way it looks at the creature in its
+ * rest pose: from the front, the side or the top.
+ */
+function boneViews(b: BoneRT): [BoneView, BoneView] {
+  const rot = new THREE.Matrix3().setFromMatrix4(b.restGroup);
+  // how well a view looking along `normal` counts as each kind (a slight lean towards front, then side)
+  const scores = (normal: THREE.Vector3): Record<ViewKind, number> => {
+    const n = normal.applyMatrix3(rot).normalize();
+    return { front: Math.abs(n.z) * 1.15, side: Math.abs(n.x), top: Math.abs(n.y) * 0.85 };
+  };
+  const best = (s: Record<ViewKind, number>, not?: ViewKind) =>
+    (Object.keys(s) as ViewKind[]).filter((k) => k !== not).sort((a, c) => s[c] - s[a])[0];
+  const across = (v: THREE.Vector3) => Math.abs(v.applyMatrix3(rot).normalize().x) > 0.7;
+  const own = best(scores(new THREE.Vector3(0, 0, 1)));
+  // the two views are a quarter turn apart: never call them the same thing
+  const turned = best(scores(new THREE.Vector3(1, 0, 0)), own);
+  return [
+    { kind: own, mirrored: across(new THREE.Vector3(1, 0, 0)) },
+    { kind: turned, mirrored: across(new THREE.Vector3(0, 0, 1)) },
+  ];
 }
 let drawState: DrawState | null = null;
 
@@ -1359,8 +1400,8 @@ const drawPrefs: { symmetry: boolean; pieceSymmetry: boolean; smoothing: number 
 })();
 /** Is symmetry on for what's being drawn right now? */
 function symOn(): boolean {
-  // seen from the side, a part is already the same on its left and right
-  if (drawState?.side) return false;
+  // the turned view keeps its own setting for this drawing
+  if (drawState?.side) return drawState.sideSym;
   return drawState?.target.kind === 'piece' ? drawPrefs.pieceSymmetry : drawPrefs.symmetry;
 }
 function saveDrawPrefs() {
@@ -1398,7 +1439,8 @@ function drawHint() {
     return;
   }
   if (drawState.side) {
-    hint(`Draw the ${label} as seen from the side; it puffs out to both sides` + nav, 0);
+    const from = VIEW_NAMES[drawState.views?.[1].kind ?? 'side'].name.toLowerCase();
+    hint((symOn() ? `Draw one half of the ${label} as seen from the ${from}; it mirrors across the dashed line` : `Draw the ${label} as seen from the ${from}`) + nav, 0);
     return;
   }
   hint((symOn() ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`) + nav, 0);
@@ -1417,6 +1459,7 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
     // start from the shapes as they are (draw to add, erase to cut), in the view the part was first drawn in
     const shapes = partShapes(state.parts[b.src]);
     const side = !!shapes[0]?.side;
+    const views = boneViews(b);
     const inView = shapes.filter((s) => !!s.side === side).map((s) => structuredClone(s.outline));
     drawState = {
       target,
@@ -1436,6 +1479,9 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
       original: structuredClone(shapes),
       side,
       other: shapes.filter((s) => !!s.side !== side).map((s) => structuredClone(s.outline)),
+      views,
+      // symmetric when it looks the creature in the face, not when it's a profile
+      sideSym: views[1].mirrored,
     };
     creature.setDrawFocus(target.boneId, side);
     // other creatures step aside while you draw on this one
@@ -1446,7 +1492,7 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
     const own = target.redraw ? piece() : undefined;
     const lifted = own?.place;
     const frame = lifted ? framePiece(own!) : board;
-    drawState = { target, frame, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null, side: false, other: [] };
+    drawState = { target, frame, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null, side: false, other: [], sideSym: false };
     if (target.redraw && own) {
       // start from the shape as it is: draw to add, erase to cut, or move, size and turn it
       drawState.pending = [structuredClone(own.outline)];
@@ -1528,12 +1574,16 @@ function syncDrawBar() {
   $<HTMLInputElement>('#sym').checked = symOn();
   $<HTMLInputElement>('#smooth').value = String(drawPrefs.smoothing);
   $('#sym-label').classList.toggle('on', symOn());
-  // a side view is mirrored left and right by itself
-  $('#sym-label').classList.toggle('disabled', !!drawState?.side);
-  $<HTMLInputElement>('#sym').disabled = !!drawState?.side;
   const isBone = drawState?.target.kind === 'bone';
   $('#draw-view').hidden = !isBone;
-  document.querySelectorAll<HTMLButtonElement>('#draw-view [data-view]').forEach((b) => b.classList.toggle('on', (b.dataset.view === 'side') === !!drawState?.side));
+  document.querySelectorAll<HTMLButtonElement>('#draw-view [data-view]').forEach((b) => {
+    const turned = b.dataset.view === 'side';
+    b.classList.toggle('on', turned === !!drawState?.side);
+    // named by what it shows of the creature: a quadruped's own plane is its side
+    const v = VIEW_NAMES[drawState?.views?.[turned ? 1 : 0].kind ?? (turned ? 'side' : 'front')];
+    b.innerHTML = `<i class="${v.icon}" aria-hidden="true"></i> ${v.name}${turned ? ' <kbd>V</kbd>' : ''}`;
+    b.title = `Draw the part as seen from the ${v.name.toLowerCase()}${turned ? ' (V)' : ''}`;
+  });
   const has = !!drawState?.pending;
   // a body part can be kept (or cleared) with shapes in the other view only
   const any = has || !!drawState?.other.length;
@@ -1552,7 +1602,9 @@ function syncDrawBar() {
 }
 
 function toggleSymmetry() {
-  if (drawState?.target.kind === 'piece') drawPrefs.pieceSymmetry = !drawPrefs.pieceSymmetry;
+  // the turned view's setting lasts for this drawing (it starts from which way the view faces)
+  if (drawState?.side) drawState.sideSym = !drawState.sideSym;
+  else if (drawState?.target.kind === 'piece') drawPrefs.pieceSymmetry = !drawPrefs.pieceSymmetry;
   else drawPrefs.symmetry = !drawPrefs.symmetry;
   saveDrawPrefs();
   syncDrawBar();
@@ -4935,7 +4987,7 @@ window.addEventListener('keydown', (e) => {
   } else if ((k === 'e' || k === 'm' || k === 't' || k === 'r') && drawState && !e.ctrlKey && !e.metaKey) {
     setDrawTool(({ e: 'erase', m: 'move', t: 'scale', r: 'rotate' } as const)[k]);
   } else if (k === 's' && drawState && !e.ctrlKey && !e.metaKey) {
-    if (!drawState.side) toggleSymmetry();
+    toggleSymmetry();
   } else if (k === 'v' && drawState && !e.ctrlKey && !e.metaKey) {
     setDrawSide(!drawState.side);
   } else if (e.code === 'Space' && drawState) {

@@ -404,7 +404,6 @@ body.show-nums .slider input.num, body.show-nums .bar-slider input.num { display
 .draw-bar .seg-btn:disabled, .draw-bar button:disabled { opacity: .4; cursor: default; }
 .bar-group { display: flex; gap: 4px; }
 .bar-group[hidden] { display: none; }
-.pill-toggle.disabled { opacity: .4; pointer-events: none; }
 .bar-group .seg-btn { padding: 4px 9px; font-size: 14px; line-height: 1.1; }
 .draw-bar button.done { background: var(--accent); }
 .draw-bar button.done kbd { background: rgba(255,255,255,.25); }
