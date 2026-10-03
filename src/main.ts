@@ -71,6 +71,15 @@ import {
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
+/** Font Awesome icon markup. Slab where it has the icon, classic regular (`fa-regular fa-…`) otherwise. */
+const fa = (name: string) => `<i class="fa-slab fa-regular fa-${name}" aria-hidden="true"></i>`;
+const faClassic = (name: string) => `<i class="fa-regular fa-${name}" aria-hidden="true"></i>`;
+/** Sets an element to an icon followed by text (added as a text node, so names need no escaping). */
+function iconLabel(el: HTMLElement, icon: string, text = '') {
+  el.innerHTML = icon;
+  if (text) el.append(` ${text}`);
+}
+
 // ---------------------------------------------------------------------------
 // renderer / scene
 
@@ -334,15 +343,19 @@ function untoned(target: THREE.Color): THREE.Color {
   return new THREE.Color(c[0], c[1], c[2]);
 }
 
-function setBackdrop(hex: string) {
-  backdrop = hex;
-  const c = new THREE.Color(hex);
-  scene.background = untoned(c);
-  // tint the shadow toward a deeper, slightly cooler version of the backdrop
+/** Tints the shadow toward a deeper, slightly cooler version of the backdrop, and the bounce light toward it. */
+function tintForBackdrop(c: THREE.Color) {
   const hsl = { h: 0, s: 0, l: 0 };
   c.getHSL(hsl);
   shadowMat.color.setHSL((hsl.h + 0.02) % 1, Math.min(1, hsl.s * 0.8 + 0.1), hsl.l * 0.25);
   hemi.groundColor.copy(c).multiplyScalar(0.8);
+}
+
+function setBackdrop(hex: string) {
+  backdrop = hex;
+  const c = new THREE.Color(hex);
+  scene.background = untoned(c);
+  tintForBackdrop(c);
   refreshFloorColors();
   try {
     localStorage.setItem(BG_KEY, hex);
@@ -735,6 +748,27 @@ function resetRoll(id: string) {
   hint('Roll straightened', 1400);
 }
 
+/** Double-clicking the green bend diamond: straighten the part (and its twin). */
+function resetBend(id: string) {
+  const b = creature.bones.get(id);
+  const def = b && state.rig.bones.find((d) => d.id === b.def.baseId);
+  if (!b || !def) return;
+  if (!def.bendy || !def.bend) {
+    hint('Already straight', 1200);
+    return;
+  }
+  def.bendy = false;
+  def.bend = 0;
+  creature.relayout(state.rig);
+  if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
+  buildCreature();
+  settleOnFloor();
+  creature.boing(id);
+  commit();
+  selectPart(id);
+  hint('Bend straightened', 1400);
+}
+
 /** Where a point in a bone's own space lands on screen, in client pixels. */
 function toScreen(obj: THREE.Object3D, local: THREE.Vector3): THREE.Vector2 {
   const r = canvas.getBoundingClientRect();
@@ -958,6 +992,11 @@ canvas.addEventListener('pointerup', (e) => {
     hint(`Now editing ${creatureLabel(other.index)}`, 1600);
     return;
   }
+  const eye = pickEye(e.clientX, e.clientY);
+  if (eye !== null) {
+    showEyes(eye);
+    return;
+  }
   if (mode === 'look') {
     const att = pickAttachment(e.clientX, e.clientY);
     if (att) {
@@ -982,6 +1021,10 @@ canvas.addEventListener('dblclick', (e) => {
       resetRoll(h.userData.handle as string);
       return;
     }
+    if (h?.userData.kind === 'bend') {
+      resetBend(h.userData.handle as string);
+      return;
+    }
   }
   if (mode === 'stuff') {
     const id = drawState ? null : pickPiece(e.clientX, e.clientY);
@@ -994,6 +1037,8 @@ canvas.addEventListener('dblclick', (e) => {
   }
   const other = pickOtherCreature(e.clientX, e.clientY);
   if (other) activate(other.index);
+  // the first click already went to the eye settings
+  else if (pickEye(e.clientX, e.clientY) !== null) return;
   const id = pickPart(e.clientX, e.clientY);
   if (!id) return;
   selectPart(id);
@@ -1041,6 +1086,23 @@ function pickPart(x: number, y: number): string | null {
   setRay(x, y);
   const hit = raycaster.intersectObjects(creature.meshes(), false)[0];
   return hit ? (hit.object.userData.boneId as string) : null;
+}
+
+/** The eye pair under the pointer, if an eye is in front of every part there. */
+function pickEye(x: number, y: number): number | null {
+  setRay(x, y);
+  const part = raycaster.intersectObjects(creature.meshes(), false)[0];
+  const eye = creature.pickEye(raycaster.ray);
+  return eye && (!part || eye.distance <= part.distance) ? eye.pair : null;
+}
+
+/** Opens the Look tab at the eye settings, with this pair picked. */
+function showEyes(pair: number) {
+  deselectAttachment();
+  eyePair = pair;
+  if (mode !== 'look') setMode('look');
+  renderUI();
+  $('#eyes-sec').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 /** Handles are tiny, so pick the nearest one in screen space. */
@@ -2267,7 +2329,8 @@ function saveWorkbenchNow() {
   saved.thumb = mode === 'stuff' ? captureThumb() : collection().find((t) => t.id === wb.id)?.thumb;
   const ok = putThing(saved);
   const badge = $('#thing-saved');
-  badge.textContent = ok ? '✓ Saved' : 'Storage full: download it to keep it';
+  if (ok) iconLabel(badge, fa('check'), 'Saved');
+  else badge.textContent = 'Storage full: download it to keep it';
   badge.classList.toggle('warn', !ok);
   if (!ok) return;
   // creatures already wearing it get the new shape; how its material looks
@@ -2428,7 +2491,8 @@ function renderStuffPanel() {
     const pick = document.createElement('button');
     pick.className = 'piece-pick';
     pick.innerHTML = `<i style="background:${p.color}"></i>`;
-    pick.append(`${p.kind === 'flat' ? '▭' : p.kind === 'turned' ? '◎' : '⬭'} Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
+    pick.insertAdjacentHTML('beforeend', p.kind === 'flat' ? fa('rectangle-wide') : p.kind === 'turned' ? faClassic('jar') : fa('cloud'));
+    pick.append(` Piece ${i + 1}${p.holes.length ? ` (${p.holes.length} hole${p.holes.length > 1 ? 's' : ''})` : ''}`);
     pick.onclick = () => {
       selectedPiece = p.id;
       flashPart();
@@ -2436,7 +2500,7 @@ function renderStuffPanel() {
     };
     const edit = document.createElement('button');
     edit.className = 'piece-icon';
-    edit.textContent = '✏️';
+    edit.innerHTML = fa('pencil');
     edit.title = 'Redraw this piece: add to it, erase bits (erase inside it for a hole), or move, size and turn it. Or double-click it';
     edit.onclick = () => {
       selectedPiece = p.id;
@@ -2445,7 +2509,7 @@ function renderStuffPanel() {
     };
     const del = document.createElement('button');
     del.className = 'piece-icon';
-    del.textContent = '✕';
+    del.innerHTML = fa('xmark');
     del.title = 'Delete this piece';
     del.onclick = () => deletePiece(p.id);
     row.append(pick, edit, del);
@@ -2521,7 +2585,7 @@ function renderCollection() {
     el.innerHTML = '';
     const things = collection();
     if (forAttach && !things.length) {
-      el.innerHTML = '<p class="muted small">Nothing here yet. Make something in the 🗡 Stuff tab first.</p>';
+      el.innerHTML = `<p class="muted small">Nothing here yet. Make something in the ${fa('box')} Stuff tab first.</p>`;
       continue;
     }
     const card = (name: string, thumb: string | undefined, onclick: () => void) => {
@@ -2545,7 +2609,7 @@ function renderCollection() {
         if (world.workbench?.pieces.length) openOnBench(newThing());
       });
       fresh.classList.add('new-card');
-      fresh.querySelector('.thumb')!.textContent = '＋';
+      fresh.querySelector('.thumb')!.innerHTML = faClassic('plus');
       fresh.classList.toggle('current', !things.some((t) => t.id === current));
     }
     for (const t of things) {
@@ -2801,8 +2865,9 @@ function renderCreatureBar() {
     btn.innerHTML = `<i style="background:${color}"></i>`;
     btn.append(creatureLabel(i));
     btn.classList.toggle('active', i === world.active);
+    if (i === world.active) btn.title = 'Click to rename';
     btn.onclick = () => {
-      if (i === world.active) return;
+      if (i === world.active) return renameCreatureChip(btn);
       activate(i);
       flashPart();
       save();
@@ -2811,6 +2876,33 @@ function renderCreatureBar() {
     el.append(btn);
   });
   $<HTMLButtonElement>('#cr-del').disabled = world.creatures.length < 2;
+}
+
+/** Turns the active creature's chip into a name box: Enter or clicking away keeps it, Escape doesn't. */
+function renameCreatureChip(btn: HTMLButtonElement) {
+  const before = state.name;
+  const input = document.createElement('input');
+  input.className = 'text chip-name';
+  input.maxLength = 60;
+  input.placeholder = `Creature ${world.active + 1}`;
+  input.value = state.name ?? '';
+  btn.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (keep: boolean) => {
+    if (done) return;
+    done = true;
+    state.name = keep ? input.value.trim() || undefined : before;
+    renderCreatureBar();
+    if (keep && state.name !== before) commit();
+  };
+  input.onkeydown = (e) => {
+    e.stopPropagation(); // typing a name isn't a shortcut
+    if (e.key === 'Enter') finish(true);
+    else if (e.key === 'Escape') finish(false);
+  };
+  input.onblur = () => finish(true);
 }
 
 /** A free spot on the floor to the right of everyone else. */
@@ -2922,7 +3014,7 @@ function renderAttachList() {
   const mine = (state.attachments ?? []).filter((a) => a.bone === selected || (a.mirror && a.bone === twin));
   for (const a of mine) {
     const btn = document.createElement('button');
-    btn.textContent = `📎 ${a.thing.name}`;
+    iconLabel(btn, fa('paperclip'), a.thing.name);
     btn.classList.toggle('active', a.id === selectedAttachment);
     btn.onclick = () => (a.id === selectedAttachment ? deselectAttachment() : selectAttachment(a.id));
     el.append(btn);
@@ -3229,13 +3321,13 @@ function showLoadPicker(b: Bundle, title: string) {
   if (b.stuff.length) {
     group('Stuff');
     b.stuff.forEach((t, i) => {
-      const icon = t.thumb ? `<img src="${t.thumb}" alt="" />` : '📦';
+      const icon = t.thumb ? `<img src="${t.thumb}" alt="" />` : fa('box');
       row(icon, t.name?.trim() || 'Thing', () => pick.stuff[i], (v) => (pick.stuff[i] = v));
     });
   }
   if (b.rigs.length) {
     group('Body plans');
-    b.rigs.forEach((r, i) => row('🦴', r.name, () => pick.rigs[i], (v) => (pick.rigs[i] = v)));
+    b.rigs.forEach((r, i) => row(faClassic('bone'), r.name, () => pick.rigs[i], (v) => (pick.rigs[i] = v)));
   }
   if (b.look) {
     group('Scene');
@@ -3305,14 +3397,14 @@ function renderRigs() {
   const el = $('#rigs');
   el.innerHTML = '';
   const options = [
-    ...RIGS.map((r) => ({ base: r.id, icon: r.icon, name: r.name })),
-    ...savedRigs().map((r) => ({ base: r.base, icon: '🦴', name: r.name })),
+    ...RIGS.map((r) => ({ base: r.id, icon: `<i class="${r.icon}" aria-hidden="true"></i>`, name: r.name })),
+    ...savedRigs().map((r) => ({ base: r.base, icon: faClassic('bone'), name: r.name })),
   ];
   for (const o of options) {
     const btn = document.createElement('button');
     btn.innerHTML = `<span>${o.icon}</span>`;
-    btn.append(o.name);
     btn.title = o.name;
+    btn.setAttribute('aria-label', o.name);
     btn.classList.toggle('active', o.base === state.rig.base);
     btn.onclick = () => switchRig(o.base);
     el.append(btn);
@@ -3327,7 +3419,7 @@ function renderParts() {
     const btn = document.createElement('button');
     const p = state.parts[b.src];
     const twin = creature.list.some((o) => o.def.mirrorOf === b.def.id);
-    btn.innerHTML = `<i style="background:${p.color}"></i>${partLabel(b.src)}${twin ? ' ×2' : ''}${p.outline ? ' ✓' : ''}`;
+    btn.innerHTML = `<i style="background:${p.color}"></i>${partLabel(b.src)}${twin ? ' ×2' : ''}${p.outline ? ` ${fa('check')}` : ''}`;
     btn.classList.toggle('active', b.src === selSrc);
     btn.onclick = () => selectPart(b.def.id);
     el.append(btn);
@@ -3433,7 +3525,7 @@ function renderThingMaterial(thing: Thing, styles: StyleId[], el: HTMLElement, w
   if (thing.inherit) {
     const note = document.createElement('p');
     note.className = 'muted small inherit-note';
-    note.textContent = `Made of ${styleName}, like the ${mode === 'stuff' ? 'creature' : 'part it’s on'}. Change it in ✏️ Build › Material.`;
+    note.textContent = `Made of ${styleName}, like the ${mode === 'stuff' ? 'creature' : 'part it’s on'}. Change it in Build › Material.`;
     el.append(note);
   }
   const scaleRow = document.createElement('label');
@@ -3535,7 +3627,14 @@ function renderEyes() {
   const el = $('#eye-styles');
   el.innerHTML = '';
   const options: { id: EyeStyle | 'none'; name: string }[] = [{ id: 'none', name: 'None' }, ...EYE_STYLES];
-  const icons: Record<string, string> = { none: '∅', googly: '👀', flat: '◉', bead: '●', dot: '•', button: '⊕' };
+  const icons: Record<string, string> = {
+    none: fa('eye-slash'),
+    googly: faClassic('eyes'),
+    flat: fa('circle'),
+    bead: fa('circle-half-stroke'),
+    dot: faClassic('circle-small'),
+    button: faClassic('circle-dot'),
+  };
   for (const o of options) {
     const btn = document.createElement('button');
     btn.innerHTML = `<span>${icons[o.id]}</span>${o.name}`;
@@ -3674,8 +3773,7 @@ function switchRig(base: string) {
   // picking the plan it already has only does something if its skeleton is
   // out of date (made before the template changed)
   if (base === state.rig.base && JSON.stringify(rig.bones) === JSON.stringify(state.rig.bones)) return;
-  const dirty = Object.values(state.parts).some((p) => p.outline) || Object.keys(state.pose).length > 0;
-  if (dirty && !confirm('Switch body plan? Your drawn shapes and pose will be cleared (colors and material stay).')) return;
+  // no confirm: switching clears drawn shapes and pose, but it's one undo away
   const body = state.parts[creature.list[0].src].color;
   const next = defaultState(rig, body);
   // same spot in the scene, same name
@@ -3772,12 +3870,13 @@ function renderRigPanel() {
   if (b) {
     $<HTMLInputElement>('#rig-w0').value = String(b.def.width);
     $<HTMLInputElement>('#rig-w1').value = String(b.def.widthEnd ?? b.def.width);
-    $('#rig-drawn-note').hidden = !state.parts[b.src]?.outline;
-    $<HTMLInputElement>('#rig-bendy').checked = !!b.def.bendy;
-    $<HTMLInputElement>('#rig-bend').value = String(b.def.bend ?? 0);
-    $<HTMLInputElement>('#rig-bend-dir').value = String(Math.round(((b.def.bendDir ?? 0) * 180) / Math.PI));
-    $('#rig-bend-row').classList.toggle('off', !b.def.bendy);
-    $('#rig-bend-dir-row').classList.toggle('off', !b.def.bendy);
+    // a drawn shape sets its own widths: these only count again after Reset shape
+    const drawn = !!state.parts[b.src]?.outline;
+    for (const w of ['w0', 'w1']) {
+      $<HTMLInputElement>(`#rig-${w}`).disabled = drawn;
+      $(`#rig-${w}-row`).classList.toggle('off', drawn);
+      $(`#rig-${w}-row`).title = drawn ? 'This part has a drawing, which sets its own widths. Reset shape to use these.' : '';
+    }
   }
 
   const list = $('#saved-rig-list');
@@ -3787,11 +3886,11 @@ function renderRigPanel() {
     row.className = 'saved-rig';
     const load = document.createElement('button');
     load.className = 'ghost';
-    load.textContent = `🦴 ${r.name}`;
+    iconLabel(load, faClassic('bone'), r.name);
     load.onclick = () => switchRig(r.base);
     const del = document.createElement('button');
     del.className = 'ghost';
-    del.textContent = '✕';
+    del.innerHTML = fa('xmark');
     del.title = 'Delete saved rig';
     del.onclick = () => {
       if (!confirm(`Delete the saved rig "${r.name}"?`)) return;
@@ -3878,18 +3977,7 @@ function commitBoneEdit() {
 const round3n = (v: string) => Math.round(parseFloat(v) * 1000) / 1000;
 $<HTMLInputElement>('#rig-w0').oninput = (e) => editBone((d) => (d.width = round3n((e.target as HTMLInputElement).value)));
 $<HTMLInputElement>('#rig-w1').oninput = (e) => editBone((d) => (d.widthEnd = round3n((e.target as HTMLInputElement).value)));
-$<HTMLInputElement>('#rig-bend').oninput = (e) => editBone((d) => (d.bend = round3n((e.target as HTMLInputElement).value)));
-$<HTMLInputElement>('#rig-bend-dir').oninput = (e) =>
-  editBone((d) => (d.bendDir = Math.round(parseFloat((e.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000));
-for (const id of ['#rig-w0', '#rig-w1', '#rig-bend', '#rig-bend-dir']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
-$<HTMLInputElement>('#rig-bendy').onchange = (e) => {
-  const on = (e.target as HTMLInputElement).checked;
-  editBone((d) => {
-    d.bendy = on;
-    if (on && !d.bend) d.bend = 0.35; // start with a visible curve
-  });
-  requestAnimationFrame(() => commitBoneEdit());
-};
+for (const id of ['#rig-w0', '#rig-w1']) $<HTMLInputElement>(id).onchange = () => commitBoneEdit();
 // ---- naming a bone ----
 function renameBone(commitIt: boolean) {
   const b = creature.bones.get(selected);
@@ -4134,6 +4222,15 @@ document.querySelectorAll<HTMLButtonElement>('#set-seamless button').forEach((b)
 
 // wire up static controls
 document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => (b.onclick = () => setMode(b.dataset.mode as Mode)));
+
+/** Drops the top bar's button labels whenever they'd overflow it (narrow window or zoomed in). */
+function fitTopbar() {
+  const bar = $('.topbar');
+  bar.classList.remove('compact');
+  bar.classList.toggle('compact', bar.scrollWidth > bar.clientWidth);
+}
+new ResizeObserver(fitTopbar).observe($('.topbar'));
+document.fonts.ready.then(fitTopbar); // the icon font and Nunito change the buttons' widths
 $('#draw').onclick = () => enterDraw({ kind: 'bone', boneId: selected });
 $('#cancel-draw').onclick = () => exitDraw();
 $('#reset-shape').onclick = () => {
@@ -4522,8 +4619,77 @@ function withCleanScene<T>(fn: () => T): T {
   }
 }
 
+/** The frame just rendered, as pixels. */
+function grabFrame(): ImageData {
+  const c = document.createElement('canvas');
+  c.width = canvas.width;
+  c.height = canvas.height;
+  const ctx = c.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(canvas, 0, 0);
+  return ctx.getImageData(0, 0, c.width, c.height);
+}
+
+/**
+ * A photo with no backdrop. The scene is rendered over black and over grey:
+ * whatever changed between the two is see-through by that much, so soft edges,
+ * fuzz and floor shadows keep their partial transparency. The sums are done in
+ * linear light (blending happens there, not in the picture's sRGB), and the
+ * grey is mid-range, where tone mapping is close to a straight line.
+ */
+function transparentShot(): string {
+  const background = scene.background;
+  // shadows are normally tinted toward the backdrop; with no backdrop, keep them neutral
+  const shadowColor = shadowMat.color.clone();
+  const groundColor = hemi.groundColor.clone();
+  tintForBackdrop(new THREE.Color('#ffffff'));
+  const render = (c: THREE.Color) => {
+    scene.background = c;
+    refreshFloorColors();
+    composer.render();
+    return grabFrame();
+  };
+  const GREY = 0.5;
+  const greyOut = neutralTone([GREY, GREY, GREY])[0];
+  const toLinear = Array.from({ length: 256 }, (_, v) => {
+    const s = v / 255;
+    return s < 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  try {
+    const black = render(new THREE.Color(0, 0, 0));
+    const grey = render(new THREE.Color(GREY, GREY, GREY));
+    const b = black.data;
+    const g = grey.data;
+    const c = new THREE.Color();
+    for (let i = 0; i < b.length; i += 4) {
+      const lb = [toLinear[b[i]], toLinear[b[i + 1]], toLinear[b[i + 2]]];
+      const lg = [toLinear[g[i]], toLinear[g[i + 1]], toLinear[g[i + 2]]];
+      const seen = Math.max(lg[0] - lb[0], lg[1] - lb[1], lg[2] - lb[2]) / greyOut;
+      const a = Math.min(1, Math.max(0, 1 - seen));
+      // over black, color = alpha * own color: undo that
+      if (a > 0) c.setRGB(lb[0] / a, lb[1] / a, lb[2] / a).convertLinearToSRGB();
+      b[i] = Math.min(255, Math.round(c.r * 255));
+      b[i + 1] = Math.min(255, Math.round(c.g * 255));
+      b[i + 2] = Math.min(255, Math.round(c.b * 255));
+      b[i + 3] = Math.round(a * 255);
+    }
+    const out = document.createElement('canvas');
+    out.width = black.width;
+    out.height = black.height;
+    out.getContext('2d')!.putImageData(black, 0, 0);
+    return out.toDataURL('image/png');
+  } finally {
+    scene.background = background;
+    shadowMat.color.copy(shadowColor);
+    hemi.groundColor.copy(groundColor);
+    refreshFloorColors();
+    invalidate();
+  }
+}
+
 $('#shot').onclick = () => {
+  const clear = $<HTMLInputElement>('#shot-clear').checked;
   const url = withCleanScene(() => {
+    if (clear) return transparentShot();
     composer.render();
     return canvas.toDataURL('image/png');
   });
@@ -4712,7 +4878,7 @@ function watchSpeed(now: number) {
   slowFrames = dt > 55 ? slowFrames + 1 : Math.max(0, slowFrames - 2);
   if (slowFrames > 40) {
     slowHinted = true;
-    hint('Running slowly? Try ⚙ Settings › Performance › Fast', 6000);
+    hint('Running slowly? Try Settings › Performance › Fast', 6000);
   }
 }
 

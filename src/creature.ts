@@ -1445,7 +1445,7 @@ export class Creature {
     const headStyle = headPart.style ?? this.state.style;
     const localUp = up.clone().transformDirection(toLocal);
 
-    for (const pair of e.pairs) {
+    for (const [pairIndex, pair] of e.pairs.entries()) {
     const r = Math.max(0.02, Math.min(sizeR, sizeU) * 0.16 * (0.4 + pair.size * 1.2));
     for (const sgn of [1, -1]) {
       const originW = new THREE.Vector3()
@@ -1463,6 +1463,7 @@ export class Creature {
       const y = localUp.clone().addScaledVector(z, -localUp.dot(z)).normalize();
       const x = new THREE.Vector3().crossVectors(y, z);
       const eye = new THREE.Group();
+      eye.userData.eye = { pair: pairIndex, r };
       eye.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
       // stand-off: lift the eye out along its facing direction
       eye.position.copy(hit.point).addScaledVector(z, (pair.lift ?? e.lift ?? 0) * r * 1.2);
@@ -1470,7 +1471,9 @@ export class Creature {
       eye.add(buildEye(style, r, sgn, headStyle, this.settingsFor(headStyle), e));
       eye.traverse((m) => {
         m.raycast = () => {};
-        m.castShadow = true;
+        // glass casts no shadow, as with the body (see castsShadow): a glass
+        // creature's glass beads would leave two shadows floating on the floor
+        m.castShadow = !(m instanceof THREE.Mesh && (m.material as THREE.MeshPhysicalMaterial).transmission > 0);
       });
       this.eyes.add(eye);
       // bare patch just inside the eye's own rim, so it stays hidden behind it
@@ -1677,6 +1680,27 @@ export class Creature {
 
   meshes(): THREE.Object3D[] {
     return this.list.flatMap((b) => (b.mesh ? [b.mesh] : []));
+  }
+
+  /**
+   * The eye pair a ray hits first, and how far along. The eyes themselves
+   * don't take raycasts (clicks go through to the head), so each eye counts as
+   * a ball of its own size.
+   */
+  pickEye(ray: THREE.Ray): { pair: number; distance: number } | null {
+    if (!this.eyes.parent || !this.eyes.visible) return null;
+    let best: { pair: number; distance: number } | null = null;
+    const sphere = new THREE.Sphere();
+    const at = new THREE.Vector3();
+    for (const eye of this.eyes.children) {
+      const { pair, r } = eye.userData.eye as { pair: number; r: number };
+      eye.getWorldPosition(sphere.center);
+      sphere.radius = r * eye.getWorldScale(at).x;
+      if (!ray.intersectSphere(sphere, at)) continue;
+      const distance = at.distanceTo(ray.origin);
+      if (!best || distance < best.distance) best = { pair, distance };
+    }
+    return best;
   }
 
   // -------------------------------------------------------------------------

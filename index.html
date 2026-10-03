@@ -6,27 +6,27 @@
     <title>Creature Creator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
+    <script src="https://kit.fontawesome.com/16182ad8a7.js" crossorigin="anonymous"></script>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
       <header class="topbar">
-        <div class="brand"><span class="logo">🦎</span> Creature Creator</div>
+        <div class="brand"><span class="logo"><i class="fa-slab fa-regular fa-paw" aria-hidden="true"></i></span> Creature Creator</div>
         <div class="modes" role="tablist">
-          <button data-mode="shape" class="active" title="Shape: draw, stretch, grow and pose your creature (1)">✋ Shape</button>
-          <button data-mode="look" title="Look: colors, materials, eyes and stuff to wear (2)">🎨 Look</button>
-          <button data-mode="stuff" title="Stuff: make things to wear and carry (3)">📦 Stuff</button>
+          <button data-mode="shape" class="active" title="Shape: draw, stretch, grow and pose your creature (1)"><i class="fa-slab fa-regular fa-hand" aria-hidden="true"></i><span class="lbl"> Shape</span></button>
+          <button data-mode="look" title="Look: colors, materials, eyes and stuff to wear (2)"><i class="fa-slab fa-regular fa-palette" aria-hidden="true"></i><span class="lbl"> Look</span></button>
+          <button data-mode="stuff" title="Stuff: make things to wear and carry (3)"><i class="fa-slab fa-regular fa-box" aria-hidden="true"></i><span class="lbl"> Stuff</span></button>
         </div>
         <div class="spacer"></div>
         <div class="tools">
-          <button id="file-btn" title="Save and open files">📁 File</button>
-          <button id="undo" title="Undo (Ctrl+Z)">↶</button>
-          <button id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
-          <button id="backdrop-btn" title="Backdrop &amp; lighting">🌄 Backdrop</button>
-          <button id="spin" title="Turntable">⟳ Spin</button>
-          <button id="shot" title="Save a picture">📷 Photo</button>
-          <button id="new" title="Start over">✨ New</button>
-          <button id="settings-btn" title="Settings">⚙</button>
+          <button id="file-btn" title="Save and open files"><i class="fa-slab fa-regular fa-folder" aria-hidden="true"></i><span class="lbl"> File</span></button>
+          <button id="undo" title="Undo (Ctrl+Z)"><i class="fa-slab fa-regular fa-arrow-rotate-left" aria-hidden="true"></i></button>
+          <button id="redo" title="Redo (Ctrl+Shift+Z)"><i class="fa-slab fa-regular fa-arrow-rotate-right" aria-hidden="true"></i></button>
+          <button id="backdrop-btn" title="Backdrop, lighting &amp; photo"><i class="fa-slab fa-regular fa-image" aria-hidden="true"></i><span class="lbl"> Backdrop</span></button>
+          <button id="spin" title="Turntable"><i class="fa-slab fa-regular fa-arrows-rotate" aria-hidden="true"></i><span class="lbl"> Spin</span></button>
+          <button id="new" title="Start over"><i class="fa-slab fa-regular fa-wand-magic-sparkles" aria-hidden="true"></i><span class="lbl"> New</span></button>
+          <button id="settings-btn" title="Settings"><i class="fa-slab fa-regular fa-gear" aria-hidden="true"></i></button>
         </div>
       </header>
 
@@ -34,10 +34,10 @@
         <div id="creature-bar" class="creature-bar">
           <div id="creature-chips" class="creature-chips"></div>
           <div class="creature-actions">
-            <button id="cr-add" class="ghost" title="Add a new creature to the scene">＋ New</button>
-            <button id="cr-dup" class="ghost" title="Copy this creature">⧉ Copy</button>
-            <button id="cr-place" class="ghost" title="Move, turn or resize this creature anywhere in the scene">✥ Arrange</button>
-            <button id="cr-del" class="ghost" title="Remove this creature from the scene">🗑</button>
+            <button id="cr-add" class="ghost" title="Add a new creature to the scene"><i class="fa-regular fa-plus" aria-hidden="true"></i> New</button>
+            <button id="cr-dup" class="ghost" title="Copy this creature"><i class="fa-slab fa-regular fa-copy" aria-hidden="true"></i> Copy</button>
+            <button id="cr-place" class="ghost" title="Move, turn or resize this creature anywhere in the scene"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Arrange</button>
+            <button id="cr-del" class="ghost" title="Remove this creature from the scene"><i class="fa-slab fa-regular fa-trash" aria-hidden="true"></i></button>
           </div>
         </div>
         <section id="plan-sec">
@@ -47,7 +47,7 @@
             <summary>Save this body plan</summary>
             <div class="row">
               <input id="rig-name" class="text" type="text" placeholder="Name" maxlength="40" />
-              <button id="rig-save" class="ghost">💾 Save</button>
+              <button id="rig-save" class="ghost"><i class="fa-regular fa-floppy-disk" aria-hidden="true"></i> Save</button>
             </div>
             <div id="saved-rig-list" class="saved-rigs"></div>
           </details>
@@ -61,7 +61,7 @@
               <span>Blend parts</span><input id="merge-radius" type="range" min="0" max="0.25" step="0.005" />
               <span class="ends"><em>off</em><em>smooth</em></span></label>
             <label class="check seamless-row" id="seamless-row" title="For this creature: after you stop changing its shape, blended parts are rebuilt as one continuous skin with no seams">
-              <input id="seamless" type="checkbox" checked /> <span>✨ Seamless joins <span class="muted">(smooths blended parts when idle)</span></span>
+              <input id="seamless" type="checkbox" checked /> <span><i class="fa-slab fa-regular fa-wand-magic-sparkles" aria-hidden="true"></i> Seamless joins <span class="muted">(smooths blended parts when idle)</span></span>
             </label>
           </div>
         </section>
@@ -70,44 +70,35 @@
           <div class="card" id="part-card">
             <input id="rig-title" class="text wide card-title-input" type="text" maxlength="40" placeholder="Part name" title="Rename this part" />
             <p class="muted small" id="rig-pair-note"></p>
-            <button id="draw" class="primary">✏️ Draw shape <kbd>D</kbd></button>
+            <button id="draw" class="primary"><i class="fa-slab fa-regular fa-pencil" aria-hidden="true"></i> Draw shape <kbd>D</kbd></button>
             <p class="muted small">Or double-click a part. Draw a closed outline; it puffs up like a balloon.</p>
             <label class="slider">
               <span>Thickness</span>
               <input id="thickness" type="range" min="0.1" max="4.5" step="0.01" />
               <span class="ends"><em>flat</em><em>chubby</em></span>
             </label>
+            <label class="slider" id="rig-w0-row"><span>Base width</span><input id="rig-w0" type="range" min="0.02" max="1.2" step="0.005" /></label>
+            <label class="slider" id="rig-w1-row"><span>Tip width</span><input id="rig-w1" type="range" min="0.02" max="1.2" step="0.005" /></label>
             <button id="reset-shape" class="ghost">Reset shape</button>
 
             <div class="sub-title rig-sub">Grow</div>
             <div class="rig-actions">
-              <button id="rig-add" class="ghost" title="Sprout a two-segment limb from the side of this part">➕ Limb</button>
-              <button id="rig-bone" class="ghost" title="Sprout a single piece from the side of this part">🦴 Bone</button>
-              <button id="rig-extend" class="ghost" title="Add a segment on the end of this part">↗ Extend</button>
-              <button id="rig-split" class="ghost" title="Split this part in the middle into two jointed halves">✂ Split</button>
-              <button id="rig-dup" class="ghost" title="Copy this limb and everything attached to it">⧉ Copy</button>
-              <button id="rig-del" class="ghost" title="Remove this part and everything attached to it">🗑 Delete</button>
-              <button id="rig-unlink" class="ghost" title="Let the left and right sides be shaped separately">⛓ Unlink pair</button>
-              <button id="rig-eyes" class="ghost" title="Put the eyes on this part">👀 Eyes here</button>
+              <button id="rig-add" class="ghost" title="Sprout a two-segment limb from the side of this part"><i class="fa-regular fa-plus" aria-hidden="true"></i> Limb</button>
+              <button id="rig-bone" class="ghost" title="Sprout a single piece from the side of this part"><i class="fa-regular fa-bone" aria-hidden="true"></i> Bone</button>
+              <button id="rig-extend" class="ghost" title="Add a segment on the end of this part"><i class="fa-regular fa-arrow-up-right" aria-hidden="true"></i> Extend</button>
+              <button id="rig-split" class="ghost" title="Split this part in the middle into two jointed halves"><i class="fa-slab fa-regular fa-scissors" aria-hidden="true"></i> Split</button>
+              <button id="rig-dup" class="ghost" title="Copy this limb and everything attached to it"><i class="fa-slab fa-regular fa-copy" aria-hidden="true"></i> Copy</button>
+              <button id="rig-del" class="ghost" title="Remove this part and everything attached to it"><i class="fa-slab fa-regular fa-trash" aria-hidden="true"></i> Delete</button>
+              <button id="rig-unlink" class="ghost" title="Let the left and right sides be shaped separately"><i class="fa-regular fa-link-slash" aria-hidden="true"></i> Unlink pair</button>
+              <button id="rig-eyes" class="ghost" title="Put the eyes on this part"><i class="fa-slab fa-regular fa-eye" aria-hidden="true"></i> Eyes here</button>
             </div>
 
-            <details class="fine">
-              <summary>Fine-tune</summary>
-              <label class="slider"><span>Base width</span><input id="rig-w0" type="range" min="0.02" max="1.2" step="0.005" /></label>
-              <label class="slider"><span>Tip width</span><input id="rig-w1" type="range" min="0.02" max="1.2" step="0.005" /></label>
-              <p class="muted small" id="rig-drawn-note" hidden>This part has a drawing, so these widths only show if you Reset shape.</p>
-              <label class="check"><input id="rig-bendy" type="checkbox" /> Bendy: curve into an arc</label>
-              <label class="slider" id="rig-bend-row"><span>Bend</span><input id="rig-bend" type="range" min="-1" max="1" step="0.01" />
-                <span class="ends"><em>one way</em><em>the other</em></span></label>
-              <label class="slider" id="rig-bend-dir-row"><span>Direction</span><input id="rig-bend-dir" type="range" min="-180" max="180" step="1" />
-                <span class="ends"><em>sideways</em><em>forward / back</em></span></label>
-            </details>
           </div>
 
           <h3>Pose</h3>
           <div class="row">
-            <button id="reset-pose" class="ghost" title="Straighten every joint back out">🧍 Stand up straight</button>
-            <button id="drop-floor" class="ghost" title="Move the whole creature so its lowest point touches the floor">⬇ Floor</button>
+            <button id="reset-pose" class="ghost" title="Straighten every joint back out"><i class="fa-regular fa-person" aria-hidden="true"></i> Stand up straight</button>
+            <button id="drop-floor" class="ghost" title="Move the whole creature so its lowest point touches the floor"><i class="fa-slab fa-regular fa-arrow-down-to-line" aria-hidden="true"></i> Floor</button>
           </div>
           <label class="check" title="Dragging a hand bends the elbow and shoulder too"><input id="ik" type="checkbox" checked /> Pull whole limbs</label>
           <label class="check" title="After you bend or resize something, the creature settles back onto the floor (if it was standing on it)"><input id="keep-floor" type="checkbox" checked /> Keep feet on the floor</label>
@@ -126,7 +117,7 @@
             <div class="attach-sec">
               <div class="sub-title">Stuff on this part</div>
               <div id="attach-list" class="parts"></div>
-              <button id="attach-add" class="ghost">📎 Attach stuff…</button>
+              <button id="attach-add" class="ghost"><i class="fa-slab fa-regular fa-paperclip" aria-hidden="true"></i> Attach stuff…</button>
             </div>
           </div>
 
@@ -145,7 +136,7 @@
           <div id="style-params" class="style-params"></div>
           <label class="check"><input id="style-part" type="checkbox" /> Only the selected part</label>
 
-          <h3>Eyes</h3>
+          <h3 id="eyes-sec">Eyes</h3>
           <div id="eye-styles" class="eye-styles"></div>
           <div id="eye-pairs" class="eye-pairs"></div>
           <div id="eye-sliders">
@@ -156,7 +147,7 @@
               <span class="ends"><em>on the face</em><em>lifted</em></span></label>
             <label class="slider" title="Turn the eyes round the head. They stick to the face, so rolling the head turns them too"><span>Facing</span><input id="eye-turn" type="range" min="-180" max="180" step="1" />
               <span class="ends"><em>one way</em><em>the other</em></span></label>
-            <button id="eye-front" class="ghost" title="Turn the eyes back to the creature's front, even if the head is rolled">◎ Face front</button>
+            <button id="eye-front" class="ghost" title="Turn the eyes back to the creature's front, even if the head is rolled"><i class="fa-slab fa-regular fa-face-smile" aria-hidden="true"></i> Face front</button>
           </div>
           <div id="eye-look">
             <div class="sub-title">Bead, dot &amp; button look</div>
@@ -178,14 +169,14 @@
 
           <h3 class="editing-head">Editing <span id="thing-saved" class="saved-badge"></span></h3>
           <input id="thing-name" class="text wide" type="text" placeholder="Name this thing" maxlength="40" />
-          <button id="piece-draw" class="primary">✏️ Draw a piece <kbd>D</kbd></button>
+          <button id="piece-draw" class="primary"><i class="fa-slab fa-regular fa-pencil" aria-hidden="true"></i> Draw a piece <kbd>D</kbd></button>
           <p class="muted small">Draw on the board; the blue crosshair is where it attaches to a body part. Right-drag or hold <kbd>Space</kbd> to pan.</p>
           <div id="pieces" class="parts"></div>
           <div class="card thing-bend" id="thing-bend-card">
             <div class="sub-title">Bend the whole thing</div>
             <div class="seg" id="thing-bend-mode">
-              <button data-bend="axis" title="Curve away from the dashed centre line: shields, wings, bracers">⌒ Centre line</button>
-              <button data-bend="radial" title="Curve evenly all round the crosshair, like a dome">◠ Dome</button>
+              <button data-bend="axis" title="Curve away from the dashed centre line: shields, wings, bracers"><i class="fa-slab fa-regular fa-shield" aria-hidden="true"></i> Centre line</button>
+              <button data-bend="radial" title="Curve evenly all round the crosshair, like a dome"><i class="fa-slab fa-regular fa-umbrella" aria-hidden="true"></i> Dome</button>
             </div>
             <label class="slider"><span>Bend</span><input id="thing-bend" type="range" min="-1" max="1" step="0.01" />
               <span class="ends"><em>edges forward</em><em>edges back</em></span></label>
@@ -193,9 +184,9 @@
 
           <div class="card" id="piece-card" hidden>
             <div class="seg" id="piece-kind">
-              <button data-kind="flat">▭ Flat cut-out</button>
-              <button data-kind="puffy">⬭ Puffy</button>
-              <button data-kind="turned" title="Spin the shape around the dashed centre line: jars, cups, bottles">◎ Turned</button>
+              <button data-kind="flat"><i class="fa-slab fa-regular fa-rectangle-wide" aria-hidden="true"></i> Flat cut-out</button>
+              <button data-kind="puffy"><i class="fa-slab fa-regular fa-cloud" aria-hidden="true"></i> Puffy</button>
+              <button data-kind="turned" title="Spin the shape around the dashed centre line: jars, cups, bottles"><i class="fa-regular fa-jar" aria-hidden="true"></i> Turned</button>
             </div>
             <label class="slider"><span id="piece-thickness-label">Thickness</span><input id="piece-thickness" type="range" /></label>
             <div id="piece-turned-row" class="row turned-row">
@@ -212,9 +203,9 @@
           </div>
 
           <div class="row thing-actions-row" id="thing-actions">
-            <button id="thing-dup" class="ghost" title="Make a copy of this thing to change">⧉ Copy</button>
-            <button id="thing-download" class="ghost" title="Download as a .stuff file">⬇ Download</button>
-            <button id="thing-delete" class="ghost" title="Remove from My stuff">🗑 Delete</button>
+            <button id="thing-dup" class="ghost" title="Make a copy of this thing to change"><i class="fa-slab fa-regular fa-copy" aria-hidden="true"></i> Copy</button>
+            <button id="thing-download" class="ghost" title="Download as a .stuff file"><i class="fa-regular fa-download" aria-hidden="true"></i> Download</button>
+            <button id="thing-delete" class="ghost" title="Remove from My stuff"><i class="fa-slab fa-regular fa-trash" aria-hidden="true"></i> Delete</button>
           </div>
         </section>
 
@@ -228,13 +219,13 @@
         <div id="settle-badge" class="settle-badge" hidden>Smoothing joins…</div>
         <div id="shape-bar" class="shape-bar">
           <label id="mirror-pill" class="pill-toggle" title="Both sides change together: shaping and posing (M)">
-            <input id="rig-sym" type="checkbox" checked /> 🪞 Mirror <kbd>M</kbd>
+            <input id="rig-sym" type="checkbox" checked /> <i class="fa-slab fa-regular fa-arrow-right-arrow-left" aria-hidden="true"></i> Mirror <kbd>M</kbd>
           </label>
           <div class="legend" id="shape-legend">
             <span><b class="dot orange"></b> bend</span>
             <span><b class="dot teal tri"></b> stretch</span>
             <span><b class="dot purple square"></b> slide</span>
-            <span><b class="dot green diamond"></b> curve</span>
+            <span title="Drag to curve the part; double-click to straighten it"><b class="dot green diamond"></b> curve</span>
             <span><b class="dot blue square"></b> move</span>
           </div>
         </div>
@@ -248,35 +239,35 @@
         </div>
         <div id="place-bar" class="draw-bar attach-bar" hidden>
           <span id="place-name" class="attach-name"></span>
-          <button data-place="translate" class="seg-btn" title="Move anywhere: along the floor or up into the air (W)">✥ Move</button>
-          <button data-place="rotate" class="seg-btn" title="Turn any way, even tip over (E)">⟳ Rotate</button>
-          <button data-place="scale" class="seg-btn" title="Make the whole creature bigger or smaller (R)">⤢ Scale</button>
-          <button id="place-floor" class="seg-btn" title="Lower (or raise) it so it rests on the floor">⬇ Floor</button>
-          <button id="place-reset" class="seg-btn" title="Stand it upright on the floor at its normal size">↺ Reset</button>
+          <button data-place="translate" class="seg-btn" title="Move anywhere: along the floor or up into the air (W)"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Move</button>
+          <button data-place="rotate" class="seg-btn" title="Turn any way, even tip over (E)"><i class="fa-regular fa-rotate" aria-hidden="true"></i> Rotate</button>
+          <button data-place="scale" class="seg-btn" title="Make the whole creature bigger or smaller (R)"><i class="fa-slab fa-regular fa-expand" aria-hidden="true"></i> Scale</button>
+          <button id="place-floor" class="seg-btn" title="Lower (or raise) it so it rests on the floor"><i class="fa-slab fa-regular fa-arrow-down-to-line" aria-hidden="true"></i> Floor</button>
+          <button id="place-reset" class="seg-btn" title="Stand it upright on the floor at its normal size"><i class="fa-regular fa-rotate-left" aria-hidden="true"></i> Reset</button>
           <button id="place-done">Done</button>
         </div>
 
         <div id="piece-bar" class="draw-bar attach-bar" hidden>
           <span id="piece-name" class="attach-name"></span>
-          <button data-piece="translate" class="seg-btn" title="Slide this piece anywhere on the board (W)">✥ Move</button>
-          <button data-piece="rotate" class="seg-btn" title="Turn this piece (E)">⟳ Rotate</button>
-          <button data-piece="scale" class="seg-btn" title="Make this piece bigger, smaller, wider or taller (R)">⤢ Scale</button>
+          <button data-piece="translate" class="seg-btn" title="Slide this piece anywhere on the board (W)"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Move</button>
+          <button data-piece="rotate" class="seg-btn" title="Turn this piece (E)"><i class="fa-regular fa-rotate" aria-hidden="true"></i> Rotate</button>
+          <button data-piece="scale" class="seg-btn" title="Make this piece bigger, smaller, wider or taller (R)"><i class="fa-slab fa-regular fa-expand" aria-hidden="true"></i> Scale</button>
           <span class="dim-toggle">
             <button data-dim="2d" class="seg-btn" title="Keep the piece flat on the board">2D</button>
             <button data-dim="3d" class="seg-btn" title="Lift the piece off the board and tilt it any way">3D</button>
           </span>
-          <button id="piece-flat" class="seg-btn" title="Put this piece back down flat on the board" hidden>⤓ Lay flat</button>
+          <button id="piece-flat" class="seg-btn" title="Put this piece back down flat on the board" hidden><i class="fa-slab fa-regular fa-arrow-down-to-line" aria-hidden="true"></i> Lay flat</button>
         </div>
         <div id="attach-bar" class="draw-bar attach-bar" hidden>
           <span id="attach-name" class="attach-name"></span>
-          <button data-gizmo="translate" class="seg-btn" title="Move (W)">✥ Move</button>
-          <button data-gizmo="rotate" class="seg-btn" title="Rotate (E)">⟳ Rotate</button>
-          <button data-gizmo="scale" class="seg-btn" title="Scale (R)">⤢ Scale</button>
+          <button data-gizmo="translate" class="seg-btn" title="Move (W)"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Move</button>
+          <button data-gizmo="rotate" class="seg-btn" title="Rotate (E)"><i class="fa-regular fa-rotate" aria-hidden="true"></i> Rotate</button>
+          <button data-gizmo="scale" class="seg-btn" title="Scale (R)"><i class="fa-slab fa-regular fa-expand" aria-hidden="true"></i> Scale</button>
           <label id="attach-mirror-label" class="pill-toggle" title="Show a mirrored copy on the other side">
-            <input id="attach-mirror" type="checkbox" /> ⟷ Both sides
+            <input id="attach-mirror" type="checkbox" /> <i class="fa-slab fa-regular fa-arrow-right-arrow-left" aria-hidden="true"></i> Both sides
           </label>
-          <button id="attach-mat" class="seg-btn" title="Material settings for this item">🎨 Material</button>
-          <button id="attach-remove" class="seg-btn" title="Remove">🗑</button>
+          <button id="attach-mat" class="seg-btn" title="Material settings for this item"><i class="fa-slab fa-regular fa-palette" aria-hidden="true"></i> Material</button>
+          <button id="attach-remove" class="seg-btn" title="Remove"><i class="fa-slab fa-regular fa-trash" aria-hidden="true"></i></button>
           <button id="attach-done">Done</button>
         </div>
         <div id="attach-mat-pop" class="popover attach-mat-pop" hidden>
@@ -290,9 +281,9 @@
         <div id="file-pop" class="popover" hidden>
           <div class="pop-title">Files</div>
           <input id="creature-name" class="text wide" type="text" placeholder="This creature's name" maxlength="60" />
-          <button id="file-save" class="ghost wide" title="Everything: your creatures, your stuff, body plans and the backdrop">💾 Save (.creature)</button>
-          <button id="file-open" class="ghost wide" title="Pick what to bring in from a save">📂 Open…</button>
-          <button id="export" class="ghost wide" title="Every creature in the scene as a 3D model">⬇ Download 3D model (.glb)</button>
+          <button id="file-save" class="ghost wide" title="Everything: your creatures, your stuff, body plans and the backdrop"><i class="fa-regular fa-floppy-disk" aria-hidden="true"></i> Save (.creature)</button>
+          <button id="file-open" class="ghost wide" title="Pick what to bring in from a save"><i class="fa-regular fa-folder-open" aria-hidden="true"></i> Open…</button>
+          <button id="export" class="ghost wide" title="Every creature in the scene as a 3D model"><i class="fa-regular fa-download" aria-hidden="true"></i> Download 3D model (.glb)</button>
           <p class="muted small">A save holds everything. When you open one, you choose what to bring in.</p>
           <input id="file-input" type="file" accept=".creature,.scene,.stuff,.collection,.json" hidden />
         </div>
@@ -302,8 +293,8 @@
           <label class="check load-all" id="load-all-row"><input id="load-all" type="checkbox" checked /> Everything</label>
           <div id="load-list" class="load-list"></div>
           <div class="load-actions">
-            <button id="load-add" class="primary" title="Bring these in alongside what's already here">➕ Add to scene</button>
-            <button id="load-replace" class="ghost" title="Swap the creatures in your scene for these">↺ Replace scene</button>
+            <button id="load-add" class="primary" title="Bring these in alongside what's already here"><i class="fa-regular fa-plus" aria-hidden="true"></i> Add to scene</button>
+            <button id="load-replace" class="ghost" title="Swap the creatures in your scene for these"><i class="fa-regular fa-rotate-left" aria-hidden="true"></i> Replace scene</button>
           </div>
         </div>
         <div id="settings-pop" class="popover" hidden>
@@ -319,9 +310,9 @@
           <p class="muted small">Seamless joins rebuild blended parts as one skin while you're not changing anything.</p>
           <div class="pop-sub">Performance</div>
           <div class="seg" id="set-quality">
-            <button data-quality="high" title="Smoothest shapes, softest shadows, full-size picture">High</button>
-            <button data-quality="balanced" title="Fewer triangles and a slightly softer picture">Balanced</button>
-            <button data-quality="fast" title="For slower computers (like a MacBook Air): far fewer triangles, simpler fuzz and shadows, no ambient occlusion">Fast</button>
+            <button data-quality="high">High</button>
+            <button data-quality="balanced">Balanced</button>
+            <button data-quality="fast">Fast</button>
           </div>
           <p class="muted small">If dragging and posing feel slow or jumpy, try Fast.</p>
         </div>
@@ -355,33 +346,36 @@
               <span class="ends"><em>nearer</em><em>farther</em></span></label>
             <label class="slider dof-slider"><span>Blur</span><input id="dof-blur" type="range" min="0" max="1" step="0.01" /></label>
             <div class="row">
-              <button id="dof-pick" class="ghost" title="Then click the spot that should be sharp">🎯 Click to focus</button>
+              <button id="dof-pick" class="ghost" title="Then click the spot that should be sharp"><i class="fa-regular fa-crosshairs" aria-hidden="true"></i> Click to focus</button>
               <button id="dof-reset" class="link" title="Focus on the orbit centre">Reset</button>
             </div>
           </div>
+          <div class="pop-sub">Photo</div>
+          <label class="check" title="Leave the backdrop out of the picture: just the creatures (and their shadows)"><input id="shot-clear" type="checkbox" /> Transparent background</label>
+          <button id="shot" class="primary wide" title="Save a picture of the scene"><i class="fa-slab fa-regular fa-camera" aria-hidden="true"></i> Take photo</button>
         </div>
         <div id="draw-bar" class="draw-bar" hidden>
           <label id="sym-label" class="pill-toggle" title="Mirror across the part's centre line (S)">
-            <input id="sym" type="checkbox" /> ⟷ Symmetry <kbd>S</kbd>
+            <input id="sym" type="checkbox" /> <i class="fa-slab fa-regular fa-arrow-right-arrow-left" aria-hidden="true"></i> Symmetry <kbd>S</kbd>
           </label>
           <label class="bar-slider" title="Steadies the pen while drawing and smooths the finished outline">
             Smoothing <input id="smooth" type="range" min="0" max="1" step="0.05" />
           </label>
           <span class="bar-group" id="draw-tools">
-            <button data-tool="draw" class="seg-btn" title="Draw: each stroke adds to the shape">✏️ Draw</button>
-            <button data-tool="erase" class="seg-btn" title="Erase: each stroke cuts away from the shape (E)">⌫ Erase <kbd>E</kbd></button>
-            <button data-tool="move" class="seg-btn" title="Move: drag the shape to put it somewhere else (M)">✥ Move <kbd>M</kbd></button>
-            <button data-tool="scale" class="seg-btn" title="Scale: drag away from the middle to grow it, towards it to shrink it; Shift keeps its proportions (T)">⤢ Scale <kbd>T</kbd></button>
-            <button data-tool="rotate" class="seg-btn" title="Rotate: drag around the middle to turn the shape (R)">⟳ Rotate <kbd>R</kbd></button>
+            <button data-tool="draw" class="seg-btn" title="Draw: each stroke adds to the shape"><i class="fa-slab fa-regular fa-pencil" aria-hidden="true"></i> Draw</button>
+            <button data-tool="erase" class="seg-btn" title="Erase: each stroke cuts away from the shape (E)"><i class="fa-regular fa-eraser" aria-hidden="true"></i> Erase <kbd>E</kbd></button>
+            <button data-tool="move" class="seg-btn" title="Move: drag the shape to put it somewhere else (M)"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Move <kbd>M</kbd></button>
+            <button data-tool="scale" class="seg-btn" title="Scale: drag away from the middle to grow it, towards it to shrink it; Shift keeps its proportions (T)"><i class="fa-slab fa-regular fa-expand" aria-hidden="true"></i> Scale <kbd>T</kbd></button>
+            <button data-tool="rotate" class="seg-btn" title="Rotate: drag around the middle to turn the shape (R)"><i class="fa-regular fa-rotate" aria-hidden="true"></i> Rotate <kbd>R</kbd></button>
           </span>
           <span class="bar-group" title="Pick a basic shape, then click in the drawing to put it down (drag to size it)">
-            <button data-shape="square" class="seg-btn" title="Square">◻</button>
-            <button data-shape="triangle" class="seg-btn" title="Triangle">△</button>
-            <button data-shape="circle" class="seg-btn" title="Circle">◯</button>
+            <button data-shape="square" class="seg-btn" title="Square"><i class="fa-slab fa-regular fa-square" aria-hidden="true"></i></button>
+            <button data-shape="triangle" class="seg-btn" title="Triangle"><i class="fa-slab fa-regular fa-triangle" aria-hidden="true"></i></button>
+            <button data-shape="circle" class="seg-btn" title="Circle"><i class="fa-slab fa-regular fa-circle" aria-hidden="true"></i></button>
           </span>
-          <button id="reset-draw" class="seg-btn" title="Clear the shape and start again">↺ Reset</button>
+          <button id="reset-draw" class="seg-btn" title="Clear the shape and start again"><i class="fa-regular fa-rotate-left" aria-hidden="true"></i> Reset</button>
           <button id="cancel-draw">Cancel <kbd>Esc</kbd></button>
-          <button id="done-draw" class="done" title="Use this shape (Enter)">✓ Done <kbd>↵</kbd></button>
+          <button id="done-draw" class="done" title="Use this shape (Enter)"><i class="fa-slab fa-regular fa-check" aria-hidden="true"></i> Done <kbd>↵</kbd></button>
         </div>
       </main>
     </div>

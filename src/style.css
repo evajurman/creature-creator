@@ -43,7 +43,7 @@ button, input, select { font: inherit; color: inherit; }
 .modes { display: flex; background: var(--bg); border-radius: 999px; padding: 3px; }
 .modes button {
   border: 0; background: transparent; padding: 6px 16px; border-radius: 999px;
-  font-weight: 700; cursor: pointer; color: var(--muted);
+  font-weight: 700; cursor: pointer; color: var(--muted); white-space: nowrap;
 }
 .modes button.active { background: var(--panel); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.1); }
 .tools { display: flex; gap: 6px; }
@@ -54,6 +54,9 @@ button, input, select { font: inherit; color: inherit; }
 .tools button:hover { background: var(--bg); }
 .tools button:disabled { opacity: .4; cursor: default; }
 .tools button.on { background: var(--accent-soft); border-color: var(--accent); }
+/* when the labels don't fit (narrow window, zoomed in), the top bar is icons only */
+.topbar.compact .lbl { display: none; }
+.topbar.compact .modes button { padding: 6px 12px; }
 
 /* ---------- side panel ---------- */
 .panel {
@@ -72,8 +75,8 @@ button, input, select { font: inherit; color: inherit; }
 .rigs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .rigs button {
   border: 2px solid var(--line); background: var(--panel); border-radius: 12px;
-  padding: 6px 0 4px; cursor: pointer; display: flex; flex-direction: column;
-  align-items: center; font-size: 10px; font-weight: 700; color: var(--muted);
+  padding: 8px 0; cursor: pointer; display: flex; justify-content: center;
+  align-items: center; color: var(--muted);
 }
 .rigs button span { font-size: 22px; }
 .rigs button.active { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
@@ -84,7 +87,7 @@ button, input, select { font: inherit; color: inherit; }
   padding: 4px 10px; font-size: 13px; font-weight: 700; cursor: pointer;
   display: flex; align-items: center; gap: 6px;
 }
-.parts button i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
+.parts button i:not([class]) { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
 .parts button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 
 .card {
@@ -236,7 +239,6 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 
 .dot.purple { background: #8b5cf6; }
 .rigs { grid-template-columns: repeat(5, 1fr); }
-.rigs button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .rig-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .rig-actions button { text-align: left; }
@@ -349,16 +351,14 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
   display: flex; align-items: center; gap: 6px; border: 1.5px solid var(--line); background: #fff;
   border-radius: 10px; padding: 4px 10px; font-weight: 800; font-size: 13px; cursor: pointer;
 }
-.creature-chips button i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
+.creature-chips button i:not([class]) { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
 .creature-chips button.active { border-color: var(--accent); background: var(--accent-soft); }
+.creature-chips .chip-name { width: 140px; padding: 4px 10px; font-weight: 800; font-size: 13px; border: 1.5px solid var(--accent); border-radius: 10px; }
 .creature-actions { display: flex; gap: 6px; }
 .creature-actions button { padding: 4px 8px; font-size: 12px; }
 .creature-actions button.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
 
 .rig-sub { margin: 12px 0 2px; }
-#rig-bend-row.off { opacity: .4; pointer-events: none; }
-
-#rig-bend-dir-row.off { opacity: .4; pointer-events: none; }
 .dot.green { background: #22c55e; }
 .dot.diamond { border-radius: 2px; transform: rotate(45deg) scale(.85); }
 
@@ -483,7 +483,7 @@ details.fine[open] > summary { margin-bottom: 6px; }
 .piece-row button { border: 0; background: transparent; cursor: pointer; font-weight: 700; font-size: 13px; color: inherit; }
 .piece-row.active button { color: #fff; }
 .piece-pick { flex: 1; display: flex; align-items: center; gap: 6px; padding: 5px 8px; text-align: left; border-radius: 8px; }
-.piece-pick i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); flex: none; }
+.piece-pick i:not([class]) { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); flex: none; }
 .piece-icon { width: 30px; height: 28px; border-radius: 8px; display: grid; place-items: center; opacity: .7; }
 .piece-icon:hover { opacity: 1; background: rgba(127,127,127,.18); }
 .parts-blend { margin-top: 10px; }
