@@ -25,17 +25,17 @@ html.cursor-pop {
 html, body { margin: 0; height: 100%; }
 html { cursor: var(--cursor); }
 /* the arrow everywhere, blue over what can be clicked; OrbitControls writes cursor: auto onto the canvas */
-button, select, summary, a, input[type=checkbox], input[type=radio], input[type=range], input[type=color] { cursor: var(--cursor-click); }
-button:disabled, select:disabled, input:disabled { cursor: var(--cursor); }
+button, select, summary, a, input, textarea, [contenteditable] { cursor: var(--cursor-click); }
+button:disabled, select:disabled, input:disabled, textarea:disabled, input[readonly] { cursor: var(--cursor); }
 #viewport canvas { cursor: inherit !important; }
 /* the browser's scrollbars always show the system cursor, so they're hidden and src/scrollbars.ts draws one */
 * { scrollbar-width: none; }
 ::-webkit-scrollbar { display: none; }
 .scroll-thumb {
-  position: fixed; z-index: 1000; width: 8px; border-radius: 999px; background: var(--muted);
-  opacity: .45; cursor: var(--cursor-click); touch-action: none; transition: opacity .15s;
+  position: fixed; z-index: 1000; width: 6px; border-radius: 999px; background: var(--muted);
+  opacity: .3; cursor: var(--cursor-click); touch-action: none; transition: opacity .15s;
 }
-.scroll-thumb:hover, .scroll-thumb.dragging { opacity: .8; }
+.scroll-thumb:hover, .scroll-thumb.dragging { opacity: .65; }
 .scroll-thumb[hidden] { display: none; }
 body {
   font-family: 'Nunito', system-ui, sans-serif;
@@ -383,8 +383,9 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 #floor-mirror-opts[hidden], #floor-material-opts[hidden] { display: none; }
 
 .creature-bar {
-  /* stick to the very top of the panel, over its own top padding, so nothing peeks above */
-  position: sticky; top: -6px; z-index: 2; margin: 0 -16px 4px; padding: 10px 16px 8px;
+  /* stick to the very top of the panel, pulled up over its top padding so it sits in the same
+     place before and after it sticks (no jump as the panel scrolls) */
+  position: sticky; top: 0; z-index: 2; margin: -6px -16px 4px; padding: 10px 16px 8px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .creature-bar[hidden], #place-bar[hidden] { display: none; }

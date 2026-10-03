@@ -1,7 +1,7 @@
 // The browser's scrollbars always show the system cursor, so they're hidden (style.css) and this
 // draws one thumb instead, on whichever scrolling box the mouse is over. Touch scrolling is untouched.
 const GAP = 3; // from the box's right edge
-const WIDTH = 8;
+const WIDTH = 6;
 const MIN = 28;
 
 function scroller(el: Element | null): HTMLElement | null {
@@ -20,9 +20,33 @@ export function installScrollbars() {
   let box: HTMLElement | null = null;
   let drag: { y: number; top: number; id: number } | null = null;
 
+  let stickies: HTMLElement[] = [];
+  let stickyOf: HTMLElement | null = null;
+  // the thumb runs between the box's pinned bars (the creature bar, a popover's photo footer), not over them
+  const span = () => {
+    if (!box) return { top: 0, height: 0 };
+    if (stickyOf !== box) {
+      stickyOf = box;
+      stickies = [...box.children].filter((c) => getComputedStyle(c).position === 'sticky') as HTMLElement[];
+    }
+    const r = box.getBoundingClientRect();
+    let top = r.top + box.clientTop;
+    let bottom = top + box.clientHeight;
+    const mid = (top + bottom) / 2;
+    for (const s of stickies) {
+      if (s.hidden) continue;
+      const sr = s.getBoundingClientRect();
+      if (sr.height === 0) continue;
+      if (sr.top < mid) top = Math.max(top, sr.bottom);
+      else bottom = Math.min(bottom, sr.top);
+    }
+    return { top: top + GAP, height: Math.max(0, bottom - top - GAP * 2) };
+  };
+  const size = (height: number) =>
+    box ? Math.min(height, Math.max(MIN, (height * box.clientHeight) / box.scrollHeight)) : 0;
   const track = () => {
-    if (!box) return 0;
-    return box.clientHeight - Math.max(MIN, (box.clientHeight * box.clientHeight) / box.scrollHeight);
+    const { height } = span();
+    return height - size(height);
   };
   const place = () => {
     if (!box || !box.isConnected || box.scrollHeight <= box.clientHeight + 1) {
@@ -31,11 +55,12 @@ export function installScrollbars() {
       return;
     }
     const r = box.getBoundingClientRect();
-    const h = box.clientHeight - track();
-    const t = track() * (box.scrollTop / (box.scrollHeight - box.clientHeight));
-    thumb.hidden = false;
+    const { top, height } = span();
+    const h = size(height);
+    const t = (height - h) * (box.scrollTop / (box.scrollHeight - box.clientHeight));
+    thumb.hidden = height < MIN;
     thumb.style.height = `${h}px`;
-    thumb.style.top = `${r.top + box.clientTop + t}px`;
+    thumb.style.top = `${top + t}px`;
     thumb.style.left = `${r.left + box.clientLeft + box.clientWidth - WIDTH - GAP}px`;
   };
 
