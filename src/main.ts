@@ -866,7 +866,6 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   if (kind === 'root') gapBefore = floorGap();
   drag = { id, kind, plane, offset, startHit: pos, moved: false, rigBase: reshape ? JSON.stringify(state.rig) : undefined, toDef, sizer, roll };
-  $('#viewport').style.cursor = 'grabbing';
 });
 
 canvas.addEventListener('pointermove', (e) => {
@@ -945,7 +944,6 @@ canvas.addEventListener('pointermove', (e) => {
   if (handlesVisible() && e.buttons === 0) {
     const h = pickHandle(e.clientX, e.clientY);
     creature.setHandleHover(h);
-    $('#viewport').style.cursor = h ? 'grab' : '';
   }
 });
 
@@ -2011,6 +2009,8 @@ overlay.addEventListener('wheel', (e) => {
   canvas.dispatchEvent(new WheelEvent('wheel', e));
   e.preventDefault();
 }, { passive: false });
+// pressing the wheel would start the browser's autoscroll (and its cursor); it's the camera's dolly here
+$('#viewport').addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
 // While drawing, the right (or middle) button still moves the view: the
 // press is handed to the camera controls under the drawing layer, which then
 // follow the pointer until it's let go.
