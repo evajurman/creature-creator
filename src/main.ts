@@ -3016,29 +3016,47 @@ $('#place-done').onclick = () => {
 // the creature switcher
 
 function renderCreatureBar() {
-  const el = $('#creature-chips');
+  const el = $('#creature-rows');
   el.innerHTML = '';
+  // one row per creature, like the pieces in Stuff: pick (or rename) it, copy it, or remove it
   world.creatures.forEach((s, i) => {
-    const btn = document.createElement('button');
+    const row = document.createElement('div');
+    row.className = 'piece-row creature-row';
+    row.classList.toggle('active', i === world.active);
+    const pick = document.createElement('button');
+    pick.className = 'piece-pick';
     const color = Object.values(s.parts)[0]?.color ?? '#ccc';
-    btn.innerHTML = `<i style="background:${color}"></i>`;
-    btn.append(creatureLabel(i));
-    btn.classList.toggle('active', i === world.active);
-    if (i === world.active) btn.title = 'Click to rename';
-    btn.onclick = () => {
-      if (i === world.active) return renameCreatureChip(btn);
+    pick.innerHTML = `<i style="background:${color}"></i>`;
+    const name = document.createElement('span');
+    name.className = 'creature-name';
+    name.textContent = creatureLabel(i);
+    pick.append(name);
+    pick.title = i === world.active ? `${creatureLabel(i)}: click to rename` : creatureLabel(i);
+    pick.onclick = () => {
+      if (i === world.active) return renameCreatureRow(pick);
       activate(i);
       flashPart();
       save();
       renderUI();
     };
-    el.append(btn);
+    const dup = document.createElement('button');
+    dup.className = 'piece-icon';
+    dup.innerHTML = fa('copy');
+    dup.title = 'Copy this creature';
+    dup.onclick = () => duplicateCreature(i);
+    const del = document.createElement('button');
+    del.className = 'piece-icon';
+    del.innerHTML = fa('trash');
+    del.title = world.creatures.length < 2 ? 'The scene needs at least one creature' : 'Remove this creature from the scene';
+    del.disabled = world.creatures.length < 2;
+    del.onclick = () => removeCreature(i);
+    row.append(pick, dup, del);
+    el.append(row);
   });
-  $<HTMLButtonElement>('#cr-del').disabled = world.creatures.length < 2;
 }
 
-/** Turns the active creature's chip into a name box: Enter or clicking away keeps it, Escape doesn't. */
-function renameCreatureChip(btn: HTMLButtonElement) {
+/** Turns the active creature's row into a name box: Enter or clicking away keeps it, Escape doesn't. */
+function renameCreatureRow(btn: HTMLButtonElement) {
   const before = state.name;
   const input = document.createElement('input');
   input.className = 'text chip-name';
@@ -3094,22 +3112,23 @@ $('#cr-add').onclick = () => {
   addCreature(s);
   hint('Added a new creature: click any creature to switch between them', 2600);
 };
-$('#cr-dup').onclick = () => {
-  const s = structuredClone(state);
+function duplicateCreature(i: number) {
+  const src = world.creatures[i];
+  const s = structuredClone(src);
   delete s.workbench;
-  s.name = state.name?.trim() ? `${state.name.trim()} copy` : undefined;
+  s.name = src.name?.trim() ? `${src.name.trim()} copy` : undefined;
   // same size, turn and height; just moved over to free floor
   const spot = freeSpot();
-  s.placement = { ...(state.placement ?? spot), x: spot.x, z: spot.z };
+  s.placement = { ...(src.placement ?? spot), x: spot.x, z: spot.z };
 
   addCreature(s);
-};
-$('#cr-del').onclick = () => {
+}
+function removeCreature(i: number) {
   if (world.creatures.length < 2) return;
-  if (!confirm(`Remove ${creatureLabel(world.active)} from the scene? (You can undo this.)`)) return;
+  if (!confirm(`Remove ${creatureLabel(i)} from the scene? (You can undo this.)`)) return;
   exitDraw();
   stopPlacing();
-  const i = world.active;
+  if (i !== world.active) activate(i);
   creatures[i].dispose();
   creatures.splice(i, 1);
   world.creatures.splice(i, 1);
@@ -3117,7 +3136,7 @@ $('#cr-del').onclick = () => {
   activate(Math.max(0, i - 1));
   commit();
   renderUI();
-};
+}
 $('#cr-place').onclick = () => {
   if (!placing) return startPlacing();
   stopPlacing();
@@ -3959,7 +3978,8 @@ function setMode(m: Mode) {
   $('#plan-sec').hidden = m !== 'shape';
   $('#shape-panel').hidden = m !== 'shape';
   $('#look-panel').hidden = m !== 'look';
-  $('#shape-bar').hidden = m !== 'shape';
+  $('#shape-bar').hidden = m === 'stuff';
+  $('#shape-bar').classList.toggle('look', m === 'look');
   $('#stuff-panel').hidden = m !== 'stuff';
   $('#creature-bar').hidden = m === 'stuff';
   if (m === 'stuff') stopPlacing();

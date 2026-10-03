@@ -390,17 +390,13 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .creature-bar[hidden], #place-bar[hidden] { display: none; }
-.creature-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.creature-chips button {
-  display: flex; align-items: center; gap: 6px; border: 1.5px solid var(--line); background: #fff;
-  border-radius: 10px; padding: 4px 10px; font-weight: 800; font-size: 13px; cursor: var(--cursor-click);
-}
-.creature-chips button i:not([class]) { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
-.creature-chips button.active { border-color: var(--accent); background: var(--accent-soft); }
-.creature-chips .chip-name { width: 140px; padding: 4px 10px; font-weight: 800; font-size: 13px; border: 1.5px solid var(--accent); border-radius: 10px; }
-.creature-actions { display: flex; gap: 6px; }
-.creature-actions button { padding: 4px 8px; font-size: 12px; }
-.creature-actions button.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
+/* one row per creature (the .piece-row look from Stuff); a crowded scene scrolls inside the bar */
+.creature-rows { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
+.creature-row .piece-pick { min-width: 0; }
+.creature-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.creature-row .chip-name { flex: 1; min-width: 0; padding: 4px 8px; font-weight: 800; font-size: 13px; border: 1.5px solid var(--accent); border-radius: 8px; }
+.piece-icon:disabled { opacity: .25; background: none; }
+.creature-new { margin-top: 6px; padding: 4px 10px; font-size: 12px; }
 
 .rig-sub { margin: 12px 0 2px; }
 .dot.green { background: #22c55e; }
@@ -463,9 +459,12 @@ body.show-nums .slider input.num, body.show-nums .bar-slider input.num { display
 
 /* ---- Shape mode: on-screen mirror toggle and handle legend ---- */
 .shape-bar {
-  position: absolute; left: 12px; top: 12px; display: flex; align-items: center; gap: 10px;
+  position: absolute; left: 12px; top: 12px; display: flex; align-items: flex-start; gap: 10px;
   pointer-events: none;
 }
+/* Arrange, with Mirror under it; in Look mode only Arrange applies */
+.shape-pills { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.shape-bar.look #mirror-pill, .shape-bar.look .legend { display: none; }
 .shape-bar[hidden] { display: none; }
 .shape-bar > * { pointer-events: auto; }
 .shape-bar .pill-toggle {
@@ -569,11 +568,9 @@ details.fine[open] > summary { margin-bottom: 6px; }
 
   /* bigger targets for fingers */
   .parts button, .eye-pairs button { padding: 6px 12px; }
-  .creature-actions { flex-wrap: wrap; }
-  .creature-actions button { padding: 6px 10px; }
   .check input { width: 20px; height: 20px; }
   /* iOS zooms the page into any text box under 16px */
-  input.text, .creature-chips .chip-name, .slider input.num, .bar-slider input.num { font-size: 16px; }
+  input.text, .creature-row .chip-name, .slider input.num, .bar-slider input.num { font-size: 16px; }
   #stuff-panel .thing-list { grid-template-columns: repeat(3, 1fr); }
 
   /* keyboard shortcut labels are noise on a phone */

@@ -34,13 +34,8 @@
 
       <aside class="panel">
         <div id="creature-bar" class="creature-bar">
-          <div id="creature-chips" class="creature-chips"></div>
-          <div class="creature-actions">
-            <button id="cr-add" class="ghost" title="Add a new creature to the scene"><i class="fa-regular fa-plus" aria-hidden="true"></i> New</button>
-            <button id="cr-dup" class="ghost" title="Copy this creature"><i class="fa-slab fa-regular fa-copy" aria-hidden="true"></i> Copy</button>
-            <button id="cr-place" class="ghost" title="Move, turn or resize this creature anywhere in the scene"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Arrange</button>
-            <button id="cr-del" class="ghost" title="Remove this creature from the scene"><i class="fa-slab fa-regular fa-trash" aria-hidden="true"></i></button>
-          </div>
+          <div id="creature-rows" class="creature-rows"></div>
+          <button id="cr-add" class="ghost creature-new" title="Add a new creature to the scene"><i class="fa-regular fa-plus" aria-hidden="true"></i> New</button>
         </div>
         <section id="plan-sec">
           <h3>Body plan</h3>
@@ -220,9 +215,12 @@
         <div id="hint" class="hint"></div>
         <div id="settle-badge" class="settle-badge" hidden>Smoothing joins…</div>
         <div id="shape-bar" class="shape-bar">
-          <label id="mirror-pill" class="pill-toggle" title="Both sides change together: shaping and posing (M)">
-            <input id="rig-sym" type="checkbox" checked /> <i class="fa-slab fa-regular fa-arrow-right-arrow-left" aria-hidden="true"></i> Mirror <kbd>M</kbd>
-          </label>
+          <div class="shape-pills">
+            <button id="cr-place" class="pill-toggle" title="Move, turn or resize this creature anywhere in the scene"><i class="fa-regular fa-arrows-up-down-left-right" aria-hidden="true"></i> Arrange</button>
+            <label id="mirror-pill" class="pill-toggle" title="Both sides change together: shaping and posing (M)">
+              <input id="rig-sym" type="checkbox" checked /> <i class="fa-slab fa-regular fa-arrow-right-arrow-left" aria-hidden="true"></i> Mirror <kbd>M</kbd>
+            </label>
+          </div>
           <div class="legend" id="shape-legend">
             <span><b class="dot orange"></b> bend</span>
             <span><b class="dot teal tri"></b> stretch</span>
