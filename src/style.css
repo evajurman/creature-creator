@@ -397,6 +397,11 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .creature-row .chip-name { flex: 1; min-width: 0; padding: 4px 8px; font-weight: 800; font-size: 13px; border: 1.5px solid var(--accent); border-radius: 8px; }
 .piece-icon:disabled { opacity: .25; background: none; }
 .creature-new { margin-top: 6px; padding: 4px 10px; font-size: 12px; }
+/* nothing picked yet: no part editor, just a nudge */
+.panel.idle #plan-sec, .panel.idle #parts-sec, .panel.idle #shape-panel, .panel.idle #look-panel { display: none; }
+.idle-note { display: none; font-size: 13px; margin: 14px 2px; }
+.panel.idle .idle-note { display: block; }
+.shape-bar.idle { display: none; }
 
 .rig-sub { margin: 12px 0 2px; }
 .dot.green { background: #22c55e; }

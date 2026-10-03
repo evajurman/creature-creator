@@ -487,6 +487,8 @@ let state: CreatureState = world.creatures[world.active];
 const creatures: Creature[] = [];
 let creature: Creature;
 let selected = '';
+/** Nothing picked: no creature or part shows as selected (no handles, no part editor) until one is clicked. */
+let idle = true;
 type Mode = 'shape' | 'look' | 'stuff';
 let mode: Mode = 'shape';
 let eyePair = 0;
@@ -1011,6 +1013,7 @@ canvas.addEventListener('pointerup', (e) => {
   // clicking a different creature makes it the one being edited
   const other = pickOtherCreature(e.clientX, e.clientY);
   if (other) {
+    idle = false;
     activate(other.index);
     if (other.boneId && creature.bones.has(other.boneId)) selected = other.boneId;
     creature.select(selected);
@@ -1022,6 +1025,11 @@ canvas.addEventListener('pointerup', (e) => {
   }
   const eye = pickEye(e.clientX, e.clientY);
   if (eye !== null) {
+    if (idle) {
+      idle = false;
+      updateSkeletonVisibility();
+      renderUI();
+    }
     showEyes(eye);
     return;
   }
@@ -1038,7 +1046,7 @@ canvas.addEventListener('pointerup', (e) => {
   if (id) {
     deselectAttachment();
     selectPart(id);
-  }
+  } else if (mode === 'shape' && !idle) deselectAll();
 });
 
 canvas.addEventListener('dblclick', (e) => {
@@ -1163,7 +1171,23 @@ function pickHandle(x: number, y: number): THREE.Object3D | null {
 
 function handlesVisible() {
   // Arrange has its own handles at the creature's feet
-  return !drawState && !placing && mode === 'shape';
+  return !idle && !drawState && !placing && mode === 'shape';
+}
+
+/** Back to nothing picked: clicking empty space in Shape. */
+function deselectAll() {
+  idle = true;
+  stopPlacing();
+  deselectAttachment();
+  creature.flash(null, 0);
+  updateSkeletonVisibility();
+  renderUI();
+}
+
+/** The sidebar's part editor and the on-screen Arrange/Mirror pills only make sense with something picked. */
+function syncIdle() {
+  $('.panel').classList.toggle('idle', idle && mode !== 'stuff');
+  $('#shape-bar').classList.toggle('idle', idle);
 }
 
 function updateSkeletonVisibility() {
@@ -3022,7 +3046,7 @@ function renderCreatureBar() {
   world.creatures.forEach((s, i) => {
     const row = document.createElement('div');
     row.className = 'piece-row creature-row';
-    row.classList.toggle('active', i === world.active);
+    row.classList.toggle('active', i === world.active && !idle);
     const pick = document.createElement('button');
     pick.className = 'piece-pick';
     const color = Object.values(s.parts)[0]?.color ?? '#ccc';
@@ -3031,9 +3055,10 @@ function renderCreatureBar() {
     name.className = 'creature-name';
     name.textContent = creatureLabel(i);
     pick.append(name);
-    pick.title = i === world.active ? `${creatureLabel(i)}: click to rename` : creatureLabel(i);
+    pick.title = i === world.active && !idle ? `${creatureLabel(i)}: click to rename` : creatureLabel(i);
     pick.onclick = () => {
-      if (i === world.active) return renameCreatureRow(pick);
+      if (i === world.active && !idle) return renameCreatureRow(pick);
+      idle = false;
       activate(i);
       flashPart();
       save();
@@ -3095,6 +3120,7 @@ function freeSpot(): Placement {
 }
 
 function addCreature(s: CreatureState) {
+  idle = false;
   exitDraw();
   world.creatures.push(s);
   creatures.push(makeCreature(s));
@@ -3561,8 +3587,10 @@ function selPart() {
 }
 
 function selectPart(id: string) {
+  idle = false;
   selected = id;
   creature.select(id);
+  updateSkeletonVisibility();
   flashPart();
   renderUI();
 }
@@ -3909,6 +3937,7 @@ function renderUI() {
   renderAttachList();
   renderStuffPanel();
   renderCreatureBar();
+  syncIdle();
 }
 
 function setColor(c: string, doCommit: boolean) {
@@ -4001,6 +4030,7 @@ function setMode(m: Mode) {
     frameCreature();
   }
   updateSkeletonVisibility();
+  syncIdle();
   refreshPieceGizmo();
   if (m === 'shape') {
     hint(`Drag the orange balls to bend · the teal arrows to stretch · ${touchScreen() ? 'double-tap' : 'double-click'} a part to draw it`, 3600);
@@ -5025,7 +5055,7 @@ window.addEventListener('keydown', (e) => {
     } else if (drawState.frame !== board) focusOnPlane(drawState.frame);
     else focusOnBoard();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (k === 'd' && mode === 'shape') enterDraw();
+    if (k === 'd' && mode === 'shape' && !idle) enterDraw();
     else if (k === 'd' && mode === 'stuff') enterDraw({ kind: 'piece' });
     else if (k === '3') setMode('stuff');
     else if (k === 'm' && mode === 'shape' && !drawState) setMirror(!rigLock);
