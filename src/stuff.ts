@@ -201,7 +201,7 @@ export function buildThing(thing: Thing, wearer: Wearer, unit = 1): THREE.Group 
     if (style === 'felt') {
 
       for (const shell of makeFuzzShells(geo, p.color, k, 8, unit)) mesh.add(shell);
-      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, 7, k.hairs * 0.6, false, unit));
+      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, 7, k.hairs * 0.6, false, unit, k.fuzz));
     }
     setOpacity(mesh, p.opacity ?? 1);
     if (p.place) {

@@ -807,7 +807,7 @@ export class Creature {
       }
       if (style === 'felt') {
         for (const shell of makeFuzzShells(geo, p.color, k)) mesh.add(shell);
-        if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, hashString(b.def.id), k.hairs));
+        if (k.hairs > 0) mesh.add(makeStrayHairs(geo, p.color, hashString(b.def.id), k.hairs, false, 1, k.fuzz));
       }
       setOpacity(mesh, p.opacity ?? 1);
       // textures (and fuzz) are laid out in the rest pose and bend with the bones
@@ -1268,7 +1268,7 @@ export class Creature {
         }
         mesh.add(shell);
       }
-      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, part.color, 11, k.hairs, sk.painted));
+      if (k.hairs > 0) mesh.add(makeStrayHairs(geo, part.color, 11, k.hairs, sk.painted, 1, k.fuzz));
     }
     setOpacity(mesh, part.opacity ?? 1);
     // laid out from the rest positions the skin was built with

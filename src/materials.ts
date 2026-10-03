@@ -39,10 +39,15 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
     { key: 'matte', label: 'Matte', min: 0.25, max: 1, step: 0.01, value: 0.62 },
   ],
   felt: [
-    { key: 'fuzz', label: 'Fuzz length', min: 0, max: 0.06, step: 0.001, value: 0.022 },
-    { key: 'density', label: 'Fuzz density', min: 0, max: 1, step: 0.01, value: 0.5 },
-    { key: 'hairs', label: 'Stray hairs', min: 0, max: 3, step: 0.05, value: 1 },
-    { key: 'glow', label: 'Edge glow', min: 0, max: 1.5, step: 0.01, value: 0.55 },
+    { key: 'fuzz', label: 'Fuzz length', min: 0, max: 0.06, step: 0.001, value: 0.06 },
+    { key: 'density', label: 'Fuzz density', min: 0, max: 1, step: 0.01, value: 0.93 },
+    // (the key is from when this was an amount, so saved creatures keep their look)
+    { key: 'hairs', label: 'Stray hair length', min: 0, max: 3, step: 0.05, value: 0.3 },
+    { key: 'glow', label: 'Edge glow', min: 0, max: 1.5, step: 0.01, value: 0.76 },
+    // a second wool color in patches (tortoiseshell, calico...), made from the part's own color
+    { key: 'patches', label: 'Patches', min: 0, max: 1, step: 0.01, value: 0 },
+    { key: 'patchHue', label: 'Patch hue', min: -0.5, max: 0.5, step: 0.01, value: 0 },
+    { key: 'patchShade', label: 'Patch shade', min: -1, max: 1, step: 0.01, value: -0.75 },
   ],
   lowpoly: [
     { key: 'facets', label: 'Facet size', min: 0.4, max: 2.5, step: 0.05, value: 1, geometry: true },
@@ -432,7 +437,7 @@ function getStoneTex() {
 }
 type Vec2d = [number, number];
 
-let feltTex: { map: THREE.Texture; bump: THREE.Texture; hair: THREE.Texture } | null = null;
+let feltTex: { map: THREE.Texture; bump: THREE.Texture; hair: THREE.Texture; patch: THREE.Texture } | null = null;
 
 /** Draw one curly wool fibre (a wandering, spiralling stroke), wrapped for tiling. */
 function curl(ctx: CanvasRenderingContext2D, size: number, r: () => number, len: number, turn: number) {
@@ -516,7 +521,16 @@ function getFelt() {
     curl(hctx, hs, r, 14 + r() * 36, 1.1);
   }
   const hair = wrapTexture(hc);
-  feltTex = { map, bump, hair };
+
+  // where the second color goes: broad blotches broken up by smaller ones, so
+  // it comes out mottled like a tortoiseshell cat (R), and finer mottling (G)
+  // that frays their edges like fibres of both colors mixing
+  const broad = tileNoise(size, 3, 3, 9);
+  const small = tileNoise(size, 12, 3, 11);
+  const blotch = normalize01(broad.map((v, i) => v * 0.55 + small[i] * 0.45));
+  const fray = normalize01(tileNoise(size, 40, 2, 13));
+  const patch = channelTexture(size, blotch, fray);
+  feltTex = { map, bump, hair, patch };
   return feltTex;
 }
 
@@ -1088,7 +1102,7 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
           sheenRoughness: 0.35,
           sheenColor: c.clone().lerp(new THREE.Color('#ffffff'), 0.6),
         }),
-        { tiling: 2.2, rim: k.glow },
+        { tiling: 2.2, rim: k.glow, custom: feltPatches(k) },
       );
     }
     case 'lowpoly':
@@ -1265,6 +1279,56 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
   }
 }
 
+/**
+ * Felt's second color: the part's own color turned round the color wheel
+ * (Patch hue) and darkened or lightened (Patch shade), laid on in patches.
+ * Worked out in the shader, so it follows blended colors too. Shared by the
+ * surface and its fuzz shells, which sample the same spots.
+ */
+function feltPatches(k: StyleSettings): NonNullable<TriOptions['custom']> {
+  return {
+    id: 'felt',
+    uniforms: {
+      feltPatch: { value: getFelt().patch },
+      feltPatches: { value: k.patches ?? 0 },
+      feltPatchHue: { value: k.patchHue ?? 0 },
+      feltPatchShade: { value: k.patchShade ?? 0 },
+    },
+    pars: /* glsl */ `
+      uniform sampler2D feltPatch;
+      uniform float feltPatches;
+      uniform float feltPatchHue;
+      uniform float feltPatchShade;
+      vec3 feltToHsv(vec3 c) {
+        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+        float d = q.x - min(q.w, q.y);
+        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+      }
+      vec3 feltToRgb(vec3 c) {
+        vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+        return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+      }`,
+    color: /* glsl */ `
+      if (feltPatches > 0.001) {
+        vec3 fp = triS(feltPatch, vTriPos, 0.55).rgb;
+        float h = fp.r + (fp.g - 0.5) * 0.3;
+        float edge = 1.0 - feltPatches * 1.15;
+        float p = smoothstep(edge - 0.05, edge + 0.05, h);
+        // turned and shaded as the eye sees color (sRGB), so a dark orange is brown, not maroon
+        vec3 hsv = feltToHsv(pow(max(diffuseColor.rgb, 0.0), vec3(1.0 / 2.2)));
+        hsv.x = fract(hsv.x + feltPatchHue);
+        // darker keeps its richness (orange goes to deep brown); lighter fades
+        // towards a warm undyed-wool white (orange goes to cream, not pink)
+        if (feltPatchShade < 0.0) hsv.z *= 1.0 + feltPatchShade * 0.88;
+        vec3 second = feltToRgb(hsv);
+        if (feltPatchShade > 0.0) second = mix(second, vec3(1.0, 0.95, 0.84), pow(feltPatchShade, 0.6));
+        diffuseColor.rgb = mix(diffuseColor.rgb, pow(second, vec3(2.2)), p);
+      }`,
+  };
+}
+
 /** Share of felt fuzz shells actually drawn (lower = faster; see Settings > Performance). */
 let fuzzQuality = 1;
 export function setFuzzQuality(q: number) {
@@ -1290,6 +1354,8 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, setting
         tiling: unit,
         rim: settings.glow * 1.6,
         shell: { offset: height * Math.pow(level, 1.3), level: floor + level * 0.74, hair: f.hair, hairTiling: 2.4 * unit },
+        // the fuzz takes the patches too, or it would hide them
+        custom: feltPatches(settings),
       },
     );
     // bare spots (under eyes), filled by setFuzzMask before or after the shader compiles
@@ -1305,8 +1371,13 @@ export function makeFuzzShells(geo: THREE.BufferGeometry, color: string, setting
   return out;
 }
 
-/** Loose curly wisps sticking out of felt. */
-export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: number, amount = 1, tintFromGeometry = false, unit = 1): THREE.LineSegments {
+/**
+ * Loose curly wisps sticking out of felt: always plenty of them, of every
+ * size, and `length` (the Stray hair length slider) grows them all. `reach`
+ * is the fuzz length: the wisps grow past it and stand up straighter with it,
+ * so they still poke out through a long, dense fuzz rather than getting lost.
+ */
+export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: number, length = 1, tintFromGeometry = false, unit = 1, reach = 0): THREE.LineSegments {
   const r = rng(seed);
   const pos = geo.getAttribute('position');
   const nor = geo.getAttribute('normal');
@@ -1328,7 +1399,7 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
     total += b.sub(a).cross(c.sub(a)).length() / 2;
     cdf.push(total);
   }
-  const count = Math.round(Math.min(1400, Math.max(60, total * unit * unit * 900)) * amount);
+  const count = Math.round(Math.min(2400, Math.max(150, total * unit * unit * 2000)));
   const verts: number[] = [];
   const roots: number[] = [];
   const cols: number[] = [];
@@ -1355,9 +1426,11 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
       .addScaledVector(tmp.fromBufferAttribute(nor, vi(lo, 1)), u)
       .addScaledVector(tmp.fromBufferAttribute(nor, vi(lo, 2)), v).normalize();
     tangent.set(r() - 0.5, r() - 0.5, r() - 0.5).cross(n).normalize();
-    // most wisps lie close to the surface; a few spring out
-    const len = (0.015 + Math.pow(r(), 2) * 0.055) / unit;
-    const lift = 0.25 + r() * 0.7;
+    // every size, from short nubs to the odd long wisp; most lie close to the
+    // surface, a few spring out. They clear the fuzz by growing past it and
+    // standing up straighter the longer it is
+    const len = ((0.006 + Math.pow(r(), 2.2) * 0.09) * length + reach * (0.9 + r() * 0.7) * Math.min(1, length * 2)) / unit;
+    const lift = 0.25 + r() * 0.7 + Math.min(1.2, reach * 25);
     dir.copy(tangent).addScaledVector(n, lift).normalize();
     axis.set(r() - 0.5, r() - 0.5, r() - 0.5).addScaledVector(n, 0.8).normalize();
     const turn = (0.35 + r() * 0.8) * (r() < 0.5 ? -1 : 1);
@@ -1371,7 +1444,8 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
         rootCol.b += vcol.getZ(vtx) * wt;
       }
     } else rootCol.copy(baseCol);
-    col.copy(rootCol).multiply(r() < 0.5 ? warm : cool).multiplyScalar(0.9 + r() * 0.25);
+    // a little lighter than the wool: loose fibres catch the light
+    col.copy(rootCol).multiply(r() < 0.5 ? warm : cool).multiplyScalar(1.0 + r() * 0.35);
     const cur = p.clone().addScaledVector(n, -0.001 / unit);
     for (let s = 0; s < steps; s++) {
       const next = cur.clone().addScaledVector(dir, len / steps);
@@ -1384,13 +1458,15 @@ export function makeStrayHairs(geo: THREE.BufferGeometry, color: string, seed: n
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-  const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }));
+  const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8 }));
   lines.raycast = () => {};
   lines.userData.fx = true;
   lines.layers.enable(FUR_LAYER);
   // for setFuzzMask: where each wisp grows from, and the untouched positions
   lines.userData.hairRoots = Float32Array.from(roots);
   lines.userData.hairVerts = 18; // 9 segments x 2 ends
+  // long wisps from just outside a bare spot would cross it: keep them that much further off
+  lines.userData.hairReach = (reach * 1.2 + 0.05 * length) / unit;
   lines.userData.orig = Float32Array.from(verts);
   return lines;
 }
@@ -1422,9 +1498,10 @@ export function setFuzzMask(part: THREE.Object3D, spots: FuzzSpot[]) {
       const pos = o.geometry.getAttribute('position') as THREE.BufferAttribute;
       const orig = o.userData.orig as Float32Array;
       const per = o.userData.hairVerts as number;
+      const reach = (o.userData.hairReach as number | undefined) ?? 0;
       for (let h = 0; h < roots.length / 3; h++) {
         const x = roots[h * 3], y = roots[h * 3 + 1], z = roots[h * 3 + 2];
-        const bare = spots.some((sp) => (sp.x - x) ** 2 + (sp.y - y) ** 2 + (sp.z - z) ** 2 < sp.r * sp.r);
+        const bare = spots.some((sp) => (sp.x - x) ** 2 + (sp.y - y) ** 2 + (sp.z - z) ** 2 < (sp.r + reach) ** 2);
         for (let v = h * per; v < (h + 1) * per; v++) {
           // a hidden wisp collapses onto its root (a zero-length, invisible line)
           if (bare) pos.setXYZ(v, x, y, z);
