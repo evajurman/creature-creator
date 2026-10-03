@@ -164,6 +164,13 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
     radial-gradient(circle at 32% 28%, #fff 0 9%, rgba(255,255,255,0) 24%),
     linear-gradient(160deg, #e9edf2 0%, #8d96a3 45%, #f4f6f8 62%, #5d6672 100%);
 }
+.ball.stone {
+  background:
+    radial-gradient(circle at 30% 60%, rgba(40,36,32,.55) 0 1px, transparent 1.5px) 0 0 / 6px 7px,
+    radial-gradient(circle at 70% 30%, rgba(255,255,255,.5) 0 1px, transparent 1.5px) 0 0 / 5px 6px,
+    linear-gradient(118deg, transparent 52%, rgba(40,36,32,.6) 53%, transparent 55%),
+    radial-gradient(circle at 35% 30%, #c9c3b8, #7f786e 75%);
+}
 .turned-row { justify-content: flex-start; gap: 14px; margin-top: 0; }
 
 .turned-row .check { margin: 4px 0; }

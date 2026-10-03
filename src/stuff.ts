@@ -112,14 +112,14 @@ function tidy(loop: Vec2[]): Vec2[] {
 }
 
 export function pieceGeometry(p: Piece): THREE.BufferGeometry {
-  const key = JSON.stringify([p.outline, p.holes, p.kind, p.thickness, p.round, p.z, p.hollow, p.open, p.style === 'lowpoly', p.style === 'clay', p.kind === 'puffy' ? getMeshDetail() : 1]);
+  const key = JSON.stringify([p.outline, p.holes, p.kind, p.thickness, p.round, p.z, p.hollow, p.open, p.style === 'lowpoly', p.style === 'clay' || p.style === 'stone', p.kind === 'puffy' ? getMeshDetail() : 1]);
   const hit = geoCache.get(key);
   if (hit) return hit;
   if (geoCache.size > 120) geoCache.clear();
 
   let g: THREE.BufferGeometry;
   if (p.kind === 'puffy') {
-    g = buildInflatedGeometry(p.outline, { thickness: p.thickness, lowPoly: p.style === 'lowpoly', lumps: p.style === 'clay' ? 1 : 0, holes: p.holes });
+    g = buildInflatedGeometry(p.outline, { thickness: p.thickness, lowPoly: p.style === 'lowpoly', lumps: p.style === 'clay' || p.style === 'stone' ? 1 : 0, holes: p.holes });
   } else if (p.kind === 'turned') {
     g = turnedGeometry(p);
     if (p.style === 'lowpoly') {

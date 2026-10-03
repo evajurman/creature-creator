@@ -749,7 +749,7 @@ export class Creature {
         lowPoly: style === 'lowpoly',
         facetScale: style === 'lowpoly' ? k.facets : undefined,
         colorJitter: style === 'lowpoly' ? k.variation : undefined,
-        lumps: style === 'clay' ? k.lumps : 0,
+        lumps: style === 'clay' ? k.lumps : style === 'stone' ? k.rugged : 0,
       };
       const geoKey = JSON.stringify([shapes, geoOpts, getMeshDetail()]);
       const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1) + bendKey(bendOf(b.def, b.length));
@@ -1137,7 +1137,7 @@ export class Creature {
         }));
       });
       // clay lumps go back on after the skin is built
-      const lumps = style === 'clay' ? (k.lumps ?? 0) * Math.min(0.012, Math.max(0.004, minR * 0.08)) : 0;
+      const lumps = style === 'clay' || style === 'stone' ? ((style === 'clay' ? k.lumps : k.rugged) ?? 0) * Math.min(0.012, Math.max(0.004, minR * 0.08)) : 0;
       const geo = await buildSkin(parts, { h, colorBlend: kc, lowPoly, lumps, shouldStop: () => version !== this.skinVersion });
       if (version !== this.skinVersion) {
         // something changed meanwhile: it'll be retried once things settle again
@@ -1196,7 +1196,7 @@ export class Creature {
         const style = p.style ?? s.style;
         const k = this.settingsFor(style);
         // clay lumps and low-poly facet size change the shape; with blending off, color changes the groups
-        return [id, partShapes(p), p.thickness, style, style === 'clay' ? k.lumps : 0, style === 'lowpoly' ? k.facets : 0, blend ? '' : p.color.toLowerCase()];
+        return [id, partShapes(p), p.thickness, style, style === 'clay' ? k.lumps : style === 'stone' ? k.rugged : 0, style === 'lowpoly' ? k.facets : 0, blend ? '' : p.color.toLowerCase()];
       }),
     ]);
   }

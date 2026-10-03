@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork' | 'knit' | 'metal';
+export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork' | 'knit' | 'metal' | 'stone';
 
 export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'clay', name: 'Clay', desc: 'Hand-moulded, fingerprinted' },
@@ -12,11 +12,12 @@ export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'patchwork', name: 'Patchwork', desc: 'Stitched fabric patches' },
   { id: 'knit', name: 'Knitted', desc: 'Cosy knitted yarn' },
   { id: 'metal', name: 'Metal', desc: 'Polished, hammered or rusty' },
+  { id: 'stone', name: 'Stone', desc: 'Carved, speckled, cracked' },
 ];
 
 /** Materials whose textures are laid out on the creature's rest pose. */
 export function isTextured(style: StyleId) {
-  return style === 'clay' || style === 'felt' || style === 'patchwork' || style === 'knit' || style === 'metal';
+  return style === 'clay' || style === 'felt' || style === 'patchwork' || style === 'knit' || style === 'metal' || style === 'stone';
 }
 
 /** A per-material slider. `geometry` ones change the mesh itself, not just the shader. */
@@ -78,6 +79,14 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
     { key: 'brush', label: 'Brushed', min: 0, max: 1, step: 0.01, value: 0 },
     { key: 'patina', label: 'Patina', min: 0, max: 1, step: 0.01, value: 0 },
     { key: 'tone', label: 'Rust → verdigris', min: 0, max: 1, step: 0.01, value: 0 },
+  ],
+  stone: [
+    { key: 'speckle', label: 'Speckles', min: 0, max: 1, step: 0.01, value: 0.45 },
+    { key: 'veins', label: 'Veins', min: 0, max: 1, step: 0.01, value: 0 },
+    { key: 'cracks', label: 'Cracks', min: 0, max: 1, step: 0.01, value: 0.3 },
+    { key: 'pits', label: 'Pitting', min: 0, max: 1, step: 0.01, value: 0.5 },
+    { key: 'rugged', label: 'Ruggedness', min: 0, max: 3, step: 0.05, value: 1, geometry: true },
+    { key: 'polish', label: 'Polish', min: 0, max: 1, step: 0.01, value: 0.1 },
   ],
   toon: [
     { key: 'ink', label: 'Ink width', min: 0, max: 0.04, step: 0.001, value: 0.012 },
@@ -328,6 +337,100 @@ function getMetalTex() {
   metalTex = { bump: channelTexture(size, dents, streaks), patina: channelTexture(size, where, mottle) };
   return metalTex;
 }
+
+let stoneTex: { data: THREE.Texture; bump: THREE.Texture } | null = null;
+/**
+ * Stone: a color texture holding broad mottling (R), speckles around mid-grey (G)
+ * and marble veins (B), and a bump texture holding pits around mid-grey (R),
+ * cracks (G) and fine grain (B). Each crack is painted at its own level, so the
+ * Cracks slider can reveal more of them rather than just darken a fixed set.
+ */
+function getStoneTex() {
+  if (stoneTex) return stoneTex;
+  const size = 1024;
+  const r = rng(83);
+
+  // broad clouds and smaller blotches
+  const big = tileNoise(size, 3, 5, 89), mid = tileNoise(size, 12, 3, 91);
+  const mottle = normalize01(big.map((v, i) => v + (mid[i] - 0.5) * 0.6));
+
+  // speckles: grains darker and lighter than the stone around them
+  const speckle = new Float32Array(size * size).fill(0.5);
+  for (let i = 0; i < 9000; i++) {
+    const rad = 1.5 + r() * r() * 5;
+    const v = r() < 0.6 ? -(0.25 + r() * 0.25) : 0.2 + r() * 0.25;
+    stamp(speckle, size, r() * size, r() * size, rad, (dx, dy) => v * (1 - smooth(rad * 0.5, rad, Math.hypot(dx, dy))));
+  }
+
+  // veins: thin bands along a warped diagonal (whole periods across, so it tiles)
+  const turb = tileNoise(size, 4, 5, 97);
+  const fine = tileNoise(size, 16, 3, 101);
+  const veins = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const phase = (2 * (x + y)) / size + turb[i] * 2.2 + fine[i] * 0.25;
+      const s = Math.abs(Math.sin(phase * Math.PI * 2));
+      // a few strong veins and fainter ones beside them
+      const line = 1 - smooth(0, 0.11, s);
+      const halo = 1 - smooth(0, 0.4, s);
+      veins[i] = Math.min(1, line * 0.85 + halo * 0.35) * (0.5 + 0.5 * smooth(0.3, 0.7, turb[i]));
+    }
+  }
+
+  // pits: small round pocks, on gently uneven ground
+  const broad = tileNoise(size, 8, 4, 103);
+  const pits = new Float32Array(size * size);
+  for (let i = 0; i < pits.length; i++) pits[i] = 0.5 + (broad[i] - 0.5) * 0.3;
+  for (let i = 0; i < 520; i++) {
+    const rad = 3 + r() * r() * 12;
+    const depth = 0.2 + r() * 0.25;
+    stamp(pits, size, r() * size, r() * size, rad, (dx, dy) => -depth * (1 - (dx * dx + dy * dy) / (rad * rad)));
+  }
+
+  // cracks: wandering, branching lines, each at its own level (brightest show first)
+  const cc = document.createElement('canvas');
+  cc.width = cc.height = size;
+  const ctx = cc.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, size, size);
+  ctx.lineCap = ctx.lineJoin = 'round';
+  // 'lighten' keeps the higher level where cracks cross
+  ctx.globalCompositeOperation = 'lighten';
+  const crack = (x: number, y: number, ang: number, len: number, w: number, level: number, depth: number) => {
+    const pts: Vec2d[] = [[x, y]];
+    for (let s = 0; s < len; s += 5) {
+      ang += (r() - 0.5) * 0.38;
+      x += Math.cos(ang) * 5;
+      y += Math.sin(ang) * 5;
+      pts.push([x, y]);
+      if (depth < 2 && r() < 0.02) crack(x, y, ang + (r() < 0.5 ? -1 : 1) * (0.5 + r() * 0.8), (len - s) * (0.3 + r() * 0.4), w * 0.65, level * 0.9, depth + 1);
+    }
+    const g = Math.round(level * 255);
+    ctx.strokeStyle = `rgb(${g},${g},${g})`;
+    // drawn at every wrap offset so it tiles; thinning towards the tip
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineWidth = Math.max(0.8, w * Math.pow(1 - i / pts.length, 0.6));
+      for (const ox of [-size, 0, size]) {
+        for (const oy of [-size, 0, size]) {
+          ctx.beginPath();
+          ctx.moveTo(pts[i - 1][0] + ox, pts[i - 1][1] + oy);
+          ctx.lineTo(pts[i][0] + ox, pts[i][1] + oy);
+          ctx.stroke();
+        }
+      }
+    }
+  };
+  for (let i = 0; i < 60; i++) crack(r() * size, r() * size, r() * Math.PI * 2, 120 + r() * 260, 3.5 + r() * 3.5, 0.1 + r() * 0.9, 0);
+  const px = ctx.getImageData(0, 0, size, size).data;
+  const cracks = new Float32Array(size * size);
+  for (let i = 0; i < cracks.length; i++) cracks[i] = px[i * 4] / 255;
+
+  const grain = normalize01(tileNoise(size, 96, 2, 107));
+  stoneTex = { data: channelTexture(size, mottle, speckle, veins), bump: channelTexture(size, pits, cracks, grain) };
+  return stoneTex;
+}
+type Vec2d = [number, number];
 
 let feltTex: { map: THREE.Texture; bump: THREE.Texture; hair: THREE.Texture } | null = null;
 
@@ -734,7 +837,15 @@ interface TriOptions {
    */
   bumpMix?: THREE.Vector3;
   /** Extra shader code: its own uniforms, and GLSL run after the color and after roughness/metalness are worked out. */
-  custom?: { id: string; uniforms: Record<string, THREE.IUniform>; pars: string; color?: string; surface?: string };
+  custom?: {
+    id: string;
+    uniforms: Record<string, THREE.IUniform>;
+    pars: string;
+    color?: string;
+    surface?: string;
+    /** `pars` defines float triCustomH(vec3 s): the height from the bump map's channels */
+    height?: boolean;
+  };
 }
 
 const TRI_COMMON = /* glsl */ `
@@ -757,7 +868,10 @@ vec4 triS(sampler2D t, vec3 p, float k) {
   vec3 w = triWeights();
   return texture2D(t, p.yz * k) * w.x + texture2D(t, p.xz * k) * w.y + texture2D(t, p.xy * k) * w.z;
 }
-#ifdef TRI_BUMP_MIX
+#if defined(TRI_CUSTOM_H)
+// the material's own height from the bump map's channels (triCustomH comes with its custom code)
+float triH(sampler2D t, vec3 p, float k) { return triCustomH(triS(t, p, k).rgb); }
+#elif defined(TRI_BUMP_MIX)
 uniform vec3 bumpMix;
 float triH(sampler2D t, vec3 p, float k) { return dot(triS(t, p, k).rgb, bumpMix); }
 #else
@@ -780,6 +894,7 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
       shader.uniforms.bumpMix = { value: o.bumpMix };
     }
     if (o.custom) Object.assign(shader.uniforms, o.custom.uniforms);
+    if (o.custom?.height) shader.defines = { ...shader.defines, TRI_CUSTOM_H: '' };
     if (o.shell) {
       shader.uniforms.shellOffset = { value: o.shell.offset };
       shader.uniforms.shellLevel = { value: o.shell.level };
@@ -1048,6 +1163,61 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
               diffuseColor.rgb = mix(diffuseColor.rgb, crust, p);
               roughnessFactor = mix(roughnessFactor, 0.9, p);
               metalnessFactor = mix(metalnessFactor, 0.0, p);`,
+          },
+        },
+      );
+    }
+    case 'stone': {
+      const t = getStoneTex();
+      // veins stand out: pale on dark stone, dark on pale stone
+      const lum = c.r * 0.3 + c.g * 0.59 + c.b * 0.11;
+      const vein = c.clone().lerp(new THREE.Color(lum > 0.35 ? '#3b3530' : '#f1ece4'), 0.75);
+      return triplanar(
+        new THREE.MeshPhysicalMaterial({
+          color: c,
+          metalness: 0,
+          roughness: 0.95 - k.polish * 0.7,
+          // polished marble has a wet-looking glaze
+          clearcoat: k.polish * 0.8,
+          clearcoatRoughness: 0.12,
+          bumpMap: t.bump,
+          bumpScale: 1,
+        }),
+        {
+          tiling: 0.75,
+          custom: {
+            id: 'stone',
+            height: true,
+            uniforms: {
+              stoneData: { value: t.data },
+              stoneSpeckle: { value: k.speckle },
+              stoneVeins: { value: k.veins },
+              stoneCracks: { value: k.cracks },
+              stonePits: { value: k.pits },
+              stoneVein: { value: vein },
+            },
+            pars: /* glsl */ `
+              uniform sampler2D stoneData;
+              uniform float stoneSpeckle, stoneVeins, stoneCracks, stonePits;
+              uniform vec3 stoneVein;
+              // a crack shows once the slider passes its level
+              float stoneCrack(float level) {
+                float at = 1.0 - stoneCracks;
+                return smoothstep(at - 0.04, at + 0.04, level) * step(0.001, stoneCracks);
+              }
+              float triCustomH(vec3 s) {
+                // pits dip below mid-grey, cracks cut in, grain is always there a little
+                return (s.r - 0.5) * 3.0 * stonePits - stoneCrack(s.g) * 0.9 + s.b * 0.25;
+              }`,
+            color: /* glsl */ `
+              vec3 sd = triS(stoneData, vTriPos, triTiling).rgb;
+              vec3 sb = triS(bumpMap, vTriPos, triTiling).rgb;
+              float shade = 1.0 + (sd.r - 0.5) * 0.75 + (sd.g - 0.5) * 2.0 * stoneSpeckle;
+              diffuseColor.rgb *= shade;
+              diffuseColor.rgb = mix(diffuseColor.rgb, stoneVein, sd.b * stoneVeins);
+              // dirt settles in the pits and cracks
+              diffuseColor.rgb *= 1.0 - max(0.0, 0.5 - sb.r) * 1.6 * stonePits;
+              diffuseColor.rgb *= 1.0 - stoneCrack(sb.g) * 0.88;`,
           },
         },
       );
