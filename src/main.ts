@@ -58,11 +58,13 @@ import {
   deleteLimb,
   deleteSavedRig,
   duplicateLimb,
+  expandRig,
   extendBone,
   getRig,
   moveJoint,
   partIds,
   rigFromTemplate,
+  rollLimb,
   saveRig,
   scaleBone,
   savedRigs,
@@ -712,10 +714,13 @@ let drag: {
     start: THREE.Vector2;
     dir: THREE.Vector2;
     pxPerRad: number;
-    base: number;
     /** the part (and its twin) before the drag: rest turn and pose, to keep a posed limb where it is */
     rest: Map<string, THREE.Quaternion>;
     pose: CreatureState['pose'];
+    /** eyes before the drag: splitting a pair gives its right side its own */
+    eyes: CreatureState['eyes'];
+    /** pairs hanging off it were split so they could turn with it */
+    split?: boolean;
   };
   moved: boolean;
 } | null = null;
@@ -737,7 +742,31 @@ function keepPoseThroughRoll(rest: Map<string, THREE.Quaternion>, pose: Creature
   creature.applyPose();
 }
 
-/** Double-clicking a roll grip: straighten the part's roll (and its twin's). */
+/**
+ * Roll a part to `to(its roll now)`, as seen on its own side, turning whatever
+ * hangs off it along with it. With Mirror off, a pair stops being one so only
+ * this side rolls, and pairs on a middle part are split so they turn with it.
+ * Says whether anything was split.
+ */
+function rollPart(id: string, to: (now: number) => number): boolean {
+  // the rig, not the scene: mid-drag the scene already shows an earlier split
+  const ex = expandRig(state.rig).bones.find((x) => x.id === id);
+  if (!ex) return false;
+  const copies = !rigLocked() && ex.sideSign !== 0 ? unlinkPair(state.rig, id) : [];
+  const def = state.rig.bones.find((d) => d.id === (copies.length ? id : ex.baseId));
+  if (!def) return false;
+  // a right twin shares its left twin's roll, turned the other way
+  const flip = !copies.length && ex.sideSign === -1 ? -1 : 1;
+  const was = def.roll ?? 0;
+  let r = to(was * flip) * flip;
+  r = Math.round(Math.atan2(Math.sin(r), Math.cos(r)) * 1000) / 1000;
+  copies.push(...rollLimb(state.rig, id, r - was, rigLocked()));
+  def.roll = r;
+  applyPartCopies(copies, true);
+  return copies.length > 0;
+}
+
+/** Double-clicking a roll grip: straighten the part's roll (and its twin's, with Mirror on). */
 function resetRoll(id: string) {
   const b = creature.bones.get(id);
   const def = b && state.rig.bones.find((d) => d.id === b.def.baseId);
@@ -748,7 +777,7 @@ function resetRoll(id: string) {
   }
   const rest = new Map(creature.linked(id).map((l) => [l.def.id, l.restQuat.clone()] as const));
   const pose = structuredClone(state.pose);
-  def.roll = 0;
+  const split = rollPart(id, () => 0);
   creature.relayout(state.rig);
   keepPoseThroughRoll(rest, pose);
   if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
@@ -757,7 +786,7 @@ function resetRoll(id: string) {
   creature.boing(id);
   commit();
   selectPart(id);
-  hint('Roll straightened', 1400);
+  hint(split ? 'Roll straightened: now separate from its other side (Mirror keeps them paired)' : 'Roll straightened', 1600);
 }
 
 /** Double-clicking the green bend diamond: straighten the part (and its twin). */
@@ -855,7 +884,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const visible = pxPerRad > 40;
     const dir = visible ? moved.normalize() : new THREE.Vector2(1, 0);
     const rest = new Map(creature.linked(id).map((l) => [l.def.id, l.restQuat.clone()] as const));
-    roll = { start: new THREE.Vector2(e.clientX, e.clientY), dir, pxPerRad: visible ? pxPerRad : 120, base: state.rig.bones.find((d) => d.id === b.def.baseId)?.roll ?? 0, rest, pose: structuredClone(state.pose) };
+    roll = { start: new THREE.Vector2(e.clientX, e.clientY), dir, pxPerRad: visible ? pxPerRad : 120, rest, pose: structuredClone(state.pose), eyes: structuredClone(state.eyes) };
   }
   if (b && (kind === 'len' || kind === 'wid' || kind === 'size')) {
     // measure the grab against the bone's base (length), its centre line (width) or both
@@ -898,13 +927,10 @@ canvas.addEventListener('pointermove', (e) => {
       if (!b) return;
       const rl = drag.roll;
       const turn = new THREE.Vector2(e.clientX, e.clientY).sub(rl.start).dot(rl.dir) / rl.pxPerRad;
+      // start over from before the drag each time (a split pair included)
       state.rig = JSON.parse(drag.rigBase!) as RigState;
-      const def = state.rig.bones.find((d) => d.id === b.def.baseId);
-      if (!def) return;
-      // defs describe the left twin; the right one turns the other way (as with the Roll slider)
-      let r = rl.base + turn * (b.def.sideSign === -1 ? -1 : 1);
-      r = Math.atan2(Math.sin(r), Math.cos(r));
-      def.roll = Math.round(r * 1000) / 1000;
+      state.eyes = structuredClone(rl.eyes);
+      rl.split = rollPart(drag.id, (now) => now + turn);
       creature.relayout(state.rig);
       keepPoseThroughRoll(rl.rest, rl.pose);
       invalidate();
@@ -980,6 +1006,7 @@ canvas.addEventListener('pointerup', (e) => {
         settleOnFloor();
         creature.boing(d.id);
         commit();
+        if (d.roll?.split) hint('Now separate sides, so only this one turns (Mirror keeps them paired)', 3200);
       }
       selectPart(d.id);
       if (!d.moved) doubleTapped(e);
@@ -4051,8 +4078,8 @@ function setMode(m: Mode) {
 // rig editing
 
 /** Apply a skeleton edit, give new bones a look, rebuild, and select the first new bone. */
-function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
-  const copies = fn(state.rig);
+/** Give parts made by a rig edit their looks (and, for a split pair's right side, its own eyes). */
+function applyPartCopies(copies: PartCopy[], copyShape: boolean) {
   for (const c of copies) {
     const from = state.parts[c.from];
     if (from && !state.parts[c.to]) {
@@ -4060,7 +4087,18 @@ function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
       if (!copyShape) setPartShapes(to, []);
       state.parts[c.to] = to;
     }
+    // eyes on a pair belonged to both sides; a split right side keeps its own,
+    // facing the way they did (a right twin turned them the other way)
+    const e = state.eyes;
+    if (copyShape && c.to.endsWith('R') && c.from === c.to.slice(0, -1) + 'L' && !e.pairs.some((p) => p.bone === c.to)) {
+      for (const p of e.pairs.filter((p) => p.bone === c.from)) e.pairs.push({ ...p, bone: c.to, turn: -(p.turn ?? e.turn ?? 0) || undefined });
+    }
   }
+}
+
+function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
+  const copies = fn(state.rig);
+  applyPartCopies(copies, copyShape);
   // an edited skeleton is no longer the saved/template one
   if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
   buildCreature();

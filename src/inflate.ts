@@ -474,15 +474,21 @@ export function solidDistance(solid: Solid, x: number, y: number, z: number, gra
   return best * Math.min(1, t);
 }
 
-/** Hand-moulded clay lumps: push each vertex in or out along its normal by smooth noise. */
-export function applyLumps(geo: THREE.BufferGeometry, amp: number) {
+/**
+ * Hand-moulded clay lumps: push each vertex in or out along its normal by
+ * smooth noise. `cap`, if given, limits each vertex's push (so thin points
+ * aren't lumped out of shape).
+ */
+export function applyLumps(geo: THREE.BufferGeometry, amp: number, cap?: Float32Array) {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const nor = geo.getAttribute('normal') as THREE.BufferAttribute;
   const freq = 9;
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    const n = valueNoise3(x * freq, y * freq, z * freq) + 0.5 * valueNoise3(x * freq * 2.3, y * freq * 2.3, z * freq * 2.3);
-    pos.setXYZ(i, x + nor.getX(i) * n * amp, y + nor.getY(i) * n * amp, z + nor.getZ(i) * n * amp);
+    const noise = valueNoise3(x * freq, y * freq, z * freq) + 0.5 * valueNoise3(x * freq * 2.3, y * freq * 2.3, z * freq * 2.3);
+    let n = noise * amp;
+    if (cap) n = Math.max(-cap[i], Math.min(cap[i], n));
+    pos.setXYZ(i, x + nor.getX(i) * n, y + nor.getY(i) * n, z + nor.getZ(i) * n);
   }
   geo.computeVertexNormals();
 }

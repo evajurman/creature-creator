@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MeshBVH } from 'three-mesh-bvh';
 import { bvhFor, exactDistance, sharedNormals } from './distance';
 import { applyLumps } from './inflate';
 
@@ -179,6 +180,12 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     b[local(i, j, k)] = v;
   };
 
+  // The grid samples the shape grown by half a cell: a point thinner than a
+  // cell (a horn's tip) would otherwise fall between the samples and be cut
+  // off. Step 4b shrinks every vertex back onto the true surface, which pulls
+  // the grown tip back in to a sharp point.
+  const grown = 0.5 * h;
+
   // 1. coarse pass: find the blocks the surface can pass through
   const coarse = new Float32Array(cx * cy * cz);
   const reach = C * h * Math.sqrt(3) * 1.05;
@@ -186,7 +193,7 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     for (let j = 0; j < cy; j++) {
       for (let i = 0; i < cx; i++) {
         pt.set(origin.x + Math.min(i * C, nx - 1) * h, origin.y + Math.min(j * C, ny - 1) * h, origin.z + Math.min(k * C, nz - 1) * h);
-        coarse[i + cx * (j + cy * k)] = field(pt, false);
+        coarse[i + cx * (j + cy * k)] = field(pt, false) - grown;
         if (await breathe()) return null;
       }
     }
@@ -258,7 +265,7 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
                 const t = Math.min(1, Math.max(0, 0.5 + (0.5 * (d - f)) / pp.k));
                 f = d * (1 - t) + f * t - pp.k * t * (1 - t);
               }
-              setNode(i, j, k, f);
+              setNode(i, j, k, f - grown);
             }
           }
         }
@@ -404,11 +411,153 @@ export async function buildSkin(parts: SkinPart[], opts: SkinOptions): Promise<T
     pass(-0.53);
   }
 
+  // 4b. the grid can't follow anything finer than a cell (a horn's sharp tip
+  // turns into a lumpy nub, and smoothing rounds it further), so pull every
+  // vertex back onto the true blended surface: away from the joins that's
+  // each part's own shape, sharp points and all.
+  const lin = prepared.map((pp) => new THREE.Matrix3().setFromMatrix4(pp.fromSkin).transpose());
+  const g = new THREE.Vector3(), gp = new THREE.Vector3();
+  /** the blended field at `p`, its gradient into `out` (as `field`, with the smooth-min's gradient) */
+  const fieldGrad = (p: THREE.Vector3, out: THREE.Vector3): number => {
+    let f = Infinity;
+    for (let i = 0; i < prepared.length; i++) {
+      const pp = prepared[i];
+      if (!pp.box.containsPoint(p)) continue;
+      q.copy(p).applyMatrix4(pp.fromSkin);
+      const d = exactDistance(pp.geo, pp.bvh, pp.normals, q, band, gp);
+      if (!Number.isFinite(d)) continue;
+      // a local-space gradient back into skin space
+      gp.applyMatrix3(lin[i]);
+      if (!Number.isFinite(f)) {
+        f = d;
+        out.copy(gp);
+        continue;
+      }
+      const t = Math.min(1, Math.max(0, 0.5 + (0.5 * (d - f)) / pp.k));
+      f = d * (1 - t) + f * t - pp.k * t * (1 - t);
+      out.multiplyScalar(t).addScaledVector(gp, 1 - t);
+    }
+    return f;
+  };
+  /** move `p` onto the surface (f = 0) by a few Newton steps, never more than a couple of cells each */
+  const settle = (p: THREE.Vector3) => {
+    for (let it = 0; it < 3; it++) {
+      const f = fieldGrad(p, g);
+      const g2 = g.lengthSq();
+      if (!Number.isFinite(f) || g2 < 1e-8 || Math.abs(f) < h * 1e-3) break;
+      const step = Math.max(-2 * h, Math.min(2 * h, f / Math.sqrt(g2)));
+      p.addScaledVector(g, -step / Math.sqrt(g2));
+    }
+  };
+  for (let v = 0; v < count; v++) {
+    settle(pt.fromArray(pos, v * 3));
+    pt.toArray(pos, v * 3);
+    if ((v & 1023) === 0 && (await breathe())) return null;
+  }
+
+  /** how thick the mesh is under each vertex: straight in along its normal to the far side */
+  const thicknessOf = async (mesh: THREE.BufferGeometry): Promise<Float32Array | null> => {
+    const bvh = new MeshBVH(mesh);
+    const P = mesh.getAttribute('position') as THREE.BufferAttribute;
+    const N = mesh.getAttribute('normal') as THREE.BufferAttribute;
+    const out = new Float32Array(P.count);
+    const inward = new THREE.Ray();
+    for (let v = 0; v < P.count; v++) {
+      inward.direction.fromBufferAttribute(N, v).negate();
+      // start just inside so the ray doesn't hit the vertex's own triangles
+      inward.origin.fromBufferAttribute(P, v).addScaledVector(inward.direction, h * 1e-3);
+      const hit = bvh.raycastFirst(inward, THREE.DoubleSide);
+      out[v] = hit ? hit.distance : Infinity;
+      if ((v & 4095) === 0 && (await breathe())) return null;
+    }
+    return out;
+  };
+
+  // 4d. where the skin is thin for its grid (a horn's point, a claw) there are
+  // only a few vertices round it, so it looks faceted and lumpy: split the
+  // edges there and settle the new points on the surface, twice at most.
+  // (Low-poly is re-faceted anyway.)
+  let verts: ArrayLike<number> = pos;
+  let tris = index;
+  if (!opts.lowPoly) {
+    const grow = Array.from(pos);
+    // edge key: both ends, smaller first
+    const key = (a: number, b: number) => (a < b ? a * 4194304 + b : b * 4194304 + a);
+    for (let round = 0; round < 2; round++) {
+      const g0 = new THREE.BufferGeometry();
+      g0.setAttribute('position', new THREE.Float32BufferAttribute(grow, 3));
+      g0.setIndex(tris);
+      g0.computeVertexNormals();
+      const thick = await thicknessOf(g0);
+      g0.dispose();
+      if (!thick) return null;
+      const split = new Map<number, number>();
+      const len = (a: number, b: number) => Math.hypot(grow[a * 3] - grow[b * 3], grow[a * 3 + 1] - grow[b * 3 + 1], grow[a * 3 + 2] - grow[b * 3 + 2]);
+      // about ten edges round anything thin; never finer than a sixth of a cell
+      for (let t = 0; t < tris.length; t += 3) {
+        for (let e = 0; e < 3; e++) {
+          const a = tris[t + e], b = tris[t + ((e + 1) % 3)];
+          if (len(a, b) > Math.max(0.3 * Math.min(thick[a], thick[b]), h / 6)) split.set(key(a, b), -1);
+        }
+      }
+      if (!split.size) break;
+      // a triangle with two edges split has its third split too, so it can go into four
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (let t = 0; t < tris.length; t += 3) {
+          const ks = [key(tris[t], tris[t + 1]), key(tris[t + 1], tris[t + 2]), key(tris[t + 2], tris[t])];
+          const n = ks.filter((k) => split.has(k)).length;
+          if (n === 2) {
+            for (const k of ks) split.set(k, -1);
+            grew = true;
+          }
+        }
+      }
+      let made = 0;
+      for (const k of split.keys()) {
+        const a = Math.floor(k / 4194304), b = k % 4194304;
+        pt.set((grow[a * 3] + grow[b * 3]) / 2, (grow[a * 3 + 1] + grow[b * 3 + 1]) / 2, (grow[a * 3 + 2] + grow[b * 3 + 2]) / 2);
+        settle(pt);
+        split.set(k, grow.length / 3);
+        grow.push(pt.x, pt.y, pt.z);
+        if ((++made & 1023) === 0 && (await breathe())) return null;
+      }
+      const next: number[] = [];
+      for (let t = 0; t < tris.length; t += 3) {
+        const a = tris[t], b = tris[t + 1], c = tris[t + 2];
+        const ab = split.get(key(a, b)) ?? -1, bc = split.get(key(b, c)) ?? -1, ca = split.get(key(c, a)) ?? -1;
+        if (ab >= 0 && bc >= 0 && ca >= 0) next.push(a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca);
+        else if (ab >= 0) next.push(a, ab, c, ab, b, c);
+        else if (bc >= 0) next.push(b, bc, a, bc, c, a);
+        else if (ca >= 0) next.push(c, ca, b, ca, a, b);
+        else next.push(a, b, c);
+      }
+      tris = next;
+    }
+    verts = grow;
+  }
+
   let geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setIndex(index);
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+  geo.setIndex(tris);
   geo.computeVertexNormals();
-  if (opts.lumps) applyLumps(geo, opts.lumps);
+  if (opts.lumps) {
+    // lumps are as big all over, which a thin point can't take (they'd make
+    // it bulge and kink): cap them at a fraction of how thick the skin is there
+    const thick = await thicknessOf(geo);
+    if (!thick) return null;
+    // the very end of a point looks in along its whole length, so it goes by
+    // its neighbours too (or it'd be lumped sideways into a little barb)
+    const cap = thick.map((t) => 0.05 * t);
+    for (let t = 0; t < tris.length; t += 3) {
+      const a = tris[t], b = tris[t + 1], c = tris[t + 2];
+      const m = 0.05 * Math.min(thick[a], thick[b], thick[c]);
+      if (m < cap[a]) cap[a] = m;
+      if (m < cap[b]) cap[b] = m;
+      if (m < cap[c]) cap[c] = m;
+    }
+    applyLumps(geo, opts.lumps, cap);
+  }
 
   if (opts.lowPoly) {
     // each part's own facet size, where the skin passes through it (the finer one at joins)

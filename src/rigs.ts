@@ -367,8 +367,69 @@ export function scaleBone(rig: RigState, sceneId: string, kLen: number, kWidth: 
 }
 
 /**
+ * Carry everything hanging off a bone round with it when its roll changes by
+ * `delta` (as stored on its definition, i.e. for the left twin). The bone's own
+ * roll is left to the caller.
+ *
+ * Mirrored pairs hanging off a middle part can't turn with it and stay mirror
+ * images. With `keepMirror` they swing together (each side the mirror of the
+ * other); without, they're split into separate left and right parts first, so
+ * everything turns as one.
+ */
+export function rollLimb(rig: RigState, sceneId: string, delta: number, keepMirror: boolean): PartCopy[] {
+  const f = findDef(rig, sceneId);
+  if (!f || !delta) return [];
+  const copies: PartCopy[] = [];
+  if (!keepMirror && !f.def.mirror) {
+    for (;;) {
+      const below = subtreeDefs(rig, sceneId);
+      const pair = rig.bones.find((d) => d.mirror && below.has(d.id));
+      if (!pair) break;
+      copies.push(...unlinkPair(rig, pair.id + 'L'));
+    }
+  }
+  const bones = expandRig(rig).bones;
+  const byId = new Map(bones.map((b) => [b.id, b]));
+  const defs = new Map(rig.bones.map((b) => [b.id, b]));
+  // which of the rolled twins (if either) a scene bone hangs from
+  const rootOf = (b: ExpandedBone): ExpandedBone | null => {
+    for (let p = b.parent ? byId.get(b.parent) : undefined; p; p = p.parent ? byId.get(p.parent) : undefined) {
+      if (p.baseId === f.def.id) return p;
+    }
+    return null;
+  };
+  const turn = (v: V3, k: V3, a: number): V3 => {
+    // Rodrigues: v cos a + (k x v) sin a + k (k . v)(1 - cos a)
+    const c = Math.cos(a), s = Math.sin(a), kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+    const x: V3 = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+    return [0, 1, 2].map((i) => v[i] * c + x[i] * s + k[i] * kv * (1 - c)) as V3;
+  };
+  const done = new Set<string>();
+  for (const b of bones) {
+    // a mirrored part's definition is its left twin; the right one follows it
+    if (b.sideSign === -1 || b.baseId === f.def.id || done.has(b.baseId)) continue;
+    const root = rootOf(b);
+    const d = defs.get(b.baseId);
+    if (!root || !d) continue;
+    done.add(b.baseId);
+    const axis = sub3(root.end, root.start);
+    const len = len3(axis);
+    if (len < 1e-6) continue;
+    const k = scale3(axis, 1 / len);
+    // the right twin is the mirror image, so it rolls the other way
+    const a = root.sideSign === -1 ? -delta : delta;
+    const about = (p: V3) => round3(add3(root.start, turn(sub3(p, root.start), k, a)));
+    d.start = about(d.start);
+    d.end = about(d.end);
+    d.side = round3(turn(d.side, k, a));
+  }
+  return copies;
+}
+
+/**
  * Sprout a new limb from the side of a bone: two segments, or a single bone
- * with `segments: 1`. With `symmetric`, it comes as a mirrored pair.
+ * with `segments: 1`. With `symmetric`, it comes as a mirrored pair (and on one
+ * side of a pair, it goes on both sides); without, just where it was asked for.
  */
 export function addLimb(rig: RigState, sceneId: string, symmetric: boolean, segments: 1 | 2 = 2): PartCopy[] {
   const f = findDef(rig, sceneId);
@@ -383,7 +444,8 @@ export function addLimb(rig: RigState, sceneId: string, symmetric: boolean, segm
   const e2: V3 = add3(e1, [outward * 0.26, -0.12, 0]);
 
   const pairParent = ex.sideSign !== 0;
-  const mirror = pairParent || (symmetric && Math.abs(attach[0]) > 0.02);
+  // on one side of a pair it goes on both sides only when mirroring
+  const mirror = symmetric && (pairParent || Math.abs(attach[0]) > 0.02);
   // pair defs live on +X; a single limb on a paired bone attaches to that exact side
   const toDef = (v: V3): V3 => (mirror && v[0] < 0 ? mirrorV(v) : v);
   const parent = pairParent && mirror ? ex.baseId : ex.id;
@@ -537,7 +599,9 @@ export function unlinkPair(rig: RigState, sceneId: string): PartCopy[] {
   const parts: PartCopy[] = [];
   for (const d of rig.bones) {
     if (!defs.has(d.id) || !d.mirror) {
-      out.push(d);
+      // a single bone on the pair hung off its left side; that's now a bone of its own
+      const split = !!d.parent && defs.has(d.parent) && mirroredIds.has(d.parent);
+      out.push(split ? { ...d, parent: d.parent + 'L' } : d);
       continue;
     }
     // scene ids stay the same (armL / armR), so drawings and poses carry over
@@ -553,6 +617,7 @@ export function unlinkPair(rig: RigState, sceneId: string): PartCopy[] {
       end: mirrorV(d.end),
       side: mirrorV(d.side),
       roll: d.roll ? -d.roll : undefined,
+      bendDir: d.bendDir ? -d.bendDir : d.bendDir,
     });
     parts.push({ from: d.id + 'L', to: d.id + 'R' });
   }
