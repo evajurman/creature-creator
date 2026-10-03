@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork' | 'knit';
+export type StyleId = 'clay' | 'felt' | 'lowpoly' | 'plastic' | 'toon' | 'glass' | 'patchwork' | 'knit' | 'metal';
 
 export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'clay', name: 'Clay', desc: 'Hand-moulded, fingerprinted' },
@@ -11,11 +11,12 @@ export const STYLES: { id: StyleId; name: string; desc: string }[] = [
   { id: 'glass', name: 'Glass', desc: 'Clear or frosted, refracts' },
   { id: 'patchwork', name: 'Patchwork', desc: 'Stitched fabric patches' },
   { id: 'knit', name: 'Knitted', desc: 'Cosy knitted yarn' },
+  { id: 'metal', name: 'Metal', desc: 'Polished, hammered or rusty' },
 ];
 
 /** Materials whose textures are laid out on the creature's rest pose. */
 export function isTextured(style: StyleId) {
-  return style === 'clay' || style === 'felt' || style === 'patchwork' || style === 'knit';
+  return style === 'clay' || style === 'felt' || style === 'patchwork' || style === 'knit' || style === 'metal';
 }
 
 /** A per-material slider. `geometry` ones change the mesh itself, not just the shader. */
@@ -70,6 +71,13 @@ export const STYLE_PARAMS: Record<StyleId, StyleParam[]> = {
     { key: 'puff', label: 'Yarn depth', min: 0, max: 3, step: 0.05, value: 1 },
     { key: 'stripes', label: 'Stripes', min: 0, max: 1, step: 0.01, value: 0 },
     { key: 'fluff', label: 'Fluffiness', min: 0, max: 1.5, step: 0.01, value: 0.45 },
+  ],
+  metal: [
+    { key: 'polish', label: 'Polish', min: 0, max: 1, step: 0.01, value: 0.75 },
+    { key: 'hammer', label: 'Hammered', min: 0, max: 1, step: 0.01, value: 0 },
+    { key: 'brush', label: 'Brushed', min: 0, max: 1, step: 0.01, value: 0 },
+    { key: 'patina', label: 'Patina', min: 0, max: 1, step: 0.01, value: 0 },
+    { key: 'tone', label: 'Rust → verdigris', min: 0, max: 1, step: 0.01, value: 0 },
   ],
   toon: [
     { key: 'ink', label: 'Ink width', min: 0, max: 0.04, step: 0.001, value: 0.012 },
@@ -243,6 +251,82 @@ function getClayBump(): THREE.Texture {
   for (let i = 0; i < h.length; i++) h[i] += (r() - 0.5) * 0.035;
   clayBump = toGrayTexture(size, h);
   return clayBump;
+}
+
+/** Several 0..1 fields as the channels of one texture (unscaled, so their strengths stay comparable). */
+function channelTexture(size: number, r: Float32Array, g?: Float32Array, b?: Float32Array): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  const img = ctx.createImageData(size, size);
+  const to = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  for (let i = 0; i < size * size; i++) {
+    img.data[i * 4] = to(r[i]);
+    img.data[i * 4 + 1] = to(g ? g[i] : 0);
+    img.data[i * 4 + 2] = to(b ? b[i] : 0);
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return wrapTexture(c);
+}
+
+/** Stretch a field to fill 0..1. */
+function normalize01(v: Float32Array): Float32Array {
+  let lo = Infinity, hi = -Infinity;
+  for (const x of v) {
+    if (x < lo) lo = x;
+    if (x > hi) hi = x;
+  }
+  for (let i = 0; i < v.length; i++) v[i] = (v[i] - lo) / (hi - lo || 1);
+  return v;
+}
+
+let metalTex: { bump: THREE.Texture; patina: THREE.Texture } | null = null;
+/**
+ * Metal: a bump texture holding hammer dents (R) and brushed streaks (G), and
+ * a patina texture holding where tarnish creeps in first (R) and its mottling (G).
+ */
+function getMetalTex() {
+  if (metalTex) return metalTex;
+  const size = 1024;
+  const r = rng(53);
+
+  // hammered: overlapping shallow round dents, meeting in soft ridges
+  const dents = new Float32Array(size * size);
+  for (let i = 0; i < 560; i++) {
+    const cx = r() * size, cy = r() * size;
+    const R = 20 + r() * 30;
+    const depth = 0.6 + r() * 0.4;
+    const x0 = Math.floor(cx - R), x1 = Math.ceil(cx + R), y0 = Math.floor(cy - R), y1 = Math.ceil(cy + R);
+    for (let y = y0; y <= y1; y++) {
+      const wy = ((y % size) + size) % size;
+      for (let x = x0; x <= x1; x++) {
+        const d2 = ((x - cx) ** 2 + (y - cy) ** 2) / (R * R);
+        if (d2 > 1) continue;
+        const wx = ((x % size) + size) % size;
+        const k = wy * size + wx;
+        dents[k] = Math.min(dents[k], -(1 - d2) * depth);
+      }
+    }
+  }
+  for (let i = 0; i < dents.length; i++) dents[i] = 1 + dents[i];
+
+  // brushed: fine streaks along one direction, each fading in and out along its length
+  const rows = Float32Array.from({ length: size }, () => r());
+  // the odd deeper scratch
+  for (let i = 0; i < 24; i++) rows[Math.floor(r() * size)] = r() < 0.5 ? 0 : 1;
+  const fade = tileNoise(size, 6, 3, 61);
+  const streaks = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const v = (rows[y] + rows[(y + 1) % size] * 0.5) / 1.5;
+    for (let x = 0; x < size; x++) streaks[y * size + x] = 0.5 + (v - 0.5) * (0.4 + 0.6 * fade[y * size + x]);
+  }
+
+  // patina: big blotches (where it starts) and fine mottling inside them
+  const where = normalize01(tileNoise(size, 4, 6, 67));
+  const mottle = normalize01(tileNoise(size, 28, 3, 71));
+  metalTex = { bump: channelTexture(size, dents, streaks), patina: channelTexture(size, where, mottle) };
+  return metalTex;
 }
 
 let feltTex: { map: THREE.Texture; bump: THREE.Texture; hair: THREE.Texture } | null = null;
@@ -644,6 +728,13 @@ interface TriOptions {
   hard?: { stitches: number };
   /** the color map is a gain around mid-grey: multiplied by 2 */
   mapGain?: number;
+  /**
+   * The bump map holds several height fields, one per channel: the height is
+   * their mix by these weights (so sliders reweight them without new textures).
+   */
+  bumpMix?: THREE.Vector3;
+  /** Extra shader code: its own uniforms, and GLSL run after the color and after roughness/metalness are worked out. */
+  custom?: { id: string; uniforms: Record<string, THREE.IUniform>; pars: string; color?: string; surface?: string };
 }
 
 const TRI_COMMON = /* glsl */ `
@@ -666,7 +757,12 @@ vec4 triS(sampler2D t, vec3 p, float k) {
   vec3 w = triWeights();
   return texture2D(t, p.yz * k) * w.x + texture2D(t, p.xz * k) * w.y + texture2D(t, p.xy * k) * w.z;
 }
+#ifdef TRI_BUMP_MIX
+uniform vec3 bumpMix;
+float triH(sampler2D t, vec3 p, float k) { return dot(triS(t, p, k).rgb, bumpMix); }
+#else
 float triH(sampler2D t, vec3 p, float k) { return triS(t, p, k).x; }
+#endif
 `;
 
 function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
@@ -679,6 +775,11 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
       shader.uniforms.seamStitches = { value: o.hard.stitches };
     }
     shader.uniforms.rimStrength = { value: o.rim ?? 0 };
+    if (o.bumpMix) {
+      shader.defines = { ...shader.defines, TRI_BUMP_MIX: '' };
+      shader.uniforms.bumpMix = { value: o.bumpMix };
+    }
+    if (o.custom) Object.assign(shader.uniforms, o.custom.uniforms);
     if (o.shell) {
       shader.uniforms.shellOffset = { value: o.shell.offset };
       shader.uniforms.shellLevel = { value: o.shell.level };
@@ -797,9 +898,16 @@ function triplanar<T extends THREE.Material>(mat: T, o: TriOptions): T {
          diffuseColor.rgb *= mix(0.62, 1.12, shellLevel) * mix(vec3(0.92, 0.97, 1.08), vec3(1.1, 1.0, 0.86), fibre.g);`,
       );
     }
+    if (o.custom) {
+      const cu = o.custom;
+      fs = cu.pars + '\n' + fs;
+      if (cu.color) fs = fs.replace('#include <color_fragment>', `#include <color_fragment>\n{\n${cu.color}\n}`);
+      if (cu.surface) fs = fs.replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n{\n${cu.surface}\n}`);
+    }
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => `tri-${o.shell ? 'shell' : 'base'}-${o.rim ? 'rim' : 'norim'}-${o.mapGain ?? 1}-${o.hard ? 'hard' : 'soft'}`;
+  mat.customProgramCacheKey = () =>
+    `tri-${o.shell ? 'shell' : 'base'}-${o.rim ? 'rim' : 'norim'}-${o.mapGain ?? 1}-${o.hard ? 'hard' : 'soft'}-${o.bumpMix ? 'mix' : ''}-${o.custom?.id ?? ''}`;
   return mat;
 }
 
@@ -899,6 +1007,50 @@ export function makeMaterial(style: StyleId, color: string, settings: StyleSetti
         envMap: glassEnv,
         envMapIntensity: 0.75,
       });
+    }
+    case 'metal': {
+      const t = getMetalTex();
+      // tarnish: dull rust brown through to copper's blue-green verdigris
+      const patinaColor = new THREE.Color('#4a200d').lerp(new THREE.Color('#3f7f6c'), k.tone);
+      return triplanar(
+        new THREE.MeshPhysicalMaterial({
+          color: c,
+          metalness: 1,
+          roughness: 0.04 + (1 - k.polish) * 0.6,
+          bumpMap: t.bump,
+          bumpScale: 1,
+          // metal is all reflection: like glass it gets the brighter environment
+          // (the scene's own is kept dim for the matte materials)
+          envMap: glassEnv,
+          envMapIntensity: 1.1,
+        }),
+        {
+          tiling: 1.5,
+          bumpMix: new THREE.Vector3(k.hammer * 2.2, k.brush * 0.9, 0),
+          custom: {
+            id: 'metal',
+            uniforms: {
+              patinaMap: { value: t.patina },
+              patinaAmount: { value: k.patina },
+              patinaColor: { value: patinaColor },
+            },
+            pars: 'uniform sampler2D patinaMap;\nuniform float patinaAmount;\nuniform vec3 patinaColor;',
+            // the tarnish takes over in blotches as Patina goes up: there it's
+            // dull and not metallic at all
+            surface: /* glsl */ `
+              vec3 pt = triS(patinaMap, vTriPos, triTiling * 0.8).rgb;
+              // the fine mottling frays the edges, so it creeps in rather than being painted on
+              float h = pt.r + (pt.g - 0.5) * 0.3;
+              float edge = 1.0 - pow(patinaAmount, 1.4) * 1.12;
+              float p = smoothstep(edge - 0.12, edge + 0.08, h) * step(0.001, patinaAmount);
+              // thin at the edges (the metal still glints through), crusty and uneven inside
+              vec3 crust = patinaColor * (0.45 + 1.1 * pt.g * pt.g);
+              diffuseColor.rgb = mix(diffuseColor.rgb, crust, p);
+              roughnessFactor = mix(roughnessFactor, 0.9, p);
+              metalnessFactor = mix(metalnessFactor, 0.0, p);`,
+          },
+        },
+      );
     }
     case 'toon':
       return new THREE.MeshToonMaterial({ color: c, gradientMap: getToonGradient(Math.round(k.bands), k.shadow) });

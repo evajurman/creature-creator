@@ -159,6 +159,11 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
     repeating-linear-gradient(-60deg, rgba(0,0,0,.14) 0 2px, transparent 2px 5px),
     radial-gradient(circle at 35% 30%, #f6b3c4, #c9667f 75%);
 }
+.ball.metal {
+  background:
+    radial-gradient(circle at 32% 28%, #fff 0 9%, rgba(255,255,255,0) 24%),
+    linear-gradient(160deg, #e9edf2 0%, #8d96a3 45%, #f4f6f8 62%, #5d6672 100%);
+}
 .turned-row { justify-content: flex-start; gap: 14px; margin-top: 0; }
 
 .turned-row .check { margin: 4px 0; }
