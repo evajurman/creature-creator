@@ -192,10 +192,13 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 #overlay.active { pointer-events: auto; cursor: crosshair; }
 
 .hint {
-  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+  /* above the camera view bar (bottom right), so a long hint never runs under it */
+  position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%);
   background: rgba(47, 40, 51, .86); color: #fff; padding: 8px 16px;
-  border-radius: 999px; font-weight: 700; font-size: 14px; pointer-events: none;
-  opacity: 0; transition: opacity .2s; white-space: nowrap;
+  border-radius: 18px; font-weight: 700; font-size: 14px; pointer-events: none;
+  opacity: 0; transition: opacity .2s;
+  /* one line where it fits, wrapped (centred) where it doesn't */
+  width: max-content; max-width: calc(100% - 32px); text-align: center;
 }
 .hint.show { opacity: 1; }
 .hint.warn { background: rgba(217, 78, 48, .92); }
