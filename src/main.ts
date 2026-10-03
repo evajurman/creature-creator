@@ -51,6 +51,7 @@ import {
 } from './stuff';
 import { FUR_LAYER, STYLE_PARAMS, STYLES, makeMaterial, setFuzzQuality, setGlassEnvironment, styleSettings, type StyleId } from './materials';
 import { installScrollbars } from './scrollbars';
+import { installCursorPress } from './cursorPress';
 import {
   RIGS,
   addLimb,
@@ -4404,6 +4405,7 @@ function fitTopbar() {
 new ResizeObserver(fitTopbar).observe($('.topbar'));
 document.fonts.ready.then(fitTopbar); // the icon font and Nunito change the buttons' widths
 installScrollbars();
+installCursorPress();
 
 // On a phone the panel is a sheet under the viewport: drag its grip to resize it, tap to fold it away.
 const SHEET_KEY = 'creature-creator/sheet';

@@ -11,6 +11,15 @@
   --cursor: url(./cursor.svg) 2 3, default;
   --cursor-click: url(./cursor-click.svg) 2 3, pointer;
 }
+/* the arrow squashes while the mouse is down and springs back past its shape on release (src/cursorPress.ts) */
+html.cursor-press {
+  --cursor: url(./cursor-press.svg) 2 3, default;
+  --cursor-click: url(./cursor-click-press.svg) 2 3, pointer;
+}
+html.cursor-pop {
+  --cursor: url(./cursor-pop.svg) 2 3, default;
+  --cursor-click: url(./cursor-click-pop.svg) 2 3, pointer;
+}
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
