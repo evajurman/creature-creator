@@ -81,6 +81,12 @@ export interface EyePair {
   height: number;
   /** how far this pair stands off the face, 0..1 (falls back to the old shared `lift`) */
   lift?: number;
+  /** the part they sit on (both sides of a mirrored one); unset = the rig's head */
+  bone?: string;
+  /** one eye in the middle instead of two */
+  single?: boolean;
+  /** radians round the part (falls back to the old shared `turn`) */
+  turn?: number;
 }
 
 export type EyeFinish = 'body' | 'gloss' | 'matte' | 'glass';
@@ -96,7 +102,7 @@ export interface EyesState {
   color?: string;
   /** legacy: one stand-off for every pair (now per pair) */
   lift?: number;
-  /** radians: the eyes turned round the head, on top of the head's own roll (they stick to the face) */
+  /** legacy: radians every pair is turned round the head (now per pair) */
   turn?: number;
 }
 
@@ -293,8 +299,9 @@ const rollGeoR = rollGrip(1);
 
 // ---------------------------------------------------------------------------
 // bendy bones: the bone's local frame (X = side, Y = along the bone, Z = out
-// of the drawing) is curved into a circular arc. The arc bends toward a
-// direction around the bone: 0 = +X (sideways in the drawing plane), pi/2 = +Z.
+// of the drawing) is curved into a circular arc that still runs from the
+// bone's start to its tip, bowing out toward a direction around the bone:
+// 0 = +X (sideways in the drawing plane), pi/2 = +Z.
 
 export interface Bend {
   len: number;
@@ -315,16 +322,22 @@ function bendKey(bd: Bend): string {
   return bd.theta ? `|bend:${bd.len.toFixed(4)}:${bd.theta.toFixed(4)}:${bd.dir.toFixed(4)}` : '';
 }
 
-/** The straight in-plane bend: (u, y) with u along the bend direction. */
+/**
+ * The in-plane bend: (u, y) with u along the bend direction. The arc's ends stay
+ * on the bone's start and tip; it leaves the start turned theta/2 toward +u and
+ * reaches the tip turned theta/2 the other way. Returns the turn angle there too.
+ */
 function planarBend(len: number, theta: number, u: number, y: number): [number, number, number] {
   const s = Math.min(len, Math.max(0, y));
   const over = y - s; // past either end the bone carries on straight along its tangent
-  const phi = (theta * s) / len;
-  let cu = 0, cy = s;
+  let cu = 0, cy = s, phi = 0;
   if (Math.abs(theta) > 1e-5) {
-    const r = len / theta;
-    cu = r * (1 - Math.cos(phi));
-    cy = r * Math.sin(phi);
+    const half = theta / 2;
+    const r = len / (2 * Math.sin(half));
+    const a = theta * (s / len) - half; // angle round the arc's centre, from the bulge
+    phi = -a;
+    cu = r * (Math.cos(a) - Math.cos(half));
+    cy = len / 2 + r * Math.sin(a);
   }
   const c = Math.cos(phi), sn = Math.sin(phi);
   // the offset (u, over) turns with the curve: +u -> (cos, -sin), +Y -> (sin, cos)
@@ -427,17 +440,17 @@ function joinShapes(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return g;
 }
 
-/** A child's local transform after its parent bone is bent (it rides along the arc). */
+/**
+ * A child's local transform after its parent bone is bent: it rides along the
+ * arc but keeps pointing the same way, so bending one part never swings the
+ * rest of the skeleton (the ends don't move, so limbs there stay put).
+ */
 function bendChild(bd: Bend, local: THREE.Matrix4): THREE.Matrix4 {
   if (!bd.theta) return local;
   const p = new THREE.Vector3().setFromMatrixPosition(local);
   const s = Math.min(bd.len, Math.max(0, p.y));
-  const [u, y, phi] = planarBend(bd.len, bd.theta, 0, s);
-  // bend in a frame where the bend direction is +X, then turn back
-  const toDir = new THREE.Matrix4().makeRotationY(-bd.dir);
-  const planar = new THREE.Matrix4().makeRotationZ(-phi).setPosition(u, y, 0);
-  const arc = toDir.clone().multiply(planar).multiply(toDir.clone().invert());
-  return arc.multiply(new THREE.Matrix4().makeTranslation(0, -s, 0)).multiply(local);
+  const [x, y, z] = bendPoint(bd, 0, s, 0);
+  return new THREE.Matrix4().makeTranslation(x, y - s, z).multiply(local);
 }
 
 /** Points along a (possibly bent) bone, for the skeleton line. */
@@ -455,6 +468,9 @@ function bendMid(bd: Bend): THREE.Vector3 {
   return new THREE.Vector3(x, y, z);
 }
 
+/** the most a bone bends: three quarters of a full circle */
+const MAX_BEND = 1.5;
+
 /**
  * The bend that puts a bone's middle at local point `p`: direction from where
  * it sits around the bone, amount from how far it's pulled off the straight line.
@@ -462,16 +478,9 @@ function bendMid(bd: Bend): THREE.Vector3 {
 export function bendFromMid(len: number, p: THREE.Vector3): { bend: number; dir: number } {
   const off = Math.hypot(p.x, p.z);
   const dir = Math.atan2(p.z, p.x);
-  // sideways offset of an arc's midpoint: len * (1 - cos(theta/2)) / theta, rising to theta ~= 2.33
-  const sag = (theta: number) => (theta < 1e-4 ? (len * theta) / 8 : (len * (1 - Math.cos(theta / 2))) / theta);
-  let lo = 0, hi = 2.33;
-  if (off >= sag(hi)) return { bend: hi / Math.PI, dir };
-  for (let i = 0; i < 40; i++) {
-    const mid = (lo + hi) / 2;
-    if (sag(mid) < off) lo = mid;
-    else hi = mid;
-  }
-  return { bend: (lo + hi) / 2 / Math.PI, dir };
+  // an arc through both ends bulges (len / 2) * tan(theta / 4) at its middle
+  const theta = 4 * Math.atan((2 * off) / len);
+  return { bend: Math.min(MAX_BEND, theta / Math.PI), dir };
 }
 
 /** Rest-pose world frame of a bone: X = drawing side, Y = along the bone, origin at its start. */
@@ -503,7 +512,8 @@ export class Creature {
   readonly bones = new Map<string, BoneRT>();
   readonly list: BoneRT[] = [];
   readonly rootHandle: THREE.Mesh;
-  private eyes = new THREE.Group();
+  /** one group of eyes per part that has some */
+  private eyes: THREE.Group[] = [];
   private eyesKey = '';
   state: CreatureState;
   selected: string | null = null;
@@ -519,8 +529,8 @@ export class Creature {
   skinState: 'none' | 'building' | 'ready' = 'none';
   /** when the shape or pose last changed (performance.now) */
   lastChange = performance.now();
-  /** eye spots in head-local space, for keeping felt fuzz off them */
-  private eyeSpots: FuzzSpot[] = [];
+  /** eye spots in each part's own space (by bone id), for keeping felt fuzz off them */
+  private eyeSpots = new Map<string, FuzzSpot[]>();
   /** the size gizmo: a dashed box round the selected part with grips to stretch and fatten it */
   private sizer = new THREE.Group();
   private sizerBox: THREE.LineLoop;
@@ -1219,7 +1229,7 @@ export class Creature {
 
     // nothing about the look changed (e.g. another part was edited): keep the
     // current dressing; rebuilding felt fuzz and stray hairs is expensive
-    const lookKey = JSON.stringify([style, part.color, k, part.opacity ?? 1, sk.painted, colorKey, this.eyeSpots]);
+    const lookKey = JSON.stringify([style, part.color, k, part.opacity ?? 1, sk.painted, colorKey, [...this.eyeSpots]]);
     if (lookKey === sk.lookKey) {
       for (const b of sk.members) if (b.mesh) b.mesh.visible = false;
       return;
@@ -1268,12 +1278,15 @@ export class Creature {
     for (const b of sk.members) if (b.mesh) b.mesh.visible = false;
 
     // keep felt fuzz off the eyes on the skin too
-    const head = this.bones.get(this.rig.headId);
-    if (head?.mesh && sk.members.includes(head) && this.eyeSpots.length) {
+    const eyed = sk.members.filter((b) => b.mesh && this.eyeSpots.get(b.def.id)?.length);
+    if (eyed.length) {
       this.group.updateMatrixWorld(true);
-      const toSkin = this.group.matrixWorld.clone().invert().multiply(head.mesh.matrixWorld);
+      const fromGroup = this.group.matrixWorld.clone().invert();
       const v = new THREE.Vector3();
-      setFuzzMask(mesh, this.eyeSpots.map((sp) => (v.set(sp.x, sp.y, sp.z).applyMatrix4(toSkin), { x: v.x, y: v.y, z: v.z, r: sp.r })));
+      setFuzzMask(mesh, eyed.flatMap((b) => {
+        const toSkin = fromGroup.clone().multiply(b.mesh!.matrixWorld);
+        return this.eyeSpots.get(b.def.id)!.map((sp) => (v.set(sp.x, sp.y, sp.z).applyMatrix4(toSkin), { x: v.x, y: v.y, z: v.z, r: sp.r }));
+      }));
     } else {
       setFuzzMask(mesh, []);
     }
@@ -1482,33 +1495,59 @@ export class Creature {
   // -------------------------------------------------------------------------
   // eyes
 
-  private syncEyes() {
+  /** The bones an eye pair sits on: its own part (both sides of a mirrored one), or else the head. */
+  eyeBones(pair: EyePair): BoneRT[] {
+    const on = pair.bone ? this.list.filter((b) => b.src === pair.bone) : [];
     const head = this.bones.get(this.rig.headId);
+    return on.length ? on : head ? [head] : [];
+  }
+
+  private syncEyes() {
     const e = this.state.eyes;
-    const key = JSON.stringify([e, head?.meshKey, this.state.style, head?.length, this.state.materialSettings, head?.def.roll]);
+    const used = [...new Set(e.pairs.flatMap((p) => this.eyeBones(p)))];
+    const key = JSON.stringify([e, used.map((b) => [b.def.id, b.meshKey, b.length, b.def.roll]), this.state.style, this.state.materialSettings]);
     if (key === this.eyesKey) return;
     this.eyesKey = key;
     this.mergeDirty = true;
-    this.eyes.removeFromParent();
-    this.eyes = new THREE.Group();
+    for (const g of this.eyes) g.removeFromParent();
+    this.eyes = [];
     // felt: clear fuzz from under the eyes (reset first; refilled below)
     for (const b of this.list) if (b.mesh) setFuzzMask(b.mesh, []);
     // the seamless skin reads these too: no eyes, no bare patches
-    this.eyeSpots = [];
-    if (!head || !head.mesh || !e.enabled) return;
-    head.pivot.add(this.eyes);
-    const spots: FuzzSpot[] = [];
+    this.eyeSpots = new Map();
+    if (!e.enabled) return;
+    const groups = new Map<BoneRT, THREE.Group>();
+    for (const [pairIndex, pair] of e.pairs.entries()) {
+      for (const b of this.eyeBones(pair)) {
+        if (!b.mesh) continue;
+        let group = groups.get(b);
+        if (!group) {
+          group = new THREE.Group();
+          groups.set(b, group);
+          b.pivot.add(group);
+          this.eyes.push(group);
+          this.eyeSpots.set(b.def.id, []);
+        }
+        this.placeEyes(b, pair, pairIndex, group, this.eyeSpots.get(b.def.id)!);
+      }
+    }
+    for (const [b] of groups) setFuzzMask(b.mesh!, this.eyeSpots.get(b.def.id)!);
+  }
 
-    // Work in the head's rest frame so eyes stick to the face whatever the pose.
-    const toWorld = head.restWorld;
+  /** Stick one pair (or single eye) onto a part, found by aiming at it from the creature's front. */
+  private placeEyes(part: BoneRT, pair: EyePair, pairIndex: number, group: THREE.Group, spots: FuzzSpot[]) {
+    const e = this.state.eyes;
+    // Work in the part's rest frame so eyes stick to it whatever the pose.
+    const toWorld = part.restWorld;
     const toLocal = toWorld.clone().invert();
-    const geo = (head.mesh.userData.baseGeo as THREE.BufferGeometry) ?? head.mesh.geometry;
+    const geo = (part.mesh!.userData.baseGeo as THREE.BufferGeometry) ?? part.mesh!.geometry;
     const forward = new THREE.Vector3(...(this.rig.eyeDir ?? [0, 0, 1])).normalize();
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(up.dot(forward)) > 0.9) up.set(0, 0, -1);
     up.addScaledVector(forward, -up.dot(forward)).normalize();
-    // the eyes stick to the face: a rolled head carries them round, and Facing turns them further
-    const turn = (head.def.roll ?? 0) * (head.def.sideSign === -1 ? -1 : 1) + (e.turn ?? 0);
+    // the eyes stick to the part: rolling it carries them round, and Facing turns them further
+    // (the other way on a right-hand twin, so the two sides mirror)
+    const turn = ((part.def.roll ?? 0) + (pair.turn ?? e.turn ?? 0)) * (part.def.sideSign === -1 ? -1 : 1);
     if (turn) {
       const axis = new THREE.Vector3(0, 1, 0).transformDirection(toWorld);
       forward.applyAxisAngle(axis, turn);
@@ -1517,7 +1556,7 @@ export class Creature {
     const right = new THREE.Vector3().crossVectors(up, forward);
     const localForward = forward.clone().transformDirection(toLocal);
 
-    // extents of the head as seen from the front
+    // extents of the part as seen from the front
     const pos = geo.getAttribute('position');
     const v = new THREE.Vector3();
     let minR = Infinity, maxR = -Infinity, minU = Infinity, maxU = -Infinity, maxF = -Infinity;
@@ -1533,13 +1572,11 @@ export class Creature {
     const probe = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
     const ray = new THREE.Raycaster();
 
-    const headPart = this.state.parts[head.src];
-    const headStyle = headPart.style ?? this.state.style;
+    const partStyle = this.state.parts[part.src].style ?? this.state.style;
     const localUp = up.clone().transformDirection(toLocal);
 
-    for (const [pairIndex, pair] of e.pairs.entries()) {
     const r = Math.max(0.02, Math.min(sizeR, sizeU) * 0.16 * (0.4 + pair.size * 1.2));
-    for (const sgn of [1, -1]) {
+    for (const sgn of pair.single ? [0] : [1, -1]) {
       const originW = new THREE.Vector3()
         .addScaledVector(right, (minR + maxR) / 2 + sgn * (sizeR / 2) * pair.spacing * 0.8)
         .addScaledVector(up, minU + sizeU * pair.height)
@@ -1560,20 +1597,17 @@ export class Creature {
       // stand-off: lift the eye out along its facing direction
       eye.position.copy(hit.point).addScaledVector(z, (pair.lift ?? e.lift ?? 0) * r * 1.2);
       const style = EYE_STYLES.some((o) => o.id === e.style) ? e.style : 'googly';
-      eye.add(buildEye(style, r, sgn, headStyle, this.settingsFor(headStyle), e));
+      eye.add(buildEye(style, r, sgn || 1, partStyle, this.settingsFor(partStyle), e));
       eye.traverse((m) => {
         m.raycast = () => {};
         // glass casts no shadow, as with the body (see castsShadow): a glass
         // creature's glass beads would leave two shadows floating on the floor
         m.castShadow = !(m instanceof THREE.Mesh && (m.material as THREE.MeshPhysicalMaterial).transmission > 0);
       });
-      this.eyes.add(eye);
+      group.add(eye);
       // bare patch just inside the eye's own rim, so it stays hidden behind it
       spots.push({ x: hit.point.x, y: hit.point.y, z: hit.point.z, r: r * (style === 'flat' ? 1.1 : style === 'button' ? 1.0 : 0.85) });
     }
-    }
-    setFuzzMask(head.mesh, spots);
-    this.eyeSpots = spots;
   }
 
   // -------------------------------------------------------------------------
@@ -1678,7 +1712,7 @@ export class Creature {
       for (const c of b.mesh!.children) c.visible = !id;
     }
     this.updateSizer();
-    this.eyes.visible = !id;
+    for (const g of this.eyes) g.visible = !id;
     for (const rec of this.attached.values()) {
       rec.main.visible = !id;
       if (rec.twin) rec.twin.visible = !id;
@@ -1785,11 +1819,11 @@ export class Creature {
    * a ball of its own size.
    */
   pickEye(ray: THREE.Ray): { pair: number; distance: number } | null {
-    if (!this.eyes.parent || !this.eyes.visible) return null;
+    const shown = this.eyes.filter((g) => g.parent && g.visible);
     let best: { pair: number; distance: number } | null = null;
     const sphere = new THREE.Sphere();
     const at = new THREE.Vector3();
-    for (const eye of this.eyes.children) {
+    for (const eye of shown.flatMap((g) => g.children)) {
       const { pair, r } = eye.userData.eye as { pair: number; r: number };
       eye.getWorldPosition(sphere.center);
       sphere.radius = r * eye.getWorldScale(at).x;

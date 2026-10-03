@@ -3863,7 +3863,7 @@ function renderEyes() {
   tabs.innerHTML = '';
   e.pairs.forEach((_, i) => {
     const btn = document.createElement('button');
-    btn.textContent = `Pair ${i + 1}`;
+    btn.textContent = `${e.pairs[i].single ? 'Eye' : 'Pair'} ${i + 1}`;
     btn.classList.toggle('active', i === eyePair);
     btn.onclick = () => {
       eyePair = i;
@@ -3876,7 +3876,8 @@ function renderEyes() {
   add.className = 'add';
   add.onclick = () => {
     const last = e.pairs[e.pairs.length - 1];
-    e.pairs.push({ size: Math.max(0.15, last.size * 0.75), spacing: last.spacing, height: Math.max(0.1, last.height - 0.22), lift: last.lift ?? e.lift });
+    const on = e.pairs[eyePair] ?? last;
+    e.pairs.push({ size: Math.max(0.15, last.size * 0.75), spacing: last.spacing, height: Math.max(0.1, last.height - 0.22), lift: last.lift ?? e.lift, bone: on.bone, single: on.single, turn: on.turn ?? e.turn });
     eyePair = e.pairs.length - 1;
     e.enabled = true;
     creature.sync();
@@ -3897,12 +3898,19 @@ function renderEyes() {
     tabs.append(del);
   }
   const pair = e.pairs[eyePair];
+  // which part they're on: a mirrored pair of parts is one choice
+  const where = $<HTMLSelectElement>('#eye-bone');
+  where.innerHTML = '';
+  for (const b of sources()) where.append(new Option(partLabel(b.def.id), b.src));
+  where.value = creature.eyeBones(pair)[0]?.src ?? '';
+  $<HTMLInputElement>('#eye-single').checked = !!pair.single;
   $<HTMLInputElement>('#eye-size').value = String(pair.size);
   $<HTMLInputElement>('#eye-spacing').value = String(pair.spacing);
+  $<HTMLInputElement>('#eye-spacing').disabled = !!pair.single;
   $<HTMLInputElement>('#eye-height').value = String(pair.height);
   $('#eye-sliders').style.opacity = e.enabled ? '1' : '.4';
   $<HTMLInputElement>('#eye-lift').value = String(pair.lift ?? e.lift ?? 0);
-  $<HTMLInputElement>('#eye-turn').value = String(Math.round(((e.turn ?? 0) * 180) / Math.PI));
+  $<HTMLInputElement>('#eye-turn').value = String(Math.round(((pair.turn ?? e.turn ?? 0) * 180) / Math.PI));
   // finish and color only apply to the styles made of a material
   const shaped = e.enabled && (e.style === 'bead' || e.style === 'dot' || e.style === 'button');
   $('#eye-look').hidden = !shaped;
@@ -4075,7 +4083,7 @@ function renderRigPanel() {
   $<HTMLButtonElement>('#rig-dup').disabled = !b || isRoot;
   $<HTMLButtonElement>('#rig-del').disabled = !b || isRoot;
   $<HTMLButtonElement>('#rig-unlink').disabled = !paired || rigLocked();
-  $<HTMLButtonElement>('#rig-eyes').disabled = !b || state.rig.headId === selected;
+  $<HTMLButtonElement>('#rig-eyes').disabled = !b;
   $<HTMLButtonElement>('#rig-split').disabled = !b;
   $('#rig-pair-note').textContent = paired ? 'Mirrored pair: both sides move together.' : '';
   $<HTMLInputElement>('#rig-sym').checked = rigLocked();
@@ -4236,11 +4244,17 @@ $('#rig-del').onclick = () => {
   selectPart(creature.bones.has(parent) ? parent : creature.list[0].def.id);
 };
 $('#rig-eyes').onclick = () => {
-  state.rig.headId = selected;
-  buildCreature();
+  const b = creature.bones.get(selected);
+  if (!b) return;
+  const e = state.eyes;
+  // a limb (one of a mirrored pair, or a stalk) gets a single eye near its tip; a head gets a pair
+  const limb = b.def.sideSign !== 0 || b.length > 1.6 * b.def.width;
+  e.pairs.push({ size: 0.5, spacing: 0.5, height: limb ? 0.8 : 0.55, bone: b.src, single: limb || undefined });
+  e.enabled = true;
+  creature.sync();
   commit();
-  renderRigPanel();
-  hint('Eyes moved to this part', 1800);
+  showEyes(e.pairs.length - 1);
+  hint(limb ? 'Eye added: shape it under Eyes' : 'Eyes added: shape them under Eyes', 1800);
 };
 $('#rig-save').onclick = () => {
   const input = $<HTMLInputElement>('#rig-name');
@@ -4830,21 +4844,39 @@ $<HTMLInputElement>('#eye-lift').oninput = (ev) => {
   creature.sync();
 };
 $<HTMLInputElement>('#eye-lift').onchange = () => commit();
+$<HTMLSelectElement>('#eye-bone').onchange = (ev) => {
+  const pair = state.eyes.pairs[eyePair];
+  const src = (ev.target as HTMLSelectElement).value;
+  // the head is the default, so a pair moved back there forgets its part
+  if (creature.bones.get(state.rig.headId)?.src === src) delete pair.bone;
+  else pair.bone = src;
+  creature.sync();
+  commit();
+  renderEyes();
+};
+$<HTMLInputElement>('#eye-single').onchange = (ev) => {
+  const pair = state.eyes.pairs[eyePair];
+  if ((ev.target as HTMLInputElement).checked) pair.single = true;
+  else delete pair.single;
+  creature.sync();
+  commit();
+  renderEyes();
+};
 $<HTMLInputElement>('#eye-turn').oninput = (ev) => {
-  state.eyes.turn = Math.round(parseFloat((ev.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000;
+  state.eyes.pairs[eyePair].turn = Math.round(parseFloat((ev.target as HTMLInputElement).value) * (Math.PI / 180) * 1000) / 1000;
   creature.sync();
 };
 $<HTMLInputElement>('#eye-turn').onchange = () => commit();
 $('#eye-front').onclick = () => {
-  // undo the head's roll too, so the eyes look where the creature faces
-  const head = creature.bones.get(state.rig.headId);
-  const roll = (head?.def.roll ?? 0) * (head?.def.sideSign === -1 ? -1 : 1);
-  const turn = Math.round(-roll * 1000) / 1000 || 0;
-  if ((state.eyes.turn ?? 0) === turn) {
+  // undo their part's roll too, so the eyes look where the creature faces
+  const pair = state.eyes.pairs[eyePair];
+  const on = creature.eyeBones(pair)[0];
+  const turn = Math.round(-(on?.def.roll ?? 0) * 1000) / 1000 || 0;
+  if ((pair.turn ?? state.eyes.turn ?? 0) === turn) {
     hint('Already facing front', 1200);
     return;
   }
-  state.eyes.turn = turn;
+  pair.turn = turn;
   creature.sync();
   commit();
   renderEyes();
