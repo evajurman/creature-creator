@@ -50,6 +50,7 @@ import {
   type Wearer,
 } from './stuff';
 import { FUR_LAYER, STYLE_PARAMS, STYLES, makeMaterial, setFuzzQuality, setGlassEnvironment, styleSettings, type StyleId } from './materials';
+import { installScrollbars } from './scrollbars';
 import {
   RIGS,
   addLimb,
@@ -944,6 +945,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (handlesVisible() && e.buttons === 0) {
     const h = pickHandle(e.clientX, e.clientY);
     creature.setHandleHover(h);
+    $('#viewport').style.cursor = h ? 'var(--cursor-click)' : '';
   }
 });
 
@@ -2009,8 +2011,6 @@ overlay.addEventListener('wheel', (e) => {
   canvas.dispatchEvent(new WheelEvent('wheel', e));
   e.preventDefault();
 }, { passive: false });
-// pressing the wheel would start the browser's autoscroll (and its cursor); it's the camera's dolly here
-$('#viewport').addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
 // While drawing, the right (or middle) button still moves the view: the
 // press is handed to the camera controls under the drawing layer, which then
 // follow the pointer until it's let go.
@@ -4403,6 +4403,7 @@ function fitTopbar() {
 }
 new ResizeObserver(fitTopbar).observe($('.topbar'));
 document.fonts.ready.then(fitTopbar); // the icon font and Nunito change the buttons' widths
+installScrollbars();
 
 // On a phone the panel is a sheet under the viewport: drag its grip to resize it, tap to fold it away.
 const SHEET_KEY = 'creature-creator/sheet';
