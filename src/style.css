@@ -22,9 +22,11 @@ button, input, select { font: inherit; color: inherit; }
 
 #app {
   display: grid;
-  grid-template-columns: 300px 1fr;
-  grid-template-rows: 56px 1fr;
+  /* minmax(0, …): never let a wide row (the top bar) push the page past the screen */
+  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-rows: 56px minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ---------- top bar ---------- */
@@ -190,13 +192,6 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
   color: #fff; padding: 8px 14px; border-radius: 999px; font-weight: 700; cursor: pointer;
 }
 
-@media (max-width: 760px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: 56px 1fr 40vh; }
-  .panel { grid-row: 3; border-right: 0; border-top: 1px solid var(--line); }
-  .viewport { grid-row: 2; }
-  .brand { display: none; }
-  .tools button { padding: 6px 8px; }
-}
 
 .eye-styles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .eye-styles button {
@@ -333,7 +328,6 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
   font-weight: 700; font-size: 12px; cursor: pointer; color: var(--ink);
 }
 .view-bar button:hover { background: var(--bg); }
-@media (max-width: 760px) { .view-bar { bottom: auto; top: 12px; } }
 
 .pop-sub { font-size: 12px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 12px 0 6px; }
 #floor-mode button { font-size: 11px; padding: 5px 2px; }
@@ -342,7 +336,8 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 #floor-mirror-opts[hidden], #floor-material-opts[hidden] { display: none; }
 
 .creature-bar {
-  position: sticky; top: 0; z-index: 2; margin: 0 -16px 4px; padding: 10px 16px 8px;
+  /* stick to the very top of the panel, over its own top padding, so nothing peeks above */
+  position: sticky; top: -6px; z-index: 2; margin: 0 -16px 4px; padding: 10px 16px 8px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .creature-bar[hidden], #place-bar[hidden] { display: none; }
@@ -487,3 +482,84 @@ details.fine[open] > summary { margin-bottom: 6px; }
 .piece-icon { width: 30px; height: 28px; border-radius: 8px; display: grid; place-items: center; opacity: .7; }
 .piece-icon:hover { opacity: 1; background: rgba(127,127,127,.18); }
 .parts-blend { margin-top: 10px; }
+
+/* words for mice and keyboards, or for fingers */
+.touch-only { display: none; }
+@media (pointer: coarse) {
+  .touch-only { display: inline; }
+  .mouse-only { display: none; }
+}
+
+/* ---------- phones and narrow windows: viewport on top, panel as a bottom sheet ---------- */
+.sheet-grip { display: none; }
+@media (max-width: 760px) {
+  html, body { overscroll-behavior: none; }
+  #app {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 48px minmax(0, 1fr) auto var(--sheet, 42%);
+  }
+  .topbar { gap: 6px; padding: 0 8px; }
+  .topbar .spacer { display: none; }
+  .brand { display: none; }
+  .topbar.compact .modes button { padding: 7px 7px; }
+  .tools { gap: 3px; min-width: 0; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+  .tools::-webkit-scrollbar { display: none; }
+  .topbar.compact .tools button { padding: 7px 5px; }
+  .viewport { grid-row: 2; }
+  .panel { grid-row: 4; border-right: 0; padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+
+  /* drag (or tap) to give the panel more or less room */
+  .sheet-grip {
+    grid-row: 3; display: grid; place-items: center; height: 22px; padding: 0; width: 100%;
+    background: var(--panel); border: 0; border-top: 1px solid var(--line); cursor: ns-resize;
+    touch-action: none;
+  }
+  .sheet-grip::before { content: ''; width: 40px; height: 5px; border-radius: 999px; background: var(--line); }
+  .sheet-grip:active::before { background: var(--muted); }
+
+  /* bigger targets for fingers */
+  .parts button, .eye-pairs button { padding: 6px 12px; }
+  .creature-actions { flex-wrap: wrap; }
+  .creature-actions button { padding: 6px 10px; }
+  .check input { width: 20px; height: 20px; }
+  /* iOS zooms the page into any text box under 16px */
+  input.text, .creature-chips .chip-name, .slider input.num, .bar-slider input.num { font-size: 16px; }
+  #stuff-panel .thing-list { grid-template-columns: repeat(3, 1fr); }
+
+  /* keyboard shortcut labels are noise on a phone */
+  button kbd, .pill-toggle kbd { display: none !important; }
+
+  /* floating bars: one scrollable row across the top of the viewport */
+  .draw-bar {
+    left: 8px; right: 8px; top: 8px; transform: none; max-width: none;
+    flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; scrollbar-width: none;
+    gap: 6px; padding: 5px 6px; border-radius: 16px;
+  }
+  .draw-bar::-webkit-scrollbar { display: none; }
+  .draw-bar > * { flex: none; }
+  /* Cancel leads the bar and Done stays pinned to its right end, however far it's scrolled */
+  #cancel-draw { order: -1; }
+  #done-draw, #place-done, #attach-done {
+    position: sticky; right: 0; box-shadow: -10px 0 8px -4px var(--panel);
+  }
+  .bar-slider input { width: 80px; }
+  .attach-name { max-width: 90px; }
+  /* while a bar is up, it owns the top edge */
+  .viewport:has(.draw-bar:not([hidden])) .shape-bar { display: none; }
+  .shape-bar { left: 8px; top: 8px; }
+
+  .view-bar { right: 8px; bottom: 8px; }
+  .view-bar button { padding: 6px 8px; }
+  .settle-badge { left: 8px; bottom: 50px; }
+  .hint {
+    bottom: 52px; white-space: normal; text-align: center; width: max-content;
+    max-width: calc(100% - 24px); font-size: 13px; border-radius: 16px;
+  }
+
+  /* popovers: full width, never taller than the viewport */
+  .popover, .attach-pop, .attach-mat-pop {
+    left: 8px; right: 8px; top: 8px; width: auto; max-height: calc(100% - 16px); overflow-y: auto;
+  }
+  .attach-mat-pop { top: 60px; max-height: calc(100% - 68px); }
+  .popover.load-pop { left: 8px; right: 8px; top: 8px; transform: none; width: auto; max-height: calc(100% - 16px); }
+}

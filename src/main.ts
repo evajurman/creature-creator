@@ -676,7 +676,12 @@ function fitShadows() {
 // controls (our pointer handlers are registered first so they can veto orbiting)
 
 const raycaster = new THREE.Raycaster();
-const pointer = { downX: 0, downY: 0, moved: false };
+const pointer = { downX: 0, downY: 0, moved: false, touch: false };
+/** A phone or tablet: hints talk about fingers, not mice and keys. */
+const touchScreen = () => matchMedia('(pointer: coarse)').matches;
+// the last tap on the 3D view, to spot a double tap
+let lastTap = { t: 0, x: 0, y: 0 };
+let lastDoubleTap = 0;
 type DragKind = 'root' | 'start' | 'end' | 'bend' | 'len' | 'wid' | 'size' | 'roll';
 let drag: {
   id: string;
@@ -807,6 +812,7 @@ canvas.addEventListener('pointerdown', (e) => {
   pointer.downX = e.clientX;
   pointer.downY = e.clientY;
   pointer.moved = false;
+  pointer.touch = e.pointerType !== 'mouse';
   if (e.button !== 0 || pickingFocus || !handlesVisible()) return;
   const h = pickHandle(e.clientX, e.clientY);
   if (!h) return;
@@ -938,6 +944,20 @@ canvas.addEventListener('pointermove', (e) => {
   }
 });
 
+/** Not every phone browser turns a double tap into a dblclick, so spot it on the way up (and act on it). */
+function doubleTapped(e: PointerEvent): boolean {
+  if (e.pointerType === 'mouse') return false;
+  const now = performance.now();
+  if (now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+    lastTap.t = 0;
+    lastDoubleTap = now;
+    onDoubleClick(e.clientX, e.clientY);
+    return true;
+  }
+  lastTap = { t: now, x: e.clientX, y: e.clientY };
+  return false;
+}
+
 canvas.addEventListener('pointerup', (e) => {
   if (drag) {
     const d = drag;
@@ -954,6 +974,7 @@ canvas.addEventListener('pointerup', (e) => {
         commit();
       }
       selectPart(d.id);
+      if (!d.moved) doubleTapped(e);
       return;
     }
     creature.capturePose();
@@ -967,6 +988,7 @@ canvas.addEventListener('pointerup', (e) => {
     return;
   }
   if (pointer.moved || e.button !== 0 || gizmo.dragging || drawState) return;
+  if (doubleTapped(e)) return;
   if (pickingFocus) {
     focusAt(e.clientX, e.clientY);
     return;
@@ -1014,9 +1036,15 @@ canvas.addEventListener('pointerup', (e) => {
 });
 
 canvas.addEventListener('dblclick', (e) => {
+  // a double tap that was already handled on the way up
+  if (performance.now() - lastDoubleTap < 600) return;
+  onDoubleClick(e.clientX, e.clientY);
+});
+
+function onDoubleClick(x: number, y: number) {
   // double-click a roll grip to straighten the part
   if (handlesVisible()) {
-    const h = pickHandle(e.clientX, e.clientY);
+    const h = pickHandle(x, y);
     if (h?.userData.kind === 'roll') {
       resetRoll(h.userData.handle as string);
       return;
@@ -1027,7 +1055,7 @@ canvas.addEventListener('dblclick', (e) => {
     }
   }
   if (mode === 'stuff') {
-    const id = drawState ? null : pickPiece(e.clientX, e.clientY);
+    const id = drawState ? null : pickPiece(x, y);
     if (id) {
       selectedPiece = id;
       renderStuffPanel();
@@ -1035,16 +1063,16 @@ canvas.addEventListener('dblclick', (e) => {
     }
     return;
   }
-  const other = pickOtherCreature(e.clientX, e.clientY);
+  const other = pickOtherCreature(x, y);
   if (other) activate(other.index);
   // the first click already went to the eye settings
-  else if (pickEye(e.clientX, e.clientY) !== null) return;
-  const id = pickPart(e.clientX, e.clientY);
+  else if (pickEye(x, y) !== null) return;
+  const id = pickPart(x, y);
   if (!id) return;
   selectPart(id);
   if (mode !== 'shape') setMode('shape');
   enterDraw();
-});
+}
 
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
@@ -1109,7 +1137,8 @@ function showEyes(pair: number) {
 function pickHandle(x: number, y: number): THREE.Object3D | null {
   const r = canvas.getBoundingClientRect();
   let best: THREE.Object3D | null = null;
-  let bestD = 16;
+  // fingers are less exact than a mouse
+  let bestD = pointer.touch ? 28 : 16;
   const v = new THREE.Vector3();
   for (const h of creature.handles()) {
     if (!h.visible) continue;
@@ -1332,18 +1361,19 @@ function drawHint() {
     return;
   }
   if (drawState.pending) {
+    const done = touchScreen() ? 'Done' : 'Done (Enter)';
     const msg = {
-      draw: 'Draw more to add to the shape. Press Done (Enter) to keep it',
-      erase: 'Draw over the parts to cut away. Press Done (Enter) to keep it',
-      move: 'Drag the shape to move it. Press Done (Enter) to keep it',
-      scale: 'Drag away from the middle to make it bigger (Shift keeps its proportions)',
+      draw: `Draw more to add to the shape. Press ${done} to keep it`,
+      erase: `Draw over the parts to cut away. Press ${done} to keep it`,
+      move: `Drag the shape to move it. Press ${done} to keep it`,
+      scale: touchScreen() ? 'Drag away from the middle to make it bigger' : 'Drag away from the middle to make it bigger (Shift keeps its proportions)',
       rotate: 'Drag around the middle to turn the shape',
     }[drawState.tool];
     hint(msg, 0);
     return;
   }
   // how to look around while the drawing layer is in the way
-  const nav = ' · Right-drag or Space+drag to pan, F to face it again';
+  const nav = touchScreen() ? ' · Two fingers move the view' : ' · Right-drag or Space+drag to pan, F to face it again';
   if (target.kind === 'piece') {
     hint((symOn() ? 'Draw a piece: across the dashed line = one symmetric shape, to one side = a mirrored pair' : 'Draw a piece as one closed loop. Erase inside it to make holes') + nav, 0);
     return;
@@ -1905,6 +1935,43 @@ overlay.addEventListener('pointerdown', (e) => {
   canvas.dispatchEvent(new PointerEvent('pointerdown', e));
 });
 overlay.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// On a touch screen a second finger means "move the view": whatever the first
+// finger had started is dropped and both touches go to the camera controls,
+// which follow them (on the document) until they're lifted.
+const drawTouches = new Map<number, PointerEvent>();
+let touchView = false;
+overlay.addEventListener('pointerdown', (e) => {
+  if (!drawState || e.pointerType !== 'touch') return;
+  drawTouches.set(e.pointerId, e);
+  if (!touchView && drawTouches.size < 2) return;
+  e.stopImmediatePropagation();
+  if (!touchView) {
+    touchView = true;
+    const ds = drawState;
+    ds.active = false;
+    ds.pts = [];
+    ds.local = [];
+    ds.stampDrag = null;
+    if (ds.grab) {
+      ds.pending = ds.grab.outers;
+      ds.holes = ds.grab.holes;
+      ds.grab = null;
+      schedulePreview();
+    }
+    renderOverlay();
+    for (const t of drawTouches.values()) canvas.dispatchEvent(new PointerEvent('pointerdown', t));
+  } else canvas.dispatchEvent(new PointerEvent('pointerdown', e));
+}, { capture: true });
+overlay.addEventListener('pointermove', (e) => {
+  if (drawTouches.has(e.pointerId)) drawTouches.set(e.pointerId, e);
+}, { capture: true });
+for (const type of ['pointerup', 'pointercancel'] as const) {
+  window.addEventListener(type, (e) => {
+    drawTouches.delete(e.pointerId);
+    if (!drawTouches.size) touchView = false;
+  });
+}
 
 // Hold Space to pan with the left button too (the drawing layer steps aside meanwhile).
 let spacePan = false;
@@ -3823,7 +3890,7 @@ function setMode(m: Mode) {
   updateSkeletonVisibility();
   refreshPieceGizmo();
   if (m === 'shape') {
-    hint('Drag the orange balls to bend · the teal arrows to stretch · double-click a part to draw it', 3600);
+    hint(`Drag the orange balls to bend · the teal arrows to stretch · ${touchScreen() ? 'double-tap' : 'double-click'} a part to draw it`, 3600);
     renderRigPanel();
   }
   if (m === 'look') hint('Click a part, then pick its color and material', 2200);
@@ -4044,6 +4111,8 @@ let hintTimer = 0;
 function hint(text: string, ms = 2000, warn = false) {
   const el = $('#hint');
   clearTimeout(hintTimer);
+  // fingers tap
+  if (touchScreen()) text = text.replace(/([Cc])lick(ing|ed)?/g, (_, c: string, end = '') => (c === 'C' ? 'T' : 't') + 'ap' + (end && 'p' + end));
   el.textContent = text;
   el.classList.toggle('show', !!text);
   el.classList.toggle('warn', warn);
@@ -4227,10 +4296,70 @@ document.querySelectorAll<HTMLButtonElement>('.modes button').forEach((b) => (b.
 function fitTopbar() {
   const bar = $('.topbar');
   bar.classList.remove('compact');
-  bar.classList.toggle('compact', bar.scrollWidth > bar.clientWidth);
+  // on a phone the tools scroll rather than overflow the bar
+  const tools = $('.topbar .tools');
+  bar.classList.toggle('compact', bar.scrollWidth > bar.clientWidth || tools.scrollWidth > tools.clientWidth);
 }
 new ResizeObserver(fitTopbar).observe($('.topbar'));
 document.fonts.ready.then(fitTopbar); // the icon font and Nunito change the buttons' widths
+
+// On a phone the panel is a sheet under the viewport: drag its grip to resize it, tap to fold it away.
+const SHEET_KEY = 'creature-creator/sheet';
+{
+  const app = $('#app');
+  const grip = $<HTMLButtonElement>('#sheet-grip');
+  const MIN_VIEW = 140; // always leave this much of the viewport
+  let open = 0.42; // share of the window the open sheet takes
+  let folded = false;
+  try {
+    const s = JSON.parse(localStorage.getItem(SHEET_KEY) ?? '{}');
+    if (typeof s.open === 'number') open = s.open;
+    folded = !!s.folded;
+  } catch {}
+  const apply = () => {
+    const max = Math.max(0, app.clientHeight - 48 - grip.offsetHeight - MIN_VIEW);
+    const px = folded ? 0 : Math.min(max, Math.max(80, open * app.clientHeight));
+    app.style.setProperty('--sheet', `${Math.round(px)}px`);
+  };
+  const store = () => {
+    try {
+      localStorage.setItem(SHEET_KEY, JSON.stringify({ open, folded }));
+    } catch {}
+  };
+  let drag: { y: number; px: number; moved: boolean } | null = null;
+  grip.addEventListener('pointerdown', (e) => {
+    grip.setPointerCapture(e.pointerId);
+    drag = { y: e.clientY, px: $('.panel').offsetHeight, moved: false };
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dy = drag.y - e.clientY;
+    if (Math.abs(dy) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    const px = drag.px + dy;
+    // drag it most of the way down and it folds away
+    folded = px < 60;
+    if (!folded) open = px / app.clientHeight;
+    apply();
+  });
+  grip.addEventListener('pointerup', () => {
+    if (drag && !drag.moved) folded = !folded;
+    drag = null;
+    apply();
+    store();
+  });
+  grip.addEventListener('pointercancel', () => (drag = null));
+  // picking a mode means wanting to see its panel
+  document.querySelectorAll('.modes button').forEach((b) =>
+    b.addEventListener('click', () => {
+      if (!folded) return;
+      folded = false;
+      apply();
+      store();
+    }),
+  );
+  new ResizeObserver(apply).observe(app);
+}
 $('#draw').onclick = () => enterDraw({ kind: 'bone', boneId: selected });
 $('#cancel-draw').onclick = () => exitDraw();
 $('#reset-shape').onclick = () => {
