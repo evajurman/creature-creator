@@ -8,11 +8,15 @@
   --accent-soft: #ffe2d9;
   --blue: #3b82f6;
   --radius: 14px;
+  --cursor: url(./cursor.svg) 2 3, default;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-html { cursor: url(./cursor.svg) 2 3, default; }
+html { cursor: var(--cursor); }
+/* the arrow everywhere the system would show its arrow or hand; OrbitControls writes cursor: auto onto the canvas */
+button, select, summary, label, a, input[type=checkbox], input[type=radio], input[type=range], input[type=color] { cursor: var(--cursor); }
+#viewport canvas { cursor: inherit !important; }
 body {
   font-family: 'Nunito', system-ui, sans-serif;
   color: var(--ink);
@@ -46,16 +50,16 @@ button, input, select { font: inherit; color: inherit; }
 .modes { display: flex; background: var(--bg); border-radius: 999px; padding: 3px; }
 .modes button {
   border: 0; background: transparent; padding: 6px 16px; border-radius: 999px;
-  font-weight: 700; cursor: pointer; color: var(--muted); white-space: nowrap;
+  font-weight: 700; cursor: var(--cursor); color: var(--muted); white-space: nowrap;
 }
 .modes button.active { background: var(--panel); color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.1); }
 .tools { display: flex; gap: 6px; }
 .tools button {
   border: 1px solid var(--line); background: var(--panel); padding: 6px 12px;
-  border-radius: 10px; cursor: pointer; font-weight: 700; white-space: nowrap;
+  border-radius: 10px; cursor: var(--cursor); font-weight: 700; white-space: nowrap;
 }
 .tools button:hover { background: var(--bg); }
-.tools button:disabled { opacity: .4; cursor: default; }
+.tools button:disabled { opacity: .4; cursor: var(--cursor); }
 .tools button.on { background: var(--accent-soft); border-color: var(--accent); }
 /* when the labels don't fit (narrow window, zoomed in), the top bar is icons only */
 .topbar.compact .lbl { display: none; }
@@ -78,7 +82,7 @@ button, input, select { font: inherit; color: inherit; }
 .rigs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .rigs button {
   border: 2px solid var(--line); background: var(--panel); border-radius: 12px;
-  padding: 8px 0; cursor: pointer; display: flex; justify-content: center;
+  padding: 8px 0; cursor: var(--cursor); display: flex; justify-content: center;
   align-items: center; color: var(--muted);
 }
 .rigs button span { font-size: 22px; }
@@ -87,7 +91,7 @@ button, input, select { font: inherit; color: inherit; }
 .parts { display: flex; flex-wrap: wrap; gap: 6px; }
 .parts button {
   border: 1px solid var(--line); background: var(--bg); border-radius: 999px;
-  padding: 4px 10px; font-size: 13px; font-weight: 700; cursor: pointer;
+  padding: 4px 10px; font-size: 13px; font-weight: 700; cursor: var(--cursor);
   display: flex; align-items: center; gap: 6px;
 }
 .parts button i:not([class]) { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
@@ -101,7 +105,7 @@ button, input, select { font: inherit; color: inherit; }
 
 button.primary {
   width: 100%; border: 0; background: var(--accent); color: #fff; font-weight: 800;
-  padding: 10px; border-radius: 12px; cursor: pointer; font-size: 15px;
+  padding: 10px; border-radius: 12px; cursor: var(--cursor); font-size: 15px;
   box-shadow: 0 3px 0 #d94e30;
 }
 button.primary:active { transform: translateY(2px); box-shadow: 0 1px 0 #d94e30; }
@@ -111,7 +115,7 @@ button.primary kbd {
 }
 button.ghost {
   border: 1px solid var(--line); background: transparent; border-radius: 10px;
-  padding: 6px 10px; cursor: pointer; font-weight: 700; font-size: 13px;
+  padding: 6px 10px; cursor: var(--cursor); font-weight: 700; font-size: 13px;
 }
 button.ghost:hover { background: var(--bg); }
 
@@ -122,17 +126,17 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
 .swatches button {
   aspect-ratio: 1; border-radius: 50%; border: 2px solid rgba(0,0,0,.08);
-  cursor: pointer; padding: 0;
+  cursor: var(--cursor); padding: 0;
 }
 .swatches button.active { outline: 3px solid var(--ink); outline-offset: 1px; }
 .row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 8px; }
-.color-pick { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; cursor: pointer; }
-.color-pick input { width: 30px; height: 30px; border: 0; padding: 0; background: none; cursor: pointer; }
+.color-pick { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; cursor: var(--cursor); }
+.color-pick input { width: 30px; height: 30px; border: 0; padding: 0; background: none; cursor: var(--cursor); }
 
 .styles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .styles button {
   display: flex; align-items: center; gap: 8px; text-align: left;
-  border: 2px solid var(--line); background: #fff; border-radius: 12px; padding: 6px 8px; cursor: pointer;
+  border: 2px solid var(--line); background: #fff; border-radius: 12px; padding: 6px 8px; cursor: var(--cursor);
 }
 .styles button.active { border-color: var(--accent); background: var(--accent-soft); }
 .styles b { display: block; font-size: 13px; }
@@ -177,7 +181,7 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .turned-row .check { margin: 4px 0; }
 .turned-row[hidden] { display: none; }
 
-.check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin: 10px 0; cursor: pointer; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; margin: 10px 0; cursor: var(--cursor); }
 .check input { accent-color: var(--accent); width: 16px; height: 16px; }
 
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
@@ -205,14 +209,14 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .hint.warn { background: rgba(217, 78, 48, .92); }
 .cancel {
   position: absolute; top: 14px; right: 14px; border: 0; background: var(--ink);
-  color: #fff; padding: 8px 14px; border-radius: 999px; font-weight: 700; cursor: pointer;
+  color: #fff; padding: 8px 14px; border-radius: 999px; font-weight: 700; cursor: var(--cursor);
 }
 
 
 .eye-styles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .eye-styles button {
   border: 2px solid var(--line); background: #fff; border-radius: 12px; padding: 6px 4px;
-  cursor: pointer; font-weight: 700; font-size: 12px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  cursor: var(--cursor); font-weight: 700; font-size: 12px; display: flex; flex-direction: column; align-items: center; gap: 2px;
 }
 .eye-styles button span { font-size: 18px; line-height: 1; }
 .eye-styles button.active { border-color: var(--accent); background: var(--accent-soft); }
@@ -241,7 +245,7 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 }
 .draw-bar kbd { font: inherit; font-size: 10px; background: var(--bg); border-radius: 5px; padding: 0 5px; color: var(--muted); }
 .pill-toggle {
-  display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 5px 12px;
+  display: flex; align-items: center; gap: 6px; cursor: var(--cursor); padding: 5px 12px;
   border-radius: 999px; border: 1px solid var(--line); user-select: none;
 }
 .pill-toggle input { display: none; }
@@ -250,7 +254,7 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .bar-slider input { width: 110px; }
 .draw-bar button {
   border: 0; background: var(--ink); color: #fff; padding: 6px 12px; border-radius: 999px;
-  font-weight: 700; cursor: pointer;
+  font-weight: 700; cursor: var(--cursor);
 }
 .draw-bar button kbd { background: rgba(255,255,255,.2); color: #fff; }
 .draw-bar[hidden], .popover[hidden] { display: none; }
@@ -260,7 +264,7 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 
 .rig-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .rig-actions button { text-align: left; }
-.rig-actions button:disabled, button.ghost:disabled { opacity: .4; cursor: default; }
+.rig-actions button:disabled, button.ghost:disabled { opacity: .4; cursor: var(--cursor); }
 input.text {
   flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px;
   background: #fff; font-weight: 700; font-size: 13px;
@@ -272,7 +276,7 @@ input.text {
 .eye-pairs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
 .eye-pairs button {
   border: 1px solid var(--line); background: var(--bg); border-radius: 999px;
-  padding: 3px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
+  padding: 3px 10px; font-size: 12px; font-weight: 700; cursor: var(--cursor);
 }
 .eye-pairs button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
 .eye-pairs button.add { background: #fff; border-style: dashed; }
@@ -284,7 +288,7 @@ input.text {
   border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit;
 }
 .style-params-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13px; }
-button.link { border: 0; background: none; color: var(--accent); font-weight: 700; font-size: 12px; cursor: pointer; padding: 0; }
+button.link { border: 0; background: none; color: var(--accent); font-weight: 700; font-size: 12px; cursor: var(--cursor); padding: 0; }
 
 .attach-sec { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .sub-title { font-size: 12px; font-weight: 800; color: var(--muted); margin-bottom: 6px; }
@@ -293,12 +297,12 @@ input.text.wide, button.wide { width: 100%; margin-bottom: 8px; }
 button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; }
 #stuff-panel .primary { margin: 8px 0 2px; }
 .seg { display: flex; background: var(--bg); border-radius: 10px; padding: 3px; margin-bottom: 6px; }
-.seg button { flex: 1; border: 0; background: transparent; padding: 6px; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer; color: var(--muted); }
+.seg button { flex: 1; border: 0; background: transparent; padding: 6px; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: var(--cursor); color: var(--muted); }
 .seg button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 .mini-styles { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
 .mini-styles button {
   display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); background: #fff;
-  border-radius: 999px; padding: 3px 8px 3px 4px; font-size: 11px; font-weight: 700; cursor: pointer;
+  border-radius: 999px; padding: 3px 8px 3px 4px; font-size: 11px; font-weight: 700; cursor: var(--cursor);
 }
 .mini-styles button.active { border-color: var(--accent); background: var(--accent-soft); }
 .mini-styles .ball { width: 16px; height: 16px; }
@@ -310,7 +314,7 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .thing-name { font-weight: 800; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thing-actions { display: flex; gap: 4px; }
 .thing-actions button { flex: 1; padding: 3px 4px; font-size: 11px; }
-.thing-card.pick { cursor: pointer; }
+.thing-card.pick { cursor: var(--cursor); }
 .thing-card.pick:hover { border-color: var(--accent); }
 #stuff-panel .thing-list { grid-template-columns: repeat(3, 1fr); gap: 6px; }
 #stuff-panel .thing-card { padding: 4px; }
@@ -329,7 +333,7 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 
 .attach-bar .seg-btn {
   border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 5px 10px;
-  border-radius: 999px; font-weight: 700; cursor: pointer;
+  border-radius: 999px; font-weight: 700; cursor: var(--cursor);
 }
 .attach-bar .seg-btn.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
 .attach-name { padding: 0 6px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
@@ -348,7 +352,7 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 }
 .view-bar button {
   border: 0; background: transparent; padding: 5px 9px; border-radius: 9px;
-  font-weight: 700; font-size: 12px; cursor: pointer; color: var(--ink);
+  font-weight: 700; font-size: 12px; cursor: var(--cursor); color: var(--ink);
 }
 .view-bar button:hover { background: var(--bg); }
 
@@ -367,7 +371,7 @@ button.primary.slim { width: auto; flex: 1; padding: 8px 10px; font-size: 14px; 
 .creature-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .creature-chips button {
   display: flex; align-items: center; gap: 6px; border: 1.5px solid var(--line); background: #fff;
-  border-radius: 10px; padding: 4px 10px; font-weight: 800; font-size: 13px; cursor: pointer;
+  border-radius: 10px; padding: 4px 10px; font-weight: 800; font-size: 13px; cursor: var(--cursor);
 }
 .creature-chips button i:not([class]) { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
 .creature-chips button.active { border-color: var(--accent); background: var(--accent-soft); }
@@ -417,14 +421,14 @@ body.show-nums .slider input.num, body.show-nums .bar-slider input.num { display
 .draw-bar { flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); border-radius: 22px; }
 .draw-bar .seg-btn {
   border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 5px 10px;
-  border-radius: 999px; font-weight: 700; cursor: pointer;
+  border-radius: 999px; font-weight: 700; cursor: var(--cursor);
 }
 .draw-bar .seg-btn:hover { background: var(--bg); }
 .draw-bar .seg-btn.on { background: #dbe8fd; border-color: var(--blue); color: #1d4ed8; }
 .draw-bar .seg-btn kbd { background: var(--bg); color: var(--muted); }
 #overlay.active.moving { cursor: move; }
 #overlay.active.erasing { cursor: cell; }
-.draw-bar .seg-btn:disabled, .draw-bar button:disabled { opacity: .4; cursor: default; }
+.draw-bar .seg-btn:disabled, .draw-bar button:disabled { opacity: .4; cursor: var(--cursor); }
 .bar-group { display: flex; gap: 4px; }
 .bar-group[hidden] { display: none; }
 .bar-group .seg-btn { padding: 4px 9px; font-size: 14px; line-height: 1.1; }
@@ -462,7 +466,7 @@ body.show-nums .slider input.num, body.show-nums .bar-slider input.num { display
 
 details.fine { margin-top: 10px; }
 details.fine > summary {
-  cursor: pointer; font-size: 12px; font-weight: 800; color: var(--muted); list-style: none; user-select: none;
+  cursor: var(--cursor); font-size: 12px; font-weight: 800; color: var(--muted); list-style: none; user-select: none;
 }
 details.fine > summary::before { content: '▸ '; display: inline-block; transition: transform .15s; }
 details.fine[open] > summary::before { transform: rotate(90deg); }
@@ -479,14 +483,14 @@ details.fine[open] > summary { margin-bottom: 6px; }
 .load-all { font-weight: 800; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .load-list { overflow-y: auto; margin: 4px 0 12px; }
 .load-list .pop-sub { margin-top: 10px; }
-.load-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.load-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-radius: 8px; cursor: var(--cursor); font-size: 14px; }
 .load-row:hover { background: var(--bg); }
 .load-icon { width: 28px; height: 28px; display: grid; place-items: center; flex: none; }
 .load-icon img { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; }
 .load-dot { width: 16px; height: 16px; border-radius: 50%; display: block; border: 1px solid rgba(0,0,0,.12); }
 .load-actions { display: flex; gap: 8px; }
 .load-actions button { flex: 1; }
-.load-actions button:disabled { opacity: .45; cursor: default; }
+.load-actions button:disabled { opacity: .45; cursor: var(--cursor); }
 .load-list[hidden], .load-all[hidden] { display: none; }
 .dim-toggle { display: flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--bg); margin-left: 4px; }
 .dim-toggle .seg-btn { padding: 4px 10px; }
@@ -499,7 +503,7 @@ details.fine[open] > summary { margin-bottom: 6px; }
   border: 1px solid var(--line); background: var(--bg);
 }
 .piece-row.active { background: var(--ink); border-color: var(--ink); }
-.piece-row button { border: 0; background: transparent; cursor: pointer; font-weight: 700; font-size: 13px; color: inherit; }
+.piece-row button { border: 0; background: transparent; cursor: var(--cursor); font-weight: 700; font-size: 13px; color: inherit; }
 .piece-row.active button { color: #fff; }
 .piece-pick { flex: 1; display: flex; align-items: center; gap: 6px; padding: 5px 8px; text-align: left; border-radius: 8px; }
 .piece-pick i:not([class]) { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.15); flex: none; }
