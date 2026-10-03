@@ -12,6 +12,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+html { cursor: url(./cursor.svg) 2 3, default; }
 body {
   font-family: 'Nunito', system-ui, sans-serif;
   color: var(--ink);
