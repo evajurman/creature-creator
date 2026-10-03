@@ -8,6 +8,8 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#f5efe4" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
     <script src="https://kit.fontawesome.com/16182ad8a7.js" crossorigin="anonymous"></script>
@@ -24,12 +26,13 @@
         </div>
         <div class="spacer"></div>
         <div class="tools">
+          <button id="library-btn" title="My creations: everything you've made"><i class="fa-slab fa-regular fa-images" aria-hidden="true"></i><span class="lbl"> Creations</span></button>
           <button id="file-btn" title="Save and open files"><i class="fa-slab fa-regular fa-folder" aria-hidden="true"></i><span class="lbl"> File</span></button>
           <button id="undo" title="Undo (Ctrl+Z)"><i class="fa-slab fa-regular fa-arrow-rotate-left" aria-hidden="true"></i></button>
           <button id="redo" title="Redo (Ctrl+Shift+Z)"><i class="fa-slab fa-regular fa-arrow-rotate-right" aria-hidden="true"></i></button>
           <button id="backdrop-btn" title="Backdrop, lighting &amp; photo"><i class="fa-slab fa-regular fa-image" aria-hidden="true"></i><span class="lbl"> Backdrop</span></button>
           <button id="spin" title="Turntable"><i class="fa-slab fa-regular fa-arrows-rotate" aria-hidden="true"></i><span class="lbl"> Spin</span></button>
-          <button id="new" title="Start over"><i class="fa-slab fa-regular fa-wand-magic-sparkles" aria-hidden="true"></i><span class="lbl"> New</span></button>
+          <button id="new" title="New creation (the one you're on stays in My creations)"><i class="fa-slab fa-regular fa-wand-magic-sparkles" aria-hidden="true"></i><span class="lbl"> New</span></button>
           <button id="settings-btn" title="Settings"><i class="fa-slab fa-regular fa-gear" aria-hidden="true"></i></button>
         </div>
       </header>
@@ -85,7 +88,6 @@
 
             <div class="sub-title rig-sub">Grow</div>
             <div class="rig-actions">
-              <button id="rig-add" class="ghost" title="Sprout a two-segment limb from the side of this part"><i class="fa-regular fa-plus" aria-hidden="true"></i> Limb</button>
               <button id="rig-bone" class="ghost" title="Sprout a single piece from the side of this part"><i class="fa-regular fa-bone" aria-hidden="true"></i> Bone</button>
               <button id="rig-extend" class="ghost" title="Add a segment on the end of this part"><i class="fa-regular fa-arrow-up-right" aria-hidden="true"></i> Extend</button>
               <button id="rig-split" class="ghost" title="Split this part in the middle into two jointed halves"><i class="fa-slab fa-regular fa-scissors" aria-hidden="true"></i> Split</button>
@@ -93,6 +95,7 @@
               <button id="rig-del" class="ghost" title="Remove this part and everything attached to it"><i class="fa-slab fa-regular fa-trash" aria-hidden="true"></i> Delete</button>
               <button id="rig-unlink" class="ghost" title="Let the left and right sides be shaped separately"><i class="fa-regular fa-link-slash" aria-hidden="true"></i> Unlink pair</button>
               <button id="rig-eyes" class="ghost" title="Add eyes to this part (on a mirrored part, both sides get them)"><i class="fa-slab fa-regular fa-eye" aria-hidden="true"></i> Add eyes here</button>
+              <button id="rig-attach" class="ghost" title="Put something from My stuff on this part (opens Look)"><i class="fa-slab fa-regular fa-paperclip" aria-hidden="true"></i> Attach stuff…</button>
             </div>
 
           </div>
@@ -286,6 +289,18 @@
         <div id="attach-pop" class="popover attach-pop" hidden>
           <div class="pop-title">Attach from your collection <button id="attach-pop-close" class="link">close</button></div>
           <div id="attach-options" class="thing-list"></div>
+        </div>
+        <div id="library-pop" class="popover library-pop" hidden>
+          <div class="pop-title">My creations <button id="library-close" class="link">close</button></div>
+          <div id="creation-grid" class="creation-grid"></div>
+          <div class="library-foot">
+            <p class="muted small">Everything you make is kept in this browser as you go. Back it up now and then: clearing your browser's site data would erase it.</p>
+            <div class="library-actions">
+              <button id="library-backup" class="ghost" title="All your creations in one file"><i class="fa-regular fa-download" aria-hidden="true"></i> Back up all</button>
+              <button id="library-import" class="ghost" title="Bring creations back in from a backup (or open any save)"><i class="fa-regular fa-folder-open" aria-hidden="true"></i> Open a backup…</button>
+              <button id="install-app" class="ghost" title="Its own window, works offline, and your browser takes better care of your creations" hidden><i class="fa-regular fa-arrow-down-to-square" aria-hidden="true"></i> Install as an app</button>
+            </div>
+          </div>
         </div>
         <div id="file-pop" class="popover" hidden>
           <div class="pop-title">Files</div>

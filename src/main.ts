@@ -32,7 +32,6 @@ import {
 import { bounds, clipLoop, combineLoops, getMeshDetail, pointInPolygon, setMeshDetail, signedArea, smoothLoop, symmetrize, type Vec2 } from './inflate';
 import {
   buildThing,
-  clearCollection,
   collection,
   disposeThing,
   downloadText,
@@ -52,6 +51,7 @@ import {
 import { FUR_LAYER, STYLE_PARAMS, STYLES, makeMaterial, setFuzzQuality, setGlassEnvironment, styleSettings, type StyleId } from './materials';
 import { installScrollbars } from './scrollbars';
 import { installCursorPress } from './cursorPress';
+import { deleteCreation, getCreation, keepStorage, listCreations, putCreation, type Creation } from './library';
 import {
   RIGS,
   addLimb,
@@ -484,7 +484,25 @@ interface World {
 
 const WORLD_KEY = 'creature-creator/world';
 const OLD_KEY = 'creature-creator/v1';
-let world: World = loadWorld() ?? { creatures: [defaultState(rigFromTemplate(RIGS[0]))], active: 0 };
+/** which of My creations the open scene is (kept apart from the world, so undo can't change it) */
+const CREATION_KEY = 'critterkiln/creation';
+const loadedWorld = loadWorld();
+let world: World = loadedWorld ?? freshWorld();
+/** The open scene's place in My creations. */
+const opened = {
+  id: localStorage.getItem(CREATION_KEY),
+  created: 0,
+  thumb: undefined as string | undefined,
+  /** a scene only joins the library once something's been done to it (or it came from somewhere) */
+  keep: false,
+  /** what was last written, so an unchanged scene isn't saved again */
+  savedJson: '',
+  timer: 0,
+  /** how many times the save has waited for a drag or skin to finish */
+  waits: 0,
+  /** writes queue up so they land in order */
+  writing: Promise.resolve(),
+};
 let state: CreatureState = world.creatures[world.active];
 const creatures: Creature[] = [];
 let creature: Creature;
@@ -494,6 +512,10 @@ let idle = true;
 type Mode = 'shape' | 'look' | 'stuff';
 let mode: Mode = 'shape';
 let eyePair = 0;
+
+function freshWorld(): World {
+  return { creatures: [defaultState(rigFromTemplate(RIGS[0]))], active: 0 };
+}
 
 function loadWorld(): World | null {
   try {
@@ -550,6 +572,7 @@ function save() {
   } catch {
     /* storage full or blocked; nothing to do */
   }
+  queueCreationSave();
 }
 
 const history: string[] = [];
@@ -2648,7 +2671,11 @@ function flashPiece(k: number) {
 /** Render just the thing, framed, into a small square image for the collection. */
 function captureThumb(): string {
   if (!bench) return '';
-  const box = new THREE.Box3().setFromObject(bench);
+  return snapThumb(new THREE.Box3().setFromObject(bench));
+}
+
+/** Render a clean frame and crop a small square round `box` as the camera sees it. */
+function snapThumb(box: THREE.Box3, size = 160): string {
   if (box.isEmpty()) return '';
   // pictured from wherever the camera is: crop a square round the thing as it's seen now
   camera.updateMatrixWorld();
@@ -2668,7 +2695,6 @@ function captureThumb(): string {
   boardGrid.visible = false;
   const url = withCleanScene(() => {
     composer.render();
-    const size = 160;
     const out = document.createElement('canvas');
     out.width = out.height = size;
     out.getContext('2d')!.drawImage(canvas, sx, sy, side, side, 0, 0, size, size);
@@ -3265,6 +3291,12 @@ $('#attach-add').onclick = () => {
   renderCollection();
 };
 $('#attach-pop-close').onclick = () => ($('#attach-pop').hidden = true);
+// from Shape: stuff is placed and styled in Look, so go there with this part still picked
+$('#rig-attach').onclick = () => {
+  if (mode !== 'look') setMode('look');
+  $('#attach-pop').hidden = false;
+  renderCollection();
+};
 $('#attach-mat').onclick = () => {
   const pop = $('#attach-mat-pop');
   pop.hidden = !pop.hidden;
@@ -3298,7 +3330,7 @@ $('#attach-done').onclick = () => deselectAttachment();
 // files
 
 // The top-bar menus share the same corner of the viewport, so only one is open at a time.
-const POPOVERS: [button: string, pop: string][] = [['#file-btn', '#file-pop'], ['#backdrop-btn', '#backdrop'], ['#settings-btn', '#settings-pop']];
+const POPOVERS: [button: string, pop: string][] = [['#library-btn', '#library-pop'], ['#file-btn', '#file-pop'], ['#backdrop-btn', '#backdrop'], ['#settings-btn', '#settings-pop']];
 /** Open (or, if it's already open, close) one top-bar menu. Returns whether it's now open. */
 function togglePopover(pop: string): boolean {
   const open = $(pop).hidden !== false;
@@ -3402,6 +3434,11 @@ function bundleFrom(text: string): Bundle {
 }
 
 function openFile(text: string, fileName = '') {
+  const env = parseEnvelope(text);
+  if (env.kind === 'library') {
+    void importCreations(env.data as LibraryFile);
+    return;
+  }
   const b = bundleFrom(text);
   for (const s of b.creatures) delete s.workbench; // the workbench belongs to the scene, not the file
   if (!b.creatures.length && !b.stuff.length && !b.rigs.length && !b.look) throw new Error('There was nothing in this file that could be read.');
@@ -3440,14 +3477,11 @@ function loadBundle(b: Bundle, pick: LoadChoice, replace: boolean) {
   if (pick.look && b.look) applyLook(b.look);
 
   if (incoming.length && replace) {
-    for (const c of creatures) c.dispose();
-    creatures.length = 0;
-    creature = undefined as unknown as Creature; // replaced wholesale
+    // a new creation: the scene it replaces stays in My creations
+    flushCreationSave();
     const active = Math.max(0, incoming.indexOf(b.creatures[b.active ?? 0]));
-    world = { creatures: incoming, active, workbench: world.workbench, name: b.name };
-    incoming.forEach((s, i) => (creatures[i] = makeCreature(s)));
-    selected = '';
-    activate(world.active);
+    replaceWorld({ creatures: incoming, active, workbench: world.workbench, name: b.name });
+    beginCreation(null, true);
   } else if (incoming.length) {
     // keep the file's own arrangement, shifted to free floor on the right
     const spot = freeSpot();
@@ -3591,6 +3625,430 @@ function showLoadPicker(b: Bundle, title: string) {
   }
   $('#load-pop').hidden = false;
 }
+
+// ---------------------------------------------------------------------------
+// My creations: the open scene saves itself into the library (src/library.ts)
+// as you go, and the library lists everything you've made
+
+/** What the library keeps for each scene. */
+interface CreationData {
+  creatures: CreatureState[];
+  active: number;
+  look: SceneLook;
+}
+type SavedCreation = Creation<CreationData>;
+/** A backup of the whole library, as one file. */
+interface LibraryFile {
+  creations: SavedCreation[];
+}
+
+const CREATION_SAVE_MS = 1200;
+
+function creationData(): CreationData {
+  return { creatures: world.creatures.map(forFile), active: world.active, look: currentLook() };
+}
+
+/** "Bimble & Twin", or "Untitled" when nobody has a name. */
+function creationName(c: { name?: string; data: { creatures: CreatureState[] } }): string {
+  const named = c.data.creatures.map((s) => s.name?.trim()).filter(Boolean);
+  return c.name?.trim() || (named.length ? named.join(' & ') : 'Untitled');
+}
+
+/** Save the open scene to the library a moment after it changes. */
+function queueCreationSave() {
+  // a new scene nobody has touched yet isn't worth keeping
+  if (!opened.keep && hIndex <= 0) return;
+  opened.keep = true;
+  clearTimeout(opened.timer);
+  opened.waits = 0;
+  opened.timer = window.setTimeout(saveCreationWhenSettled, CREATION_SAVE_MS);
+}
+
+function saveCreationWhenSettled() {
+  // mid-drag, mid-drawing or while a seamless skin is building, the picture would come out half-done
+  const busy = !!drawState || !!drag || gizmo.dragging || creatures.some((c) => c.skinState === 'building');
+  if (busy && ++opened.waits < 10) {
+    opened.timer = window.setTimeout(saveCreationWhenSettled, 800);
+    return;
+  }
+  saveCreationNow();
+}
+
+/** Save straight away if a save is waiting (before the scene is swapped for another). */
+function flushCreationSave() {
+  if (opened.timer) saveCreationNow();
+}
+
+/** A picture of every creature in the scene, or '' when they can't be pictured right now. */
+function creationThumb(): string {
+  if (mode === 'stuff' || drawState) return '';
+  const box = new THREE.Box3();
+  for (const c of creatures) {
+    c.root.updateMatrixWorld(true);
+    for (const m of c.meshes()) box.expandByObject(m);
+  }
+  return snapThumb(box, 256);
+}
+
+function saveCreationNow() {
+  clearTimeout(opened.timer);
+  opened.timer = 0;
+  if (!opened.keep) return;
+  const data = creationData();
+  const json = JSON.stringify(data);
+  if (json === opened.savedJson && opened.thumb) return;
+  const thumb = creationThumb();
+  if (json === opened.savedJson && !thumb) return;
+  if (!opened.id) {
+    opened.id = uid();
+    opened.created = Date.now();
+    try {
+      localStorage.setItem(CREATION_KEY, opened.id);
+    } catch {
+      /* ignore */
+    }
+    keepStorage();
+  }
+  if (thumb) opened.thumb = thumb;
+  opened.savedJson = json;
+  const record: SavedCreation = { id: opened.id, name: world.name?.trim() || undefined, created: opened.created, updated: Date.now(), thumb: opened.thumb, data };
+  opened.writing = opened.writing.then(() => writeCreation(record));
+}
+
+let libraryWarned = false;
+async function writeCreation(record: SavedCreation) {
+  try {
+    // reopened after a reload: keep its original date and picture
+    if (!record.created || !record.thumb) {
+      const before = await getCreation<CreationData>(record.id);
+      record.created ||= before?.created ?? record.updated;
+      record.thumb ??= before?.thumb;
+      if (opened.id === record.id) opened.created = record.created;
+    }
+    await putCreation(record);
+  } catch {
+    if (libraryWarned) return;
+    libraryWarned = true;
+    hint("Couldn't save to My creations in this browser: use File › Save to keep your work", 5000, true);
+  }
+}
+
+/** The open scene becomes creation `id` (null: not in the library yet). Undo starts over. */
+function beginCreation(id: string | null, keep: boolean, from?: SavedCreation) {
+  clearTimeout(opened.timer);
+  opened.timer = 0;
+  opened.id = id;
+  opened.created = from?.created ?? 0;
+  opened.thumb = from?.thumb;
+  opened.keep = keep;
+  opened.savedJson = '';
+  try {
+    if (id) localStorage.setItem(CREATION_KEY, id);
+    else localStorage.removeItem(CREATION_KEY);
+  } catch {
+    /* ignore */
+  }
+  // undo can't reach back into another creation
+  history.length = 0;
+  hIndex = -1;
+}
+
+/** Swap every creature in the scene for these (the workbench stays). */
+function replaceWorld(next: World) {
+  exitDraw();
+  deselectAttachment();
+  stopPlacing();
+  for (const c of creatures) c.dispose();
+  creatures.length = 0;
+  creature = undefined as unknown as Creature; // replaced wholesale
+  world = next;
+  next.creatures.forEach((s, i) => (creatures[i] = makeCreature(s)));
+  selected = '';
+  activate(world.active);
+}
+
+function newCreation() {
+  flushCreationSave();
+  const kept = opened.keep;
+  if (mode !== 'shape') setMode('shape');
+  replaceWorld({ ...freshWorld(), workbench: world.workbench });
+  beginCreation(null, false);
+  idle = true;
+  commit();
+  renderUI();
+  frameCreature(true);
+  hint(kept ? 'Fresh start! The last one is in My creations' : 'Fresh start!', 2200);
+}
+
+async function openCreation(id: string) {
+  closeLibrary();
+  if (id === opened.id) return;
+  flushCreationSave();
+  const c = await getCreation<CreationData>(id).catch(() => undefined);
+  const list = (c?.data.creatures ?? []).map(migrate).filter((s): s is CreatureState => !!s);
+  if (!c || !list.length) return hint("That creation couldn't be opened", 2500, true);
+  for (const s of list) delete s.workbench;
+  if (mode === 'stuff') setMode('shape');
+  replaceWorld({ creatures: list, active: Math.min(Math.max(0, c.data.active ?? 0), list.length - 1), workbench: world.workbench, name: c.name });
+  if (c.data.look) applyLook(c.data.look);
+  beginCreation(c.id, true, c);
+  idle = true;
+  commit();
+  // opening it isn't a change
+  opened.savedJson = JSON.stringify(creationData());
+  renderUI();
+  frameAll();
+  hint(`Opened ${creationName(c)}`, 1800);
+}
+
+const relTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+const TIME_UNITS = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]] as const;
+function timeAgo(t: number): string {
+  const sec = (t - Date.now()) / 1000;
+  for (const [unit, n] of TIME_UNITS) if (Math.abs(sec) >= n) return relTime.format(Math.round(sec / n), unit);
+  return 'just now';
+}
+
+function openLibrary() {
+  if ($('#library-pop').hidden) togglePopover('#library-pop');
+  void renderLibrary();
+}
+function closeLibrary() {
+  if (!$('#library-pop').hidden) togglePopover('#library-pop');
+}
+$('#library-btn').onclick = () => {
+  if (togglePopover('#library-pop')) void renderLibrary();
+};
+$('#library-close').onclick = closeLibrary;
+
+async function renderLibrary() {
+  const grid = $('#creation-grid');
+  // the open scene's latest changes go in first, so its card is up to date
+  flushCreationSave();
+  let list: SavedCreation[];
+  try {
+    await opened.writing;
+    list = await listCreations<CreationData>();
+  } catch {
+    grid.innerHTML = `<p class="muted small">My creations can't be kept in this browser (a private window, or site storage is blocked). Use File › Save to keep your work.</p>`;
+    return;
+  }
+  grid.innerHTML = '';
+  const fresh = document.createElement('button');
+  fresh.className = 'creation-card creation-new';
+  fresh.innerHTML = `<span class="thumb">${faClassic('plus')}</span><span class="creation-name">New creation</span>`;
+  fresh.onclick = () => {
+    closeLibrary();
+    newCreation();
+  };
+  grid.append(fresh);
+  for (const c of list) grid.append(creationCard(c));
+  if (!list.length) {
+    const p = document.createElement('p');
+    p.className = 'muted small library-empty';
+    p.textContent = 'Nothing here yet. Whatever you make is kept here as you go.';
+    grid.append(p);
+  }
+}
+
+function creationCard(c: SavedCreation): HTMLElement {
+  const current = c.id === opened.id;
+  const card = document.createElement('div');
+  card.className = 'creation-card';
+  card.classList.toggle('current', current);
+  const name = creationName(c);
+
+  const open = document.createElement('button');
+  open.className = 'creation-open';
+  open.title = current ? `${name} (open now)` : `Open ${name}`;
+  if (c.thumb) {
+    const img = document.createElement('img');
+    img.className = 'thumb';
+    img.src = c.thumb;
+    img.alt = '';
+    open.append(img);
+  } else {
+    const color = Object.values(c.data.creatures[0]?.parts ?? {})[0]?.color ?? '#ccc';
+    open.innerHTML = `<span class="thumb"><i class="creation-blob" style="background:${color}"></i></span>`;
+  }
+  if (current) open.insertAdjacentHTML('beforeend', '<span class="creation-badge">Open now</span>');
+  open.onclick = () => void openCreation(c.id);
+
+  const label = document.createElement('span');
+  label.className = 'creation-name';
+  label.textContent = name;
+  const meta = document.createElement('div');
+  meta.className = 'creation-meta';
+  const when = document.createElement('span');
+  when.className = 'creation-when muted';
+  when.textContent = timeAgo(c.updated);
+  meta.append(label, when);
+
+  const actions = document.createElement('div');
+  actions.className = 'creation-actions';
+  const action = (icon: string, title: string, fn: () => void) => {
+    const b = document.createElement('button');
+    b.className = 'piece-icon';
+    b.innerHTML = fa(icon);
+    b.title = title;
+    b.onclick = fn;
+    actions.append(b);
+  };
+  action('pencil', 'Rename', () => renameCreation(c, label));
+  action('copy', 'Make a copy', () => void copyCreation(c));
+  action('arrow-down-to-line', 'Download it as a file', () => downloadCreation(c));
+  action('trash', 'Delete', () => void removeCreation(c));
+  card.append(open, meta, actions);
+  return card;
+}
+
+function renameCreation(c: SavedCreation, label: HTMLElement) {
+  const input = document.createElement('input');
+  input.className = 'text creation-rename';
+  input.maxLength = 60;
+  input.value = c.name ?? '';
+  input.placeholder = creationName({ data: c.data });
+  label.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (keep: boolean) => {
+    if (done) return;
+    done = true;
+    const next = input.value.trim() || undefined;
+    if (keep && next !== c.name) {
+      c.name = next;
+      if (c.id === opened.id) {
+        // later saves carry the name along
+        world.name = next;
+        save();
+      }
+      await opened.writing;
+      await putCreation(c).catch(() => hint("Couldn't rename it", 2000, true));
+    }
+    void renderLibrary();
+  };
+  input.onkeydown = (e) => {
+    e.stopPropagation(); // typing a name isn't a shortcut
+    if (e.key === 'Enter') void finish(true);
+    else if (e.key === 'Escape') void finish(false);
+  };
+  input.onblur = () => void finish(true);
+}
+
+async function copyCreation(c: SavedCreation) {
+  const now = Date.now();
+  const data = c.id === opened.id ? creationData() : c.data;
+  try {
+    await opened.writing;
+    await putCreation<CreationData>({ ...structuredClone(c), data: structuredClone(data), id: uid(), name: `${creationName(c)} copy`, created: now, updated: now });
+  } catch {
+    hint("Couldn't copy it", 2000, true);
+  }
+  void renderLibrary();
+}
+
+function downloadCreation(c: SavedCreation) {
+  const name = creationName(c);
+  const d = c.id === opened.id ? creationData() : c.data;
+  saveBundle({ name, active: d.active, creatures: d.creatures, stuff: [], rigs: [], look: d.look }, name);
+}
+
+async function removeCreation(c: SavedCreation) {
+  const name = creationName(c);
+  if (!confirm(`Delete "${name}" from My creations? This can't be undone.`)) return;
+  const current = c.id === opened.id;
+  if (current) {
+    // nothing more of it gets saved
+    clearTimeout(opened.timer);
+    opened.timer = 0;
+    opened.keep = false;
+  }
+  try {
+    await opened.writing;
+    await deleteCreation(c.id);
+  } catch {
+    hint("Couldn't delete it", 2000, true);
+  }
+  if (current) newCreation();
+  void renderLibrary();
+}
+
+/** The whole library as one file. */
+async function backupCreations() {
+  flushCreationSave();
+  try {
+    await opened.writing;
+    const creations = await listCreations<CreationData>();
+    if (!creations.length) return hint('Nothing in My creations yet', 1800);
+    const day = new Date().toISOString().slice(0, 10);
+    downloadText(`CritterKiln creations ${day}.creature`, JSON.stringify(envelope('library', { creations } satisfies LibraryFile)));
+  } catch {
+    hint("Couldn't read My creations", 2000, true);
+  }
+}
+$('#library-backup').onclick = () => void backupCreations();
+$('#library-import').onclick = () => $<HTMLInputElement>('#file-input').click();
+
+/** Bring a backup's creations into the library (where yours aren't newer). */
+async function importCreations(f: LibraryFile) {
+  const incoming = (f.creations ?? []).filter((c) => c?.id && Array.isArray(c.data?.creatures));
+  if (!incoming.length) return hint('There were no creations in this file', 2500, true);
+  let added = 0;
+  try {
+    await opened.writing;
+    const have = new Map((await listCreations()).map((c) => [c.id, c]));
+    for (const c of incoming) {
+      const mine = have.get(c.id);
+      if (mine && mine.updated >= c.updated) continue;
+      // the open scene would save straight over it: keep the backup's version beside it
+      await putCreation(c.id === opened.id ? { ...c, id: uid() } : c);
+      added++;
+    }
+  } catch {
+    return hint("My creations can't be kept in this browser", 3000, true);
+  }
+  hint(added ? `Added ${added} creation${added > 1 ? 's' : ''} to My creations` : 'You already have everything in this file', 2400);
+  openLibrary();
+}
+
+// installing as an app (where the browser offers it): its own window, and storage the browser keeps
+let installPrompt: (Event & { prompt(): Promise<unknown> }) | null = null;
+addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e as typeof installPrompt;
+  $('#install-app').hidden = false;
+});
+addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('#install-app').hidden = true;
+});
+$('#install-app').onclick = async () => {
+  await installPrompt?.prompt();
+  installPrompt = null;
+  $('#install-app').hidden = true;
+};
+
+// a .creature file opened from the desktop with the installed app
+interface LaunchParams {
+  files: { getFile(): Promise<File> }[];
+}
+(window as { launchQueue?: { setConsumer(fn: (p: LaunchParams) => void): void } }).launchQueue?.setConsumer(async (p) => {
+  for (const handle of p.files) {
+    const file = await handle.getFile();
+    try {
+      openFile(await file.text(), file.name);
+    } catch (err) {
+      hint(`${file.name}: ${(err as Error).message}`, 3500, true);
+    }
+  }
+});
+
+// leaving the page: whatever's waiting gets saved
+addEventListener('pagehide', flushCreationSave);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) flushCreationSave();
+});
 
 // ---------------------------------------------------------------------------
 // UI
@@ -4122,6 +4580,7 @@ function renderRigPanel() {
   $<HTMLButtonElement>('#rig-del').disabled = !b || isRoot;
   $<HTMLButtonElement>('#rig-unlink').disabled = !paired || rigLocked();
   $<HTMLButtonElement>('#rig-eyes').disabled = !b;
+  $<HTMLButtonElement>('#rig-attach').disabled = !b;
   $<HTMLButtonElement>('#rig-split').disabled = !b;
   $('#rig-pair-note').textContent = paired ? 'Mirrored pair: both sides move together.' : '';
   $<HTMLInputElement>('#rig-sym').checked = rigLocked();
@@ -4164,7 +4623,6 @@ function renderRigPanel() {
   if (!list.children.length) list.innerHTML = '<p class="muted small">No saved rigs yet.</p>';
 }
 
-$('#rig-add').onclick = () => rigEdit((rig) => addLimb(rig, selected, rigLocked()), false);
 $('#rig-bone').onclick = () => rigEdit((rig) => addLimb(rig, selected, rigLocked(), 1), false);
 $('#rig-split').onclick = () => {
   const r = splitBone(state.rig, selected);
@@ -4941,21 +5399,7 @@ $('#spin').onclick = () => {
   controls.autoRotate = !controls.autoRotate;
   $('#spin').classList.toggle('on', controls.autoRotate);
 };
-$('#new').onclick = () => {
-  if (!confirm('You sure you want to start fresh?')) return;
-  exitDraw();
-  stopPlacing();
-  deselectAttachment();
-  if (mode !== 'shape') setMode('shape');
-  clearCollection();
-  selectedPiece = '';
-  selected = '';
-  // a fresh scene: one biped, an empty workbench
-  restore(JSON.stringify({ creatures: [defaultState(rigFromTemplate(RIGS[0]))], active: 0 } satisfies World));
-  commit();
-  frameCreature(true);
-  hint('Fresh start!', 1500);
-};
+$('#new').onclick = () => newCreation();
 
 /** Render one clean frame without handles or guides, then restore. */
 function withCleanScene<T>(fn: () => T): T {
@@ -5281,6 +5725,22 @@ $<HTMLInputElement>('#ao').checked = gtao.enabled;
 world.creatures.forEach((s, i) => (creatures[i] = makeCreature(s)));
 
 activate(world.active);
+// My creations: the open scene's details are read back; a scene from before
+// the library existed joins it
+if (opened.id) {
+  opened.keep = true;
+  const id = opened.id;
+  void getCreation<CreationData>(id)
+    .then((c) => {
+      if (!c || opened.id !== id) return;
+      opened.created ||= c.created;
+      opened.thumb ??= c.thumb;
+      opened.savedJson ||= JSON.stringify(c.data);
+    })
+    .catch(() => {});
+} else if (loadedWorld && JSON.stringify(loadedWorld.creatures) !== JSON.stringify(freshWorld().creatures)) {
+  opened.keep = true;
+}
 commit();
 renderUI();
 renderSettings();
@@ -5288,6 +5748,9 @@ applyLighting();
 applyFloor();
 resize();
 requestAnimationFrame(loop);
+
+// works offline and installs as an app (the worker is written at build time: vite.config.ts)
+if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 
 // handy for poking at the scene from the dev-tools console
 if (import.meta.env.DEV) Object.assign(window, { __cc: { scene, camera, renderer, controls, flyTo, renderNow: () => { controls.update(); composer.render(); }, screenToLocal, localToOverlay, partPlane, get creature() { return creature; }, get drawState() { return drawState; }, openFile, selectAttachment, gizmo } });

@@ -435,7 +435,7 @@ export const FILE_FORMAT = 'creature-creator';
 /** 2: a .creature file holds a whole bundle (creatures, stuff, body plans, backdrop) */
 export const FILE_VERSION = 2;
 
-export type FileKind = 'creature' | 'scene' | 'stuff' | 'collection';
+export type FileKind = 'creature' | 'scene' | 'stuff' | 'collection' | 'library';
 
 export interface FileEnvelope<T = unknown> {
   format: typeof FILE_FORMAT;
