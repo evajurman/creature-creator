@@ -3350,7 +3350,7 @@ $<HTMLInputElement>('#file-input').onchange = async (e) => {
   }
 };
 
-/** Read any Creature Creator file into a bundle. */
+/** Read any CritterKiln file into a bundle. */
 function bundleFrom(text: string): Bundle {
   const env = parseEnvelope(text);
   const d = env.data as Record<string, unknown>;

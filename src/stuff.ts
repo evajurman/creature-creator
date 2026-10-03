@@ -430,6 +430,7 @@ export function removeThing(id: string) {
 // ---------------------------------------------------------------------------
 // files: JSON with a small header so the app can tell what it's opening
 
+// the app's old name; kept (like the creature-creator/ storage keys) so existing saves still open
 export const FILE_FORMAT = 'creature-creator';
 /** 2: a .creature file holds a whole bundle (creatures, stuff, body plans, backdrop) */
 export const FILE_VERSION = 2;
@@ -451,9 +452,9 @@ export function envelope<T>(kind: FileKind, data: T): FileEnvelope<T> {
 export function parseEnvelope(text: string): FileEnvelope {
   const obj = JSON.parse(text) as Partial<FileEnvelope>;
   if (obj.format !== FILE_FORMAT || !obj.kind || obj.data === undefined) {
-    throw new Error("This doesn't look like a Creature Creator file.");
+    throw new Error("This doesn't look like a CritterKiln file.");
   }
-  if ((obj.version ?? 1) > FILE_VERSION) throw new Error('This file was made by a newer version of Creature Creator.');
+  if ((obj.version ?? 1) > FILE_VERSION) throw new Error('This file was made by a newer version of CritterKiln.');
   return obj as FileEnvelope;
 }
 
