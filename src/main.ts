@@ -3125,7 +3125,7 @@ function duplicateCreature(i: number) {
 }
 function removeCreature(i: number) {
   if (world.creatures.length < 2) return;
-  if (!confirm(`Remove ${creatureLabel(i)} from the scene? (You can undo this.)`)) return;
+  const label = creatureLabel(i); // no are-you-sure: undo brings it back
   exitDraw();
   stopPlacing();
   if (i !== world.active) activate(i);
@@ -3136,6 +3136,7 @@ function removeCreature(i: number) {
   activate(Math.max(0, i - 1));
   commit();
   renderUI();
+  hint(`Removed ${label}: Ctrl+Z brings it back`, 2600);
 }
 $('#cr-place').onclick = () => {
   if (!placing) return startPlacing();
