@@ -434,8 +434,10 @@ export function buildInflatedGeometry(outline: Vec2[], opts: InflateOptions): TH
 export interface Solid {
   spheres: Float32Array;
   thickness: number;
-  /** per-sphere z centres, once a bend has carried the spheres out of the XY plane */
+  /** per-sphere z centres, once a bend (or drawing from the side) has carried the spheres out of the XY plane */
   zs?: Float32Array;
+  /** per sphere, 1 = squashed along X instead of Z (a shape drawn from the side) */
+  sideways?: Uint8Array;
 }
 
 /**
@@ -449,24 +451,26 @@ export function solidDistance(solid: Solid, x: number, y: number, z: number, gra
   let best = Infinity;
   let bi = -1;
   let bl = 1;
-  let bz = 0;
+  let bx = 0, bz = 0;
   for (let i = 0; i < sp.length; i += 3) {
-    const dx = x - sp[i], dy = y - sp[i + 1];
-    const dz = (z - (zc ? zc[i / 3] : 0)) / t;
+    const side = solid.sideways?.[i / 3];
+    const dx = (x - sp[i]) / (side ? t : 1), dy = y - sp[i + 1];
+    const dz = (z - (zc ? zc[i / 3] : 0)) / (side ? 1 : t);
     const l = Math.sqrt(dx * dx + dy * dy + dz * dz);
     const d = l - sp[i + 2];
     if (d < best) {
       best = d;
       bi = i;
       bl = l;
-      bz = dz;
+      bx = side ? dx / t : dx;
+      bz = side ? dz : dz / t;
     }
   }
   if (bi < 0) {
     grad.set(0, 0, 1);
     return Infinity;
   }
-  grad.set(x - sp[bi], y - sp[bi + 1], bz / t).divideScalar(bl || 1).normalize();
+  grad.set(bx, y - sp[bi + 1], bz).divideScalar(bl || 1).normalize();
   return best * Math.min(1, t);
 }
 

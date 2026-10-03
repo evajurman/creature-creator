@@ -22,8 +22,19 @@ import {
 import { expandRig, type ExpandedBone, type ExpandedRig, type RigState, type V3 } from './rigs';
 import { buildThing, disposeThing, type Thing } from './stuff';
 
+/** One drawn shape of a part, puffed up on its own: drawn from the front (the default) or from the side. */
+export interface PartShape {
+  outline: Vec2[];
+  side?: boolean;
+}
+
 export interface PartState {
+  /** the first shape (null = not drawn yet: a default capsule) */
   outline: Vec2[] | null;
+  /** the first shape was drawn from the side */
+  side?: boolean;
+  /** any further shapes; together they make the one part */
+  more?: PartShape[];
   thickness: number;
   color: string;
   style?: StyleId;
@@ -31,7 +42,30 @@ export interface PartState {
   opacity?: number;
 }
 
-export type EyeStyle = 'googly' | 'flat' | 'bead' | 'dot' | 'button';
+/** Every shape a part was drawn as (none if it hasn't been drawn). */
+export function partShapes(p: PartState): PartShape[] {
+  if (!p.outline) return [];
+  return [{ outline: p.outline, ...(p.side ? { side: true } : {}) }, ...(p.more ?? [])];
+}
+
+/** Store a part's shapes (the first in `outline`, the rest in `more`). */
+export function setPartShapes(p: PartState, shapes: PartShape[]) {
+  p.outline = shapes[0]?.outline ?? null;
+  if (shapes[0]?.side) p.side = true;
+  else delete p.side;
+  if (shapes.length > 1) p.more = shapes.slice(1).map((s) => ({ outline: s.outline, ...(s.side ? { side: true } : {}) }));
+  else delete p.more;
+}
+
+/** A shape drawn from the side lies in the bone's YZ plane: turned a quarter round Y, so its puffing runs along X. */
+export const SIDE_TURN = new THREE.Matrix4().makeRotationY(Math.PI / 2);
+
+/** A drawn point -> the bone's own space (z = 0 in the drawing). */
+export function shapePoint(side: boolean | undefined, [x, y]: Vec2, z = 0): THREE.Vector3 {
+  return side ? new THREE.Vector3(z, y, -x) : new THREE.Vector3(x, y, z);
+}
+
+export type EyeStyle ='googly' | 'flat' | 'bead' | 'dot' | 'button';
 
 export const EYE_STYLES: { id: EyeStyle; name: string }[] = [
   { id: 'googly', name: 'Googly' },
@@ -127,6 +161,8 @@ export interface Placement {
 interface SkinEntry {
   mesh: THREE.Mesh;
   members: BoneRT[];
+  /** the part each of `parts` belongs to (one per shape) */
+  owners: BoneRT[];
   parts: SkinPart[];
   lowPoly: boolean;
   /** colors were baked into the geometry */
@@ -344,6 +380,53 @@ function bendGeometry(src: THREE.BufferGeometry, bd: Bend): THREE.BufferGeometry
   return g;
 }
 
+/** A shape drawn from the side: its puffed-up geometry (and merge spheres) turned into the bone's YZ plane. */
+function turnSideways(src: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = src.clone();
+  g.applyMatrix4(SIDE_TURN);
+  const solid = src.userData.solid as Solid | undefined;
+  g.userData = { ...src.userData, sharedNormals: undefined };
+  if (solid) {
+    // (x, y) in the drawing -> (0, y, -x) on the bone
+    const n = solid.spheres.length / 3;
+    const sp = Float32Array.from(solid.spheres);
+    const zs = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      zs[i] = -sp[i * 3];
+      sp[i * 3] = 0;
+    }
+    g.userData.solid = { ...solid, spheres: sp, zs, sideways: new Uint8Array(n).fill(1) } satisfies Solid;
+  }
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
+/** Several shapes of one part as one geometry (they just overlap), with all their merge spheres. */
+function joinShapes(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const g = mergeGeometries(geos) ?? geos[0].clone();
+  const solids = geos.map((x) => x.userData.solid as Solid | undefined).filter((x): x is Solid => !!x);
+  const counts = solids.map((x) => x.spheres.length / 3);
+  const spheres = new Float32Array(counts.reduce((a, c) => a + c, 0) * 3);
+  const zs = new Float32Array(spheres.length / 3);
+  const sideways = new Uint8Array(spheres.length / 3);
+  let at = 0;
+  solids.forEach((x, j) => {
+    spheres.set(x.spheres, at * 3);
+    if (x.zs) zs.set(x.zs, at);
+    if (x.sideways) sideways.set(x.sideways, at);
+    at += counts[j];
+  });
+  const facets = geos.map((x) => x.userData.facet as number | undefined).filter((x): x is number => x !== undefined);
+  g.userData = {
+    solid: { spheres, thickness: solids[0]?.thickness ?? 1, zs, sideways } satisfies Solid,
+    ...(facets.length ? { facet: Math.min(...facets) } : {}),
+  };
+  g.computeBoundingBox();
+  g.computeBoundingSphere();
+  return g;
+}
+
 /** A child's local transform after its parent bone is bent (it rides along the arc). */
 function bendChild(bd: Bend, local: THREE.Matrix4): THREE.Matrix4 {
   if (!bd.theta) return local;
@@ -425,6 +508,8 @@ export class Creature {
   state: CreatureState;
   selected: string | null = null;
   private drawFocus: string | null = null;
+  /** the part in drawFocus is being drawn from the side */
+  private drawSide = false;
   private mergeDirty = true;
   // seamless skins: built when idle, thrown away on any change
   private skins: SkinEntry[] = [];
@@ -606,8 +691,10 @@ export class Creature {
     return this.state.parts[b.src];
   }
 
-  outlineFor(b: BoneRT): Vec2[] {
-    return this.state.parts[b.src].outline ?? defaultOutline(b.length, b.def.width, b.def.widthEnd ?? b.def.width);
+  /** The part's shapes, or the default capsule if it hasn't been drawn. */
+  shapesFor(b: BoneRT): PartShape[] {
+    const shapes = partShapes(this.state.parts[b.src]);
+    return shapes.length ? shapes : [{ outline: defaultOutline(b.length, b.def.width, b.def.widthEnd ?? b.def.width) }];
   }
 
   // -------------------------------------------------------------------------
@@ -655,7 +742,7 @@ export class Creature {
     for (const b of this.list) {
       const p = s.parts[b.src];
       const style = p.style ?? s.style;
-      const outline = this.outlineFor(b);
+      const shapes = this.shapesFor(b);
       const k = this.settingsFor(style);
       const geoOpts = {
         thickness: p.thickness,
@@ -664,7 +751,7 @@ export class Creature {
         colorJitter: style === 'lowpoly' ? k.variation : undefined,
         lumps: style === 'clay' ? k.lumps : 0,
       };
-      const geoKey = JSON.stringify([outline, geoOpts, getMeshDetail()]);
+      const geoKey = JSON.stringify([shapes, geoOpts, getMeshDetail()]);
       const key = geoKey + style + p.color + JSON.stringify(k) + (p.opacity ?? 1) + bendKey(bendOf(b.def, b.length));
       if (key === b.meshKey) continue;
       b.meshKey = key;
@@ -677,25 +764,26 @@ export class Creature {
         });
         (b.mesh.userData.mergeGeo as THREE.BufferGeometry | undefined)?.dispose();
       }
-      const straight = cachedGeometry(geoKey, () =>
-        buildInflatedGeometry(outline, { ...geoOpts, seed: hashString(b.src) }),
-      );
       const bd = bendOf(b.def, b.length);
-      const geo = bd.theta
-        ? cachedGeometry(geoKey + bendKey(bd), () => bendGeometry(straight, bd))
-        : straight;
+      const seed = hashString(b.src);
+      // each shape puffed up on its own (turned a quarter round if drawn from the side), then bent with the bone
+      const shapeGeo = (sh: PartShape, i: number, opts: typeof geoOpts) => {
+        const sk = JSON.stringify([sh.outline, opts, getMeshDetail(), i]) + (sh.side ? 'side' : '');
+        const flat = cachedGeometry(sk, () => buildInflatedGeometry(sh.outline, { ...opts, seed: seed + i }));
+        const turned = sh.side ? cachedGeometry(sk + 'turned', () => turnSideways(flat)) : flat;
+        return bd.theta ? cachedGeometry(sk + bendKey(bd), () => bendGeometry(turned, bd)) : turned;
+      };
+      const geo =
+        shapes.length === 1
+          ? shapeGeo(shapes[0], 0, geoOpts)
+          : cachedGeometry(geoKey + bendKey(bd), () => joinShapes(shapes.map((sh, i) => shapeGeo(sh, i, geoOpts))));
       const mesh = new THREE.Mesh(geo, makeMaterial(style, p.color, k));
       mesh.userData.baseGeo = geo;
-      // the seamless skin is built from the smooth (un-lumped) shape: lumps can
-      // fold thin parts over themselves, which confuses inside/outside
-      if (geoOpts.lumps) {
-        const smoothOpts = { ...geoOpts, lumps: 0 };
-        const smoothKey = JSON.stringify([outline, smoothOpts, getMeshDetail()]);
-        mesh.userData.skinGeo = () => {
-          const st = cachedGeometry(smoothKey, () => buildInflatedGeometry(outline, { ...smoothOpts, seed: hashString(b.src) }));
-          return bd.theta ? cachedGeometry(smoothKey + bendKey(bd), () => bendGeometry(st, bd)) : st;
-        };
-      }
+      // The seamless skin is built from each shape on its own (shapes of one
+      // part overlap, which would confuse inside/outside on the joined mesh),
+      // and from the smooth (un-lumped) shapes: lumps can fold thin parts over themselves
+      const smoothOpts = { ...geoOpts, lumps: 0 };
+      mesh.userData.skinGeos = () => shapes.map((sh, i) => shapeGeo(sh, i, smoothOpts));
       mesh.userData.opacity = p.opacity ?? 1;
       mesh.castShadow = castsShadow(style);
       // (soft shadows also draw receivers into the shadow map: glass mustn't block the light)
@@ -1033,9 +1121,12 @@ export class Creature {
       // a coarser grid with less mesh detail (Settings > Performance)
       const h = Math.min(0.02, Math.max(0.006, minR / 2.5)) / Math.sqrt(getMeshDetail());
 
-      const parts: SkinPart[] = joined.map((b) => {
-        const geo = ((b.mesh!.userData.skinGeo as (() => THREE.BufferGeometry) | undefined)?.() ?? b.mesh!.userData.baseGeo) as THREE.BufferGeometry;
-        return {
+      // a part drawn as several shapes joins in as each of them
+      const owners: BoneRT[] = [];
+      const parts: SkinPart[] = joined.flatMap((b) => {
+        const geos = (b.mesh!.userData.skinGeos as (() => THREE.BufferGeometry[]) | undefined)?.() ?? [b.mesh!.userData.baseGeo as THREE.BufferGeometry];
+        owners.push(...geos.map(() => b));
+        return geos.map((geo) => ({
           geo,
           toSkin: toGroup.clone().multiply(b.mesh!.matrixWorld),
           // textured materials lay their textures out in the rest pose
@@ -1043,7 +1134,7 @@ export class Creature {
           color: this.shownColor(b),
           k: Math.max(0.005, Math.min(kMax, 0.6 * radius(b))),
           facet: geo.userData.facet as number | undefined,
-        };
+        }));
       });
       // clay lumps go back on after the skin is built
       const lumps = style === 'clay' ? (k.lumps ?? 0) * Math.min(0.012, Math.max(0.004, minR * 0.08)) : 0;
@@ -1064,6 +1155,7 @@ export class Creature {
       built.push({
         mesh,
         members: joined,
+        owners,
         parts,
         lowPoly,
         painted: !!geo.userData.painted,
@@ -1104,7 +1196,7 @@ export class Creature {
         const style = p.style ?? s.style;
         const k = this.settingsFor(style);
         // clay lumps and low-poly facet size change the shape; with blending off, color changes the groups
-        return [id, p.outline, p.thickness, style, style === 'clay' ? k.lumps : 0, style === 'lowpoly' ? k.facets : 0, blend ? '' : p.color.toLowerCase()];
+        return [id, partShapes(p), p.thickness, style, style === 'clay' ? k.lumps : 0, style === 'lowpoly' ? k.facets : 0, blend ? '' : p.color.toLowerCase()];
       }),
     ]);
   }
@@ -1118,7 +1210,7 @@ export class Creature {
     const kc = s.mergeColors ? (s.colorBlend ?? 0.12) : 0;
 
     // repaint only if the colors (or the fade width) changed
-    sk.parts.forEach((p, i) => p.color.copy(this.shownColor(sk.members[i])));
+    sk.parts.forEach((p, i) => p.color.copy(this.shownColor(sk.owners[i])));
     const colorKey = JSON.stringify([sk.parts.map((p) => p.color.getHex()), kc]);
     if (colorKey !== sk.colorKey) {
       sk.painted = paintSkin(sk.mesh.geometry, sk.parts, kc, sk.lowPoly);
@@ -1550,21 +1642,26 @@ export class Creature {
     b.guide.clear();
     b.guide.visible = on;
     if (!on) return;
-    const pts = this.outlineFor(b).map(([x, y]) => new THREE.Vector3(x, y, 0));
-    const loop = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), outlineLineMat);
-    loop.renderOrder = 998;
-    b.guide.add(loop);
+    for (const sh of this.shapesFor(b)) {
+      const pts = sh.outline.map((q) => shapePoint(sh.side, q));
+      const loop = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), outlineLineMat);
+      loop.renderOrder = 998;
+      b.guide.add(loop);
+    }
     if (this.drawFocus === b.def.id) {
       const r = Math.max(b.length, b.def.width) * 1.6 + 0.3;
       const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 64), planeMat);
       disc.position.y = b.length / 2;
+      // drawing from the side: the disc stands in the bone's YZ plane
+      if (this.drawSide) disc.rotation.y = Math.PI / 2;
       disc.raycast = () => {};
       b.guide.add(disc);
     }
   }
 
-  setDrawFocus(id: string | null) {
+  setDrawFocus(id: string | null, side = false) {
     this.drawFocus = id;
+    this.drawSide = !!id && side;
     if (id) this.invalidateSkin();
     for (const b of this.list) {
       const m = b.mesh?.material as THREE.Material | undefined;

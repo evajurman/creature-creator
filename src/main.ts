@@ -15,6 +15,8 @@ import {
   Creature,
   defaultState,
   EYE_STYLES,
+  partShapes,
+  setPartShapes,
   setSeamlessLowPoly,
   setSeamlessMode,
   type Attachment,
@@ -22,6 +24,7 @@ import {
   type CreatureState,
   type EyeFinish,
   type EyeStyle,
+  type PartShape,
   type PartState,
   type Placement,
   type SeamlessMode,
@@ -699,7 +702,7 @@ let drag: {
    */
   toDef?: THREE.Matrix3;
   /** size gizmo: what it's measured against on screen, and the drawing before the drag */
-  sizer?: { anchor: THREE.Vector2; reach: THREE.Vector2; outline: Vec2[] | null; meshX: Map<THREE.Mesh, number> };
+  sizer?: { anchor: THREE.Vector2; reach: THREE.Vector2; shapes: PartShape[]; meshX: Map<THREE.Mesh, number> };
   /** roll ring: where the press was, which way on screen the ring moves as the part rolls, and how many pixels per radian */
   roll?: {
     start: THREE.Vector2;
@@ -858,7 +861,7 @@ canvas.addEventListener('pointerdown', (e) => {
     const reach = toScreen(b.pivot, at.clone()).sub(anchor);
     const meshX = new Map<THREE.Mesh, number>();
     for (const l of creature.linked(id)) if (l.mesh) meshX.set(l.mesh, l.mesh.scale.x);
-    if (reach.lengthSq() > 4) sizer = { anchor, reach, outline: structuredClone(state.parts[b.src]?.outline ?? null), meshX };
+    if (reach.lengthSq() > 4) sizer = { anchor, reach, shapes: state.parts[b.src] ? structuredClone(partShapes(state.parts[b.src])) : [], meshX };
     creature.invalidateSkin();
   }
   if (kind === 'root') gapBefore = floorGap();
@@ -914,7 +917,9 @@ canvas.addEventListener('pointermove', (e) => {
       state.rig = JSON.parse(drag.rigBase!) as RigState;
       scaleBone(state.rig, drag.id, kLen, kWid);
       const part = state.parts[b.src];
-      if (part && sz.outline) part.outline = sz.outline.map(([x, y]) => [Math.round(x * kWid * 1e4) / 1e4, Math.round(y * kLen * 1e4) / 1e4] as Vec2);
+      // (a side drawing's depth goes with the width, so the whole part grows together)
+      const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+      if (part && sz.shapes.length) setPartShapes(part, sz.shapes.map((sh) => ({ ...sh, outline: sh.outline.map(([x, y]) => [r4(x * kWid), r4(y * kLen)] as Vec2) })));
       creature.relayout(state.rig);
       // the meshes stretch to fit until they're rebuilt on letting go
       for (const [m, x] of sz.meshX) m.scale.x = x * kWid;
@@ -1275,12 +1280,20 @@ function dropToFloor() {
   hint('Dropped to the floor', 1500);
 }
 
-function focusOnBone(b: BoneRT) {
+/** Face the part straight on: from the front, or from the side when it's being drawn from the side. */
+function focusOnBone(b: BoneRT, side = false) {
   b.pivot.updateMatrixWorld(true);
-  const bb = bounds(creature.outlineFor(b));
-  const center = b.pivot.localToWorld(new THREE.Vector3((bb.minX + bb.maxX) / 2, (bb.minY + bb.maxY) / 2, 0));
-  const r = Math.max(bb.w, bb.h, b.length) / 2;
-  const normal = new THREE.Vector3(0, 0, 1).transformDirection(b.pivot.matrixWorld);
+  const geo = b.mesh?.userData.baseGeo as THREE.BufferGeometry | undefined;
+  if (geo && !geo.boundingBox) geo.computeBoundingBox();
+  const box = geo?.boundingBox ?? new THREE.Box3(new THREE.Vector3(-0.1, 0, -0.1), new THREE.Vector3(0.1, b.length, 0.1));
+  const centre = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  // the middle of the drawing plane, not of the whole part
+  if (side) centre.x = 0;
+  else centre.z = 0;
+  const center = b.pivot.localToWorld(centre);
+  const r = Math.max(side ? size.z : size.x, size.y, b.length) / 2;
+  const normal = new THREE.Vector3(side ? 1 : 0, 0, side ? 0 : 1).transformDirection(b.pivot.matrixWorld);
   const toCam = camera.position.clone().sub(controls.target).normalize();
   if (normal.dot(toCam) < 0) normal.negate();
   if (Math.abs(normal.y) > 0.97) normal.add(new THREE.Vector3(0, 0, 0.1)).normalize(); // dodge orbit pole
@@ -1325,8 +1338,12 @@ interface DrawState {
   stamp: ShapeKind | null;
   /** the stamp being dragged out: centre and size in the drawing plane, and where the press was on screen */
   stampDrag: { centre: Vec2; r: number; x: number; y: number } | null;
-  /** a bone's outline from before drawing: the shape previews live on the part, and this goes back on cancel */
-  original?: Vec2[] | null;
+  /** a bone's shapes from before drawing: the shapes preview live on the part, and these go back on cancel */
+  original?: PartShape[];
+  /** a body part being drawn from the side (its YZ plane) rather than the front */
+  side: boolean;
+  /** a body part's shapes in the other view (front or side), kept while this one is drawn */
+  other: Vec2[][];
 }
 let drawState: DrawState | null = null;
 
@@ -1342,6 +1359,8 @@ const drawPrefs: { symmetry: boolean; pieceSymmetry: boolean; smoothing: number 
 })();
 /** Is symmetry on for what's being drawn right now? */
 function symOn(): boolean {
+  // seen from the side, a part is already the same on its left and right
+  if (drawState?.side) return false;
   return drawState?.target.kind === 'piece' ? drawPrefs.pieceSymmetry : drawPrefs.symmetry;
 }
 function saveDrawPrefs() {
@@ -1363,7 +1382,7 @@ function drawHint() {
   if (drawState.pending) {
     const done = touchScreen() ? 'Done' : 'Done (Enter)';
     const msg = {
-      draw: `Draw more to add to the shape. Press ${done} to keep it`,
+      draw: target.kind === 'bone' ? `Draw more to add to it (apart = an extra shape). Press ${done} to keep it` : `Draw more to add to the shape. Press ${done} to keep it`,
       erase: `Draw over the parts to cut away. Press ${done} to keep it`,
       move: `Drag the shape to move it. Press ${done} to keep it`,
       scale: touchScreen() ? 'Drag away from the middle to make it bigger' : 'Drag away from the middle to make it bigger (Shift keeps its proportions)',
@@ -1376,6 +1395,10 @@ function drawHint() {
   const nav = touchScreen() ? ' · Two fingers move the view' : ' · Right-drag or Space+drag to pan, F to face it again';
   if (target.kind === 'piece') {
     hint((symOn() ? 'Draw a piece: across the dashed line = one symmetric shape, to one side = a mirrored pair' : 'Draw a piece as one closed loop. Erase inside it to make holes') + nav, 0);
+    return;
+  }
+  if (drawState.side) {
+    hint(`Draw the ${label} as seen from the side; it puffs out to both sides` + nav, 0);
     return;
   }
   hint((symOn() ? `Draw one half of the ${label}; it mirrors across the dashed line` : `Draw the ${label} as one closed loop`) + nav, 0);
@@ -1391,33 +1414,39 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
     const b = creature.bones.get(target.boneId);
     if (!b) return;
     const reach = Math.max(b.length, b.def.width) * 2.5 + 0.5;
+    // start from the shapes as they are (draw to add, erase to cut), in the view the part was first drawn in
+    const shapes = partShapes(state.parts[b.src]);
+    const side = !!shapes[0]?.side;
+    const inView = shapes.filter((s) => !!s.side === side).map((s) => structuredClone(s.outline));
     drawState = {
       target,
-      frame: b.pivot,
+      frame: boneFrame(b, side),
       label: partLabel(b.src).toLowerCase(),
       axis: [[0, b.length / 2 - reach], [0, b.length / 2 + reach]],
       pts: [],
       local: [],
       pen: null,
       active: false,
-      pending: null,
+      pending: inView.length ? inView : null,
       holes: [],
       tool: 'draw',
       grab: null,
       stamp: null,
       stampDrag: null,
-      original: state.parts[b.src].outline,
+      original: structuredClone(shapes),
+      side,
+      other: shapes.filter((s) => !!s.side !== side).map((s) => structuredClone(s.outline)),
     };
-    creature.setDrawFocus(target.boneId);
+    creature.setDrawFocus(target.boneId, side);
     // other creatures step aside while you draw on this one
     for (const c of creatures) if (c !== creature) c.root.visible = false;
-    focusOnBone(b);
+    focusOnBone(b, side);
   } else {
     // a piece lifted off the board is redrawn on its own plane
     const own = target.redraw ? piece() : undefined;
     const lifted = own?.place;
     const frame = lifted ? framePiece(own!) : board;
-    drawState = { target, frame, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null };
+    drawState = { target, frame, label: 'piece', axis: [[0, -1.3], [0, 1.3]], pts: [], local: [], pen: null, active: false, pending: null, holes: [], tool: 'draw', grab: null, stamp: null, stampDrag: null, side: false, other: [] };
     if (target.redraw && own) {
       // start from the shape as it is: draw to add, erase to cut, or move, size and turn it
       drawState.pending = [structuredClone(own.outline)];
@@ -1436,17 +1465,57 @@ function enterDraw(target: DrawTarget = { kind: 'bone', boneId: selected }) {
   refreshPieceGizmo();
 }
 
+/** Drawing from the side: a plane standing in the bone's YZ plane (its X axis is the bone's -Z, its Z the bone's X). */
+const sideFrame = new THREE.Object3D();
+sideFrame.rotation.y = Math.PI / 2;
+
+/** The object whose XY plane a body part is drawn on, from the front or the side. */
+function boneFrame(b: BoneRT, side: boolean): THREE.Object3D {
+  if (!side) {
+    sideFrame.removeFromParent();
+    return b.pivot;
+  }
+  b.pivot.add(sideFrame);
+  sideFrame.updateMatrixWorld(true);
+  return sideFrame;
+}
+
+/** Switch a body part's drawing between front and side; the shapes drawn in the other view stay put. */
+function setDrawSide(side: boolean) {
+  const ds = drawState;
+  if (!ds || ds.target.kind !== 'bone' || ds.side === side) return;
+  const b = creature.bones.get(ds.target.boneId);
+  if (!b) return;
+  const here = ds.pending ?? [];
+  ds.pending = ds.other.length ? ds.other : null;
+  ds.other = here;
+  ds.holes = [];
+  ds.side = side;
+  ds.frame = boneFrame(b, side);
+  ds.active = false;
+  ds.pts = [];
+  ds.local = [];
+  ds.grab = null;
+  ds.stampDrag = null;
+  if (!ds.pending) ds.tool = 'draw';
+  creature.setDrawFocus(b.def.id, side);
+  focusOnBone(b, side);
+  previewPending();
+  drawHint();
+}
+
 /** Leave drawing. Unless the shape is being kept (Done), a bone's previewed outline goes back. */
 function exitDraw(keep = false) {
   const ds = drawState;
   drawState = null;
   overlay.classList.remove('active');
   $('#draw-bar').hidden = true;
-  if (ds?.target.kind === 'bone' && ds.pending && !keep) {
+  if (ds?.target.kind === 'bone' && !keep) {
     const b = creature.bones.get(ds.target.boneId);
-    if (b) state.parts[b.src].outline = ds.original ?? null;
+    if (b) setPartShapes(state.parts[b.src], ds.original ?? []);
     creature.sync();
   }
+  sideFrame.removeFromParent();
   creature.setDrawFocus(null);
   if (ds?.target.kind === 'piece') syncWorkbench();
   for (const c of creatures) c.root.visible = mode !== 'stuff';
@@ -1459,9 +1528,17 @@ function syncDrawBar() {
   $<HTMLInputElement>('#sym').checked = symOn();
   $<HTMLInputElement>('#smooth').value = String(drawPrefs.smoothing);
   $('#sym-label').classList.toggle('on', symOn());
+  // a side view is mirrored left and right by itself
+  $('#sym-label').classList.toggle('disabled', !!drawState?.side);
+  $<HTMLInputElement>('#sym').disabled = !!drawState?.side;
+  const isBone = drawState?.target.kind === 'bone';
+  $('#draw-view').hidden = !isBone;
+  document.querySelectorAll<HTMLButtonElement>('#draw-view [data-view]').forEach((b) => b.classList.toggle('on', (b.dataset.view === 'side') === !!drawState?.side));
   const has = !!drawState?.pending;
-  $<HTMLButtonElement>('#done-draw').disabled = !has;
-  $<HTMLButtonElement>('#reset-draw').disabled = !has;
+  // a body part can be kept (or cleared) with shapes in the other view only
+  const any = has || !!drawState?.other.length;
+  $<HTMLButtonElement>('#done-draw').disabled = !any;
+  $<HTMLButtonElement>('#reset-draw').disabled = !any;
   const tool = drawState?.tool ?? 'draw';
   document.querySelectorAll<HTMLButtonElement>('#draw-tools [data-tool]').forEach((b) => {
     b.classList.toggle('on', b.dataset.tool === tool);
@@ -1550,7 +1627,8 @@ function finishStroke() {
   ds.pts = [];
   ds.local = [];
   ds.active = false;
-  if (ds.pending) {
+  // (a part that already has shapes in the other view is added to, not started afresh from a half)
+  if (ds.pending || ds.other.length) {
     combineStroke(ds, raw);
     return;
   }
@@ -1649,70 +1727,21 @@ function applyLoops(ds: DrawState, loops: Vec2[][], cut: boolean) {
   if (!ds.pending) {
     if (cut) return;
     // overlapping mirror images merge into one
-    const first = loops.length > 1 ? unite(ds, [], [], loops, false).outers : loops;
-    setPending(ds.target.kind === 'bone' ? first.slice(0, 1) : first);
+    setPending(loops.length > 1 ? combineLoops([], [], loops, false).outers : loops);
     return;
   }
-  const res = unite(ds, ds.pending, ds.holes, loops, cut);
+  const res = combineLoops(ds.pending, ds.holes, loops, cut);
   if (!res.outers.length) {
     setPending(null);
     hint('Erased it all: draw a new shape', 2000);
     return;
   }
-  let outers = res.outers;
-  let holes = res.holes;
-  if (ds.target.kind === 'bone') {
-    // a body part is one solid loop: keep the biggest piece
-    if (outers.length > 1 || holes.length) hint('A body part is one solid shape: kept the biggest piece', 2200);
-    outers = outers.slice(0, 1);
-    holes = [];
-  }
-  ds.pending = outers;
-  ds.holes = holes;
+  // a body part can be several shapes, but each one is solid
+  if (ds.target.kind === 'bone' && res.holes.length) hint("A body part can't have holes: draw it as separate shapes instead", 2400);
+  ds.pending = res.outers;
+  ds.holes = ds.target.kind === 'bone' ? [] : res.holes;
   previewPending();
   drawHint();
-}
-
-/**
- * combineLoops, but a body part has to stay one piece: with symmetry on, a
- * shape (and its mirror image) that doesn't reach the rest is stretched
- * sideways to the centre line, the way a half-drawing becomes a whole part.
- */
-function unite(ds: DrawState, outers: Vec2[][], holes: Vec2[][], loops: Vec2[][], cut: boolean) {
-  const res = combineLoops(outers, holes, loops, cut);
-  if (ds.target.kind !== 'bone' || cut || !symOn() || res.outers.length < 2) return res;
-  const widened = loops.map(toAxis);
-  const joined = combineLoops(outers, holes, widened, false);
-  if (joined.outers.length < 2) return joined;
-  // still apart (above or below the rest): necks along the centre line join
-  // each piece to the next, middle to middle, so they can't poke out past either end
-  const mids = joined.outers.map((l) => bounds(l)).sort((a, b) => a.minY + a.maxY - (b.minY + b.maxY));
-  const w = 0.3 * Math.min(...mids.map((b) => b.w));
-  const necks = mids.slice(1).map((b, i): Vec2[] => {
-    const y0 = (mids[i].minY + mids[i].maxY) / 2, y1 = (b.minY + b.maxY) / 2;
-    return [[-w / 2, y0], [w / 2, y0], [w / 2, y1], [-w / 2, y1]];
-  });
-  return combineLoops(outers, holes, [...widened, ...necks], false);
-}
-
-/** A loop widened, row by row, all the way to the centre line (x = 0) on its own side. */
-function toAxis(loop: Vec2[]): Vec2[] {
-  const bb = bounds(loop);
-  const side = bb.minX + bb.maxX >= 0 ? 1 : -1;
-  const out: Vec2[] = [];
-  const n = 64;
-  for (let i = 0; i <= n; i++) {
-    const y = bb.minY + (bb.maxY - bb.minY) * (0.001 + (0.998 * i) / n);
-    let far = 0;
-    for (let a = 0, b = loop.length - 1; a < loop.length; b = a++) {
-      const [xa, ya] = loop[a], [xb, yb] = loop[b];
-      if (ya > y !== yb > y) far = Math.max(far, side * (xa + ((y - ya) / (yb - ya)) * (xb - xa)));
-    }
-    out.push([side * far, y]);
-  }
-  // back down the centre line to close it
-  out.push([0, bb.maxY], [0, bb.minY]);
-  return out;
 }
 
 /**
@@ -1735,9 +1764,6 @@ function mergeOverlaps(ds: DrawState) {
 
 function pendingShape(ds: DrawState): { outers: Vec2[][]; holes: Vec2[][] } {
   return { outers: ds.pending ?? [], holes: ds.holes };
-}
-function pendingLoops(ds: DrawState): Vec2[][] {
-  return pendingShape(ds).outers;
 }
 
 /** The pending shape as workbench pieces: each outer loop with the holes that fall inside it. */
@@ -1801,6 +1827,13 @@ function transformShape(ds: DrawState, p: Vec2, keepProportions: boolean) {
   ds.holes = g.holes.map(fn);
 }
 
+/** A body part's shapes as drawn so far, front and side (the front ones first). */
+function drawnShapes(ds: DrawState): PartShape[] {
+  const here = (ds.pending ?? []).map((outline) => ({ outline, side: ds.side }));
+  const there = ds.other.map((outline) => ({ outline, side: !ds.side }));
+  return ds.side ? [...there, ...here] : [...here, ...there];
+}
+
 /** Show the pending shape: inflated live on the part being drawn, or on the workbench. */
 function previewPending() {
   const ds = drawState;
@@ -1808,10 +1841,10 @@ function previewPending() {
   if (ds.target.kind === 'bone') {
     const b = creature.bones.get(ds.target.boneId);
     if (b) {
-      state.parts[b.src].outline = ds.pending ? pendingLoops(ds)[0] : (ds.original ?? null);
+      setPartShapes(state.parts[b.src], drawnShapes(ds));
       creature.sync();
       // the rebuilt part keeps the see-through drawing look
-      creature.setDrawFocus(ds.target.boneId);
+      creature.setDrawFocus(ds.target.boneId, ds.side);
     }
   } else {
     syncWorkbench();
@@ -1833,8 +1866,7 @@ function schedulePreview() {
 /** Done: keep the pending shape. */
 function finishDraw() {
   const ds = drawState;
-  if (!ds?.pending) return;
-  const loops = pendingLoops(ds);
+  if (!ds?.pending && !ds?.other.length) return;
   if (ds.target.kind === 'piece' && ds.target.redraw) {
     replacePiece(ds.target.redraw, pendingPieces(ds));
     return;
@@ -1844,7 +1876,7 @@ function finishDraw() {
     return;
   }
   const b = creature.bones.get(ds.target.boneId)!;
-  state.parts[b.src].outline = loops[0];
+  setPartShapes(state.parts[b.src], drawnShapes(ds));
   exitDraw(true);
   creature.sync();
   commit();
@@ -2108,7 +2140,14 @@ document.querySelectorAll<HTMLButtonElement>('#draw-bar [data-shape]').forEach((
     drawHint();
   };
 });
-$('#reset-draw').onclick = () => setPending(null);
+$('#reset-draw').onclick = () => {
+  // a body part starts again from nothing, front and side
+  if (drawState) drawState.other = [];
+  setPending(null);
+};
+document.querySelectorAll<HTMLButtonElement>('#draw-view [data-view]').forEach((b) => {
+  b.onclick = () => setDrawSide(b.dataset.view === 'side');
+});
 function setDrawTool(tool: DrawTool) {
   if (!drawState || (tool !== 'draw' && !drawState.pending)) return;
   // tapping the active tool again goes back to drawing
@@ -3904,7 +3943,11 @@ function rigEdit(fn: (rig: RigState) => PartCopy[], copyShape: boolean) {
   const copies = fn(state.rig);
   for (const c of copies) {
     const from = state.parts[c.from];
-    if (from && !state.parts[c.to]) state.parts[c.to] = { ...structuredClone(from), outline: copyShape ? structuredClone(from.outline) : null };
+    if (from && !state.parts[c.to]) {
+      const to: PartState = structuredClone(from);
+      if (!copyShape) setPartShapes(to, []);
+      state.parts[c.to] = to;
+    }
   }
   // an edited skeleton is no longer the saved/template one
   if (!state.rig.base.startsWith('custom')) state.rig.base = 'custom';
@@ -3983,13 +4026,19 @@ $('#rig-split').onclick = () => {
   for (const [lo, hi] of r.pairs) {
     const p = state.parts[lo];
     if (!p) continue; // right twins share the left's drawing
-    const upper: PartState = { ...structuredClone(p), outline: null };
-    if (p.outline) {
-      const below = clipLoop(p.outline, r.at, 'below');
-      const above = clipLoop(p.outline, r.at, 'above');
-      p.outline = below;
-      upper.outline = above ? above.map(([x, y]) => [x, y - r.at] as Vec2) : null;
-    }
+    const upper: PartState = structuredClone(p);
+    // every shape is cut at the same height (side drawings run along the bone too)
+    const shapes = partShapes(p);
+    const below = shapes.flatMap((sh) => {
+      const l = clipLoop(sh.outline, r.at, 'below');
+      return l ? [{ ...sh, outline: l }] : [];
+    });
+    const above = shapes.flatMap((sh) => {
+      const l = clipLoop(sh.outline, r.at, 'above');
+      return l ? [{ ...sh, outline: l.map(([x, y]) => [x, y - r.at] as Vec2) }] : [];
+    });
+    setPartShapes(p, below);
+    setPartShapes(upper, above);
     state.parts[hi] = upper;
   }
   rigEdit(() => [], false);
@@ -4363,7 +4412,7 @@ const SHEET_KEY = 'creature-creator/sheet';
 $('#draw').onclick = () => enterDraw({ kind: 'bone', boneId: selected });
 $('#cancel-draw').onclick = () => exitDraw();
 $('#reset-shape').onclick = () => {
-  selPart().outline = null;
+  setPartShapes(selPart(), []);
   creature.sync();
   commit();
   renderUI();
@@ -4886,7 +4935,9 @@ window.addEventListener('keydown', (e) => {
   } else if ((k === 'e' || k === 'm' || k === 't' || k === 'r') && drawState && !e.ctrlKey && !e.metaKey) {
     setDrawTool(({ e: 'erase', m: 'move', t: 'scale', r: 'rotate' } as const)[k]);
   } else if (k === 's' && drawState && !e.ctrlKey && !e.metaKey) {
-    toggleSymmetry();
+    if (!drawState.side) toggleSymmetry();
+  } else if (k === 'v' && drawState && !e.ctrlKey && !e.metaKey) {
+    setDrawSide(!drawState.side);
   } else if (e.code === 'Space' && drawState) {
     e.preventDefault();
     setSpacePan(true);
@@ -4894,7 +4945,7 @@ window.addEventListener('keydown', (e) => {
     // back to a straight-on view of the drawing
     if (drawState.target.kind === 'bone') {
       const b = creature.bones.get(drawState.target.boneId);
-      if (b) focusOnBone(b);
+      if (b) focusOnBone(b, drawState.side);
     } else if (drawState.frame !== board) focusOnPlane(drawState.frame);
     else focusOnBoard();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {

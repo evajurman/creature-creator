@@ -357,6 +357,10 @@
           <button id="shot" class="primary wide" title="Save a picture of the scene"><i class="fa-slab fa-regular fa-camera" aria-hidden="true"></i> Take photo</button>
         </div>
         <div id="draw-bar" class="draw-bar" hidden>
+          <span class="bar-group" id="draw-view" title="Which way you draw the part: its front, or its side profile (V)">
+            <button data-view="front" class="seg-btn" title="Draw the part as seen from the front"><i class="fa-regular fa-user" aria-hidden="true"></i> Front</button>
+            <button data-view="side" class="seg-btn" title="Draw the part's side profile; it puffs out to both sides (V)"><i class="fa-regular fa-person-walking" aria-hidden="true"></i> Side <kbd>V</kbd></button>
+          </span>
           <label id="sym-label" class="pill-toggle" title="Mirror across the part's centre line (S)">
             <input id="sym" type="checkbox" /> <i class="fa-slab fa-regular fa-arrow-right-arrow-left" aria-hidden="true"></i> Symmetry <kbd>S</kbd>
           </label>
